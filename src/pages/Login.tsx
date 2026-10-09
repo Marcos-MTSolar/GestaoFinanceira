@@ -2,36 +2,50 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Logo } from '../components/Logo';
 import { 
-  Sun, 
   ShieldCheck, 
   Lock, 
   AlertCircle, 
-  ArrowRight,
   CheckCircle2,
-  Sparkles,
-  KeyRound
+  KeyRound,
+  Loader2
 } from 'lucide-react';
 
 export const Login: React.FC = () => {
   const { loginGoogle } = useAuth();
   const [emailCustom, setEmailCustom] = useState('');
   const [erro, setErro] = useState<string | null>(null);
+  const [carregando, setCarregando] = useState(false);
   const [mostrarCustom, setMostrarCustom] = useState(false);
 
-  const handleLoginGoogle = (email?: string, nome?: string) => {
+  const handleLoginGoogle = async (email?: string, nome?: string) => {
     setErro(null);
-    const res = loginGoogle(email, nome);
-    if (!res.sucesso && res.mensagem) {
-      setErro(res.mensagem);
+    setCarregando(true);
+    try {
+      const res = await loginGoogle(email, nome);
+      if (!res.sucesso && res.mensagem) {
+        setErro(res.mensagem);
+      }
+    } catch (e: any) {
+      setErro(e.message || 'Falha ao autenticar.');
+    } finally {
+      setCarregando(false);
     }
   };
 
-  const handleLoginCustomSubmit = (e: React.FormEvent) => {
+  const handleLoginCustomSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailCustom.trim()) return;
-    const res = loginGoogle(emailCustom.trim(), emailCustom.split('@')[0]);
-    if (!res.sucesso && res.mensagem) {
-      setErro(res.mensagem);
+    setErro(null);
+    setCarregando(true);
+    try {
+      const res = await loginGoogle(emailCustom.trim(), emailCustom.split('@')[0]);
+      if (!res.sucesso && res.mensagem) {
+        setErro(res.mensagem);
+      }
+    } catch (e: any) {
+      setErro(e.message || 'Falha ao verificar e-mail.');
+    } finally {
+      setCarregando(false);
     }
   };
 
@@ -62,7 +76,7 @@ export const Login: React.FC = () => {
           </p>
         </div>
 
-        {/* Mensagem de Erro (se email não autorizado) */}
+        {/* Mensagem de Erro (se email não autorizado ou falha) */}
         {erro && (
           <div className="mb-6 p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start gap-2.5 animate-in shake">
             <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -73,41 +87,46 @@ export const Login: React.FC = () => {
           </div>
         )}
 
-        {/* BOTÃO PRINCIPAL DE LOGIN COM GOOGLE */}
+        {/* BOTÃO PRINCIPAL DE LOGIN COM GOOGLE (POPUP FIREBASE AUTH) */}
         <div className="space-y-4">
           <button
-            onClick={() => handleLoginGoogle('aurelio.marcos21@gmail.com', 'Aurélio Marcos')}
-            className="w-full flex items-center justify-center gap-3 bg-[#003064] hover:bg-[#00204A] text-white py-3.5 px-4 rounded-xl font-semibold text-sm shadow-md transition-all group border-b-4 border-[#FCBC00] active:scale-[0.99]"
+            onClick={() => handleLoginGoogle()}
+            disabled={carregando}
+            className="w-full flex items-center justify-center gap-3 bg-[#003064] hover:bg-[#00204A] text-white py-3.5 px-4 rounded-xl font-semibold text-sm shadow-md transition-all group border-b-4 border-[#FCBC00] active:scale-[0.99] disabled:opacity-60 cursor-pointer"
           >
-            {/* Ícone estilizado do Google */}
-            <div className="w-6 h-6 rounded-full bg-white flex items-center justify-center p-1 shrink-0">
-              <svg viewBox="0 0 24 24" className="w-4 h-4">
-                <path
-                  fill="#4285F4"
-                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                />
-              </svg>
-            </div>
-            <span>Entrar com Google (Administrador)</span>
+            {carregando ? (
+              <Loader2 className="w-5 h-5 animate-spin text-[#FCBC00]" />
+            ) : (
+              <div className="w-6 h-6 rounded-full bg-white flex items-center justify-center p-1 shrink-0">
+                <svg viewBox="0 0 24 24" className="w-4 h-4">
+                  <path
+                    fill="#4285F4"
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                  />
+                </svg>
+              </div>
+            )}
+            <span>{carregando ? 'Autenticando...' : 'Entrar com Google'}</span>
           </button>
 
           {/* Opção para alternar para perfil de teste / visualizador */}
           <div className="pt-2">
             <button
               onClick={() => handleLoginGoogle('consultoria@mtsolar.com.br', 'Consultor Externo')}
-              className="w-full py-2.5 px-3 rounded-xl border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+              disabled={carregando}
+              className="w-full py-2.5 px-3 rounded-xl border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
             >
               <ShieldCheck className="w-4 h-4 text-[#1A4A85]" />
               <span>Entrar como Visualizador (Modo Leitura)</span>
@@ -119,7 +138,7 @@ export const Login: React.FC = () => {
             <button
               type="button"
               onClick={() => setMostrarCustom(!mostrarCustom)}
-              className="text-[11px] text-[#1A4A85] hover:underline font-medium inline-flex items-center gap-1"
+              className="text-[11px] text-[#1A4A85] hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
             >
               <KeyRound className="w-3 h-3" />
               {mostrarCustom ? 'Ocultar login alternativo' : 'Testar outro e-mail corporativo'}
@@ -142,7 +161,8 @@ export const Login: React.FC = () => {
                 />
                 <button
                   type="submit"
-                  className="px-3 py-2 bg-[#003064] text-white text-xs font-semibold rounded-lg hover:bg-[#00204A]"
+                  disabled={carregando}
+                  className="px-3 py-2 bg-[#003064] text-white text-xs font-semibold rounded-lg hover:bg-[#00204A] cursor-pointer disabled:opacity-60"
                 >
                   Verificar
                 </button>
@@ -167,11 +187,11 @@ export const Login: React.FC = () => {
             </li>
             <li className="flex items-center gap-2">
               <CheckCircle2 className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
-              <span>Administrador possui controle total e gerencia usuários</span>
+              <span>O primeiro usuário a acessar torna-se o Administrador</span>
             </li>
             <li className="flex items-center gap-2">
               <CheckCircle2 className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
-              <span>Moeda padrão BRL (R$) e fuso horário do Brasil</span>
+              <span>Visualizadores possuem acesso estritamente de leitura</span>
             </li>
           </ul>
         </div>

@@ -29,7 +29,8 @@ import {
   Search,
   RefreshCw,
   HelpCircle,
-  Clock
+  Clock,
+  CloudUpload
 } from 'lucide-react';
 
 export const Configuracoes: React.FC = () => {
@@ -56,7 +57,30 @@ export const Configuracoes: React.FC = () => {
   const [modalImportarAberto, setModalImportarAberto] = useState(false);
   const [conteudoJsonImportar, setConteudoJsonImportar] = useState<string>('');
   const [dadosPreviaImportacao, setDadosPreviaImportacao] = useState<any>(null);
+  const [importandoNuvem, setImportandoNuvem] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportarDadosLocaisParaNuvem = async () => {
+    if (!isAdmin) return;
+    if (!confirm('Deseja ler todos os dados salvos no localStorage local do seu navegador e enviá-los ao banco na nuvem Firestore?')) {
+      return;
+    }
+    setImportandoNuvem(true);
+    try {
+      const res = await dbService.importarDadosLocaisParaNuvem();
+      if (res.sucesso) {
+        setMensagemStatus({ tipo: 'sucesso', texto: res.mensagem });
+        carregarDados();
+      } else {
+        setMensagemStatus({ tipo: 'erro', texto: res.mensagem });
+      }
+    } catch (e: any) {
+      setMensagemStatus({ tipo: 'erro', texto: 'Erro na importação: ' + (e?.message || 'Falha na conexão com Firestore') });
+    } finally {
+      setImportandoNuvem(false);
+      setTimeout(() => setMensagemStatus(null), 6000);
+    }
+  };
 
   const carregarDados = () => {
     setConfig(dbService.getConfiguracoes());
@@ -373,6 +397,38 @@ export const Configuracoes: React.FC = () => {
                 <Upload className="w-4 h-4 text-emerald-200" />
                 <span>Selecionar Arquivo JSON para Restaurar</span>
               </label>
+            </div>
+          </div>
+
+          {/* Card Importar dados locais para a nuvem (Migração Firestore) */}
+          <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/60 flex flex-col justify-between gap-4 md:col-span-2">
+            <div>
+              <div className="flex items-center gap-2 text-[#003064] font-bold text-sm mb-1">
+                <CloudUpload className="w-4 h-4 text-[#003064]" />
+                Migração para a Nuvem Firestore
+              </div>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Se você possui dados cadastrados no armazenamento local (localStorage) deste computador, clique no botão abaixo para enviá-los de forma única para o banco de dados na nuvem (Firestore).
+              </p>
+            </div>
+            <div>
+              <button
+                onClick={handleImportarDadosLocaisParaNuvem}
+                disabled={!isAdmin || importandoNuvem}
+                type="button"
+                className={`w-full sm:w-auto py-2.5 px-5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-xs ${
+                  isAdmin && !importandoNuvem
+                    ? 'bg-[#003064] hover:bg-[#00204A] text-white border-b-2 border-[#FCBC00] cursor-pointer'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                {importandoNuvem ? (
+                  <RefreshCw className="w-4 h-4 text-[#FCBC00] animate-spin" />
+                ) : (
+                  <CloudUpload className="w-4 h-4 text-[#FCBC00]" />
+                )}
+                <span>{importandoNuvem ? 'Enviando dados para o Firestore...' : 'Importar dados locais para a nuvem'}</span>
+              </button>
             </div>
           </div>
         </div>
