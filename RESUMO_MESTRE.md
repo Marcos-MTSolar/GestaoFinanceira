@@ -1,6 +1,6 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 09/10/2026 10:13:00
+**Última Atualização:** 09/10/2026 10:19:30
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
   - Migração completa da persistência local para o Firebase Firestore e Firebase Auth com login via Google (`signInWithPopup`).
