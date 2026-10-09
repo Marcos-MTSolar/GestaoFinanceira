@@ -2,62 +2,102 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Verifica se o usuário está autenticado com conta do Google / Firebase Auth
+    // 1. Verifica se o usuário está autenticado com e-mail confirmado
     function isAuthenticated() {
-      return request.auth != null && request.auth.token.email != null;
+      return request.auth != null 
+        && request.auth.token.email != null;
     }
 
-    // Retorna o e-mail do usuário em minúsculas
+    // Retorna o e-mail do usuário logado em minúsculas
     function userEmail() {
       return request.auth.token.email.lower();
     }
 
-    // Verifica se o usuário é o Administrador Inicial Fixo da MT Solar
+    // 2. Administrador Inicial Fixo da MT Solar
     function isInitialAdmin() {
-      return isAuthenticated() && userEmail() == 'mtsolar.energia@gmail.com';
+      return isAuthenticated() 
+        && userEmail() == 'mtsolar.energia@gmail.com'
+        && request.auth.token.email_verified == true;
     }
 
-    // Verifica se o e-mail do usuário existe na coleção usuarios_autorizados
+    // 3. Verifica se o e-mail existe no cadastro de usuários autorizados
     function isUsuarioAutorizado() {
       return isAuthenticated() && (
         isInitialAdmin() ||
-        exists(/databases/$(database)/documents/usuarios_autorizados/$(userEmail())) ||
-        exists(/databases/$(database)/documents/usuarios_autorizados/$(request.auth.uid))
+        exists(/databases/$(database)/documents/usuarios_autorizados/$(userEmail()))
       );
     }
 
-    // Obtém o documento do usuário autorizado no Firestore
+    // Obtém o documento de autorização do usuário
     function getUsuarioData() {
       return get(/databases/$(database)/documents/usuarios_autorizados/$(userEmail())).data;
     }
 
-    // Verifica se o usuário possui o papel de Administrador
+    // 4. Verifica se o usuário possui o papel de Administrador
     function isAdmin() {
       return isInitialAdmin() || (
-        isUsuarioAutorizado() && 
+        isUsuarioAutorizado() &&
         getUsuarioData().papel == 'administrador'
       );
     }
 
-    // Regras para a Coleção de Usuários Autorizados
-    match /usuarios_autorizados/{document} {
-      // Leitura: Permitida para qualquer usuário autenticado verificar status de acesso
-      allow read: if isAuthenticated();
-      
-      // Criação e Atualização: Apenas o Administrador Inicial Fixo (mtsolar.energia@gmail.com) ou Administradores existentes
-      allow create, update: if isAuthenticated() && (isInitialAdmin() || isAdmin());
-      
-      // Exclusão: Apenas Administradores
-      allow delete: if isAuthenticated() && isAdmin();
+    // Coleção: usuarios_autorizados
+    match /usuarios_autorizados/{userDoc} {
+      // Cada usuário autenticado pode ler (get) exclusivamente seu próprio documento de autorização
+      allow get: if isAuthenticated() && (userDoc == userEmail() || isInitialAdmin() || isAdmin());
+      // Listagem completa (list), criação, atualização e exclusão somente para Administradores
+      allow list, create, update, delete: if isAuthenticated() && (isInitialAdmin() || isAdmin());
     }
 
-    // Regra Geral para Todas as Outras Coleções (contas, lançamentos, projetos, etc.)
-    match /{document=**} {
-      // Leitura: Permitida para qualquer usuário devidamente autorizado (inclui Visualizadores)
-      allow read: if isAuthenticated() && isUsuarioAutorizado();
+    // Coleções Operacionais Corporativas MT Solar
+    match /contas_bancarias/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
 
-      // Escrita (Criar, Atualizar, Deletar): Exige autenticação e perfil de Administrador
-      allow write: if isAuthenticated() && isUsuarioAutorizado() && isAdmin();
+    match /categorias/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
+    match /contatos/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
+    match /projetos/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
+    match /lancamentos/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
+    match /funcionarios/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
+    match /lancamentos_folha/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
+    match /configuracoes/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
+    match /historico_auditoria/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
+    // Nega por padrão qualquer outra coleção não declarada
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

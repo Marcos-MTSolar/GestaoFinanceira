@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { PrivacyProvider } from './context/PrivacyContext';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar, PaginaId } from './components/Sidebar';
 import { Header } from './components/Header';
 import { MobileBottomNav } from './components/MobileBottomNav';
@@ -142,10 +143,12 @@ const AppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <PrivacyProvider>
-        <AppContent />
-      </PrivacyProvider>
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <PrivacyProvider>
+          <AppContent />
+        </PrivacyProvider>
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }

@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Logo } from '../components/Logo';
 import { 
-  ShieldCheck, 
   Lock, 
   AlertCircle, 
   CheckCircle2,
@@ -17,33 +16,16 @@ export const Login: React.FC = () => {
   const [carregando, setCarregando] = useState(false);
   const [mostrarCustom, setMostrarCustom] = useState(false);
 
-  const handleLoginGoogle = async (email?: string, nome?: string) => {
+  const handleLoginGoogle = async () => {
     setErro(null);
     setCarregando(true);
     try {
-      const res = await loginGoogle(email, nome);
+      const res = await loginGoogle();
       if (!res.sucesso && res.mensagem) {
         setErro(res.mensagem);
       }
     } catch (e: any) {
-      setErro(e.message || 'Falha ao autenticar.');
-    } finally {
-      setCarregando(false);
-    }
-  };
-
-  const handleLoginCustomSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!emailCustom.trim()) return;
-    setErro(null);
-    setCarregando(true);
-    try {
-      const res = await loginGoogle(emailCustom.trim(), emailCustom.split('@')[0]);
-      if (!res.sucesso && res.mensagem) {
-        setErro(res.mensagem);
-      }
-    } catch (e: any) {
-      setErro(e.message || 'Falha ao verificar e-mail.');
+      setErro(e?.message || 'Falha ao autenticar.');
     } finally {
       setCarregando(false);
     }
@@ -59,7 +41,7 @@ export const Login: React.FC = () => {
       {/* Cartão Principal do Login - Fundo Branco Limpo */}
       <div className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-200/90 p-8 sm:p-10 relative z-10 animate-in fade-in zoom-in-95 duration-200">
         
-        {/* LOGO DA MT SOLAR (Sempre sobre fundo branco ou claro) */}
+        {/* LOGO DA MT SOLAR (Sempre sobre fundo claro) */}
         <div className="flex justify-center mb-6">
           <div className="bg-white p-3 rounded-2xl border border-slate-100 shadow-xs">
             <Logo size="lg" withWhiteBadge={false} />
@@ -76,7 +58,7 @@ export const Login: React.FC = () => {
           </p>
         </div>
 
-        {/* Mensagem de Erro (se email não autorizado ou falha) */}
+        {/* Mensagem de Erro (se email não autorizado) */}
         {erro && (
           <div className="mb-6 p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start gap-2.5 animate-in shake">
             <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -87,10 +69,10 @@ export const Login: React.FC = () => {
           </div>
         )}
 
-        {/* BOTÃO PRINCIPAL DE LOGIN COM GOOGLE (POPUP FIREBASE AUTH) */}
+        {/* BOTÃO PRINCIPAL DE LOGIN COM GOOGLE */}
         <div className="space-y-4">
           <button
-            onClick={() => handleLoginGoogle()}
+            onClick={handleLoginGoogle}
             disabled={carregando}
             className="w-full flex items-center justify-center gap-3 bg-[#003064] hover:bg-[#00204A] text-white py-3.5 px-4 rounded-xl font-semibold text-sm shadow-md transition-all group border-b-4 border-[#FCBC00] active:scale-[0.99] disabled:opacity-60 cursor-pointer"
           >
@@ -120,58 +102,6 @@ export const Login: React.FC = () => {
             )}
             <span>{carregando ? 'Autenticando...' : 'Entrar com Google'}</span>
           </button>
-
-          {/* Opção para alternar para perfil de teste / visualizador */}
-          <div className="pt-2">
-            <button
-              onClick={() => handleLoginGoogle('consultoria@mtsolar.com.br', 'Consultor Externo')}
-              disabled={carregando}
-              className="w-full py-2.5 px-3 rounded-xl border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
-            >
-              <ShieldCheck className="w-4 h-4 text-[#1A4A85]" />
-              <span>Entrar como Visualizador (Modo Leitura)</span>
-            </button>
-          </div>
-
-          {/* Testar outro e-mail (validação de e-mail não autorizado) */}
-          <div className="pt-1 text-center">
-            <button
-              type="button"
-              onClick={() => setMostrarCustom(!mostrarCustom)}
-              className="text-[11px] text-[#1A4A85] hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
-            >
-              <KeyRound className="w-3 h-3" />
-              {mostrarCustom ? 'Ocultar login alternativo' : 'Testar outro e-mail corporativo'}
-            </button>
-          </div>
-
-          {mostrarCustom && (
-            <form onSubmit={handleLoginCustomSubmit} className="pt-2 space-y-2 animate-in fade-in">
-              <label className="block text-[11px] font-semibold text-slate-600">
-                E-mail para teste de autorização:
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="email"
-                  value={emailCustom}
-                  onChange={(e) => setEmailCustom(e.target.value)}
-                  placeholder="ex: outro@gmail.com"
-                  className="flex-1 px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-[#003064]"
-                  required
-                />
-                <button
-                  type="submit"
-                  disabled={carregando}
-                  className="px-3 py-2 bg-[#003064] text-white text-xs font-semibold rounded-lg hover:bg-[#00204A] cursor-pointer disabled:opacity-60"
-                >
-                  Verificar
-                </button>
-              </div>
-              <p className="text-[10px] text-slate-400">
-                Se o e-mail não estiver na lista em Configurações, o acesso será bloqueado pelas regras de segurança.
-              </p>
-            </form>
-          )}
         </div>
 
         {/* Políticas de Segurança e Regras do App */}
@@ -183,11 +113,11 @@ export const Login: React.FC = () => {
           <ul className="space-y-1.5 text-[11px] text-slate-500">
             <li className="flex items-center gap-2">
               <CheckCircle2 className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
-              <span>Apenas e-mails previamente autorizados possuem acesso</span>
+              <span>Acesso restrito a e-mails autorizados da MT Solar</span>
             </li>
             <li className="flex items-center gap-2">
               <CheckCircle2 className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />
-              <span>O primeiro usuário a acessar torna-se o Administrador</span>
+              <span>O administrador da conta gerencia as permissões RBAC</span>
             </li>
             <li className="flex items-center gap-2">
               <CheckCircle2 className="w-3.5 h-3.5 text-[#16A34A] shrink-0" />

@@ -1,28 +1,24 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 09/10/2026 10:19:30
+**Última Atualização:** 09/10/2026 11:04:00
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
-  - Migração completa da persistência local para o Firebase Firestore e Firebase Auth com login via Google (`signInWithPopup`).
-  - Atualização do controle de acesso para definir o e-mail administrador inicial fixo `mtsolar.energia@gmail.com` tanto no código quanto no `firestore.rules`.
-  - Confirmação de ignoramento do `.env.local` no `.gitignore` (`git check-ignore .env.local` OK) e remoção de qualquer chave nos arquivos versionados.
-  - Confirmação da presença da imagem oficial `public/logo.png` (usada no `Logo.tsx` em fundo claro).
-  - Remoção do `bun.lock` e adição do `.npmrc` com `legacy-peer-deps=true` para garantir builds consistentes na Vercel via `npm`.
-  - Reescrita do `firestore.rules` garantindo regras seguras com `mtsolar.energia@gmail.com` como administrador inicial.
-  - Execução bem-sucedida do `npm run build`.
+  - Restauração de todas as 35 funções originais de cálculo e estatísticas no `src/services/storage.ts` alimentadas por cache síncrono via `onSnapshot` do Firestore.
+  - Implementação do `ErrorBoundary` em `src/components/ErrorBoundary.tsx` e envolvimento da aplicação em `src/App.tsx`.
+  - Tratamento resiliente no `AuthContext.tsx`: bypass imediato sem Firestore para `mtsolar.energia@gmail.com`, tratamento gracioso de e-mails não autorizados (`permission-denied`), encerramento de sessão sem exceções não tratadas para popups fechados pelo usuário e inicialização/desativação dos listeners do storage atrelada ao ciclo de vida do usuário autenticado.
+  - Ajuste de `firestore.rules` com acesso por documento próprio em `usuarios_autorizados` e admin inicial fixo `mtsolar.energia@gmail.com` com `email_verified == true`.
+  - Atualização da página `src/pages/Login.tsx` removendo o botão/modo de visualizador sem login e ajustando textos de permissão.
+  - Inclusão da meta tag `<meta name="mobile-web-app-capable" content="yes">` em `index.html`.
+  - Verificação com `npx tsc --noEmit` e `npm run build` bem-sucedidos.
 - **Arquivos modificados/criados:**
-  - `src/lib/firebase.ts` (criado)
-  - `src/services/storage.ts` (reescrito para Firestore com real-time e paginação)
-  - `src/context/AuthContext.tsx` (atualizado com o e-mail admin fixo `mtsolar.energia@gmail.com`)
-  - `src/pages/Login.tsx` (atualizado para acionar login com Google via Firebase Auth)
-  - `src/pages/Configuracoes.tsx` (adicionado card e botão "Importar dados locais para a nuvem")
-  - `src/components/Logo.tsx` (utilizando `public/logo.png` em fundo claro)
-  - `firestore.rules` (regras seguras atualizadas com `mtsolar.energia@gmail.com` como admin inicial)
-  - `.npmrc` (criado com `legacy-peer-deps=true`)
-  - `bun.lock` (removido para manter apenas o `package-lock.json`)
-  - `firebase.json` e `firestore.indexes.json` (criados)
-  - `.env.example` (criado sem valores confidenciais)
-  - `package.json` e `package-lock.json` (instalação de dependências)
+  - `src/services/storage.ts` (restauradas todas as funções síncronas de cálculo e relatórios, adicionado gerenciamento de ciclo de vida de listeners)
+  - `src/components/ErrorBoundary.tsx` (componente de classe criado para capturar exceções React com UI amigável em português)
+  - `src/App.tsx` (envolvido com `ErrorBoundary`)
+  - `src/context/AuthContext.tsx` (refatorado tratamento de admin fixo, autorização, permission-denied e listeners)
+  - `src/pages/Login.tsx` (removido botão de visualizador sem login e atualizada mensagem de orientação)
+  - `firestore.rules` (regras alinhadas ao código com permissão individual para `usuarios_autorizados`)
+  - `index.html` (adicionada meta tag `mobile-web-app-capable`)
+  - `RESUMO_MESTRE.md` (atualizado)
 
 ---
 
