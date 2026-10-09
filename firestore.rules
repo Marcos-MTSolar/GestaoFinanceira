@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Regra auxiliar: Verifica se o usuário está autenticado
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Regra auxiliar: Verifica se o usuário autenticado está na lista de usuários autorizados
+    function isAuthorizedUser() {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/mtsolar_usuarios_autorizados/$(request.auth.uid)) ||
+        exists(/databases/$(database)/documents/mtsolar_usuarios_autorizados/$(request.auth.token.email))
+      );
+    }
+
+    // Regra auxiliar: Verifica se o usuário possui papel de 'administrador'
+    function isAdmin() {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/mtsolar_usuarios_autorizados/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/mtsolar_usuarios_autorizados/$(request.auth.uid)).data.papel == 'administrador') ||
+        (exists(/databases/$(database)/documents/mtsolar_usuarios_autorizados/$(request.auth.token.email)) &&
+         get(/databases/$(database)/documents/mtsolar_usuarios_autorizados/$(request.auth.token.email)).data.papel == 'administrador')
+      );
+    }
+
+    // Coleção de usuários autorizados
+    match /mtsolar_usuarios_autorizados/{userDoc} {
+      // Qualquer usuário autenticado na lista pode ler a lista de autorizados
+      allow read: if isAuthorizedUser();
+      // Apenas administradores podem adicionar, alterar papel ou remover usuários
+      allow write: if isAdmin();
+    }
+
+    // Coleção de contas bancárias
+    match /mtsolar_contas_bancarias/{contaId} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+
+    // Coleção de lançamentos financeiros
+    match /mtsolar_lancamentos/{lancamentoId} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+
+    // Coleção de categorias de energia solar
+    match /mtsolar_categorias/{categoriaId} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+
+    // Coleção de contatos (clientes, fornecedores, parceiros)
+    match /mtsolar_contatos/{contatoId} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+
+    // Coleção de projetos e obras fotovoltaicas
+    match /mtsolar_projetos/{projetoId} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+
+    // Coleção de colaboradores e equipes
+    match /mtsolar_funcionarios/{funcionarioId} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+
+    // Coleção de eventos de folha de pagamento
+    match /mtsolar_lancamentos_folha/{folhaId} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+
+    // Coleção de parâmetros e configurações corporativas
+    match /mtsolar_configuracoes/{configDoc} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+
+    // Coleção de histórico de alterações / auditoria
+    match /mtsolar_historico_alteracoes/{historicoId} {
+      allow read: if isAuthorizedUser();
+      allow create: if isAuthorizedUser();
+      allow update, delete: if isAdmin();
+    }
+
+    // Bloqueia qualquer outro acesso não especificado
+    match /{document=**} {
+      allow read: if isAuthorizedUser();
+      allow write: if isAdmin();
+    }
+  }
+}

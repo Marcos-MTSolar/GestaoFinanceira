@@ -1,0 +1,6 @@
+{
+  "name": "MT Solar - Gestão Financeira Empresarial",
+  "description": "Sistema de gestão financeira empresarial para a MT Solar – Energia renovável. Controle de fluxo de caixa, contas bancárias, contas a pagar e receber, projetos e relatórios.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

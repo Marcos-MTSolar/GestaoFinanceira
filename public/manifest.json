@@ -1,0 +1,26 @@
+{
+  "name": "MT Solar - Gestão Financeira Empresarial",
+  "short_name": "MT Solar",
+  "description": "Sistema de gestão financeira empresarial para a MT Solar – Energia renovável. Controle de fluxo de caixa, contas bancárias, contas a pagar e receber, projetos e relatórios.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#003064",
+  "theme_color": "#003064",
+  "lang": "pt-BR",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/logo-icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
