@@ -21,7 +21,10 @@ import {
   OcorrenciaFuncionario,
   RegistroAuditoria,
   AlertaItem,
+  ResultadoCalculoFolha,
+  ItemDescontoFolha,
 } from '../types';
+import { calcularDescontosRecorrentes } from '../utils/descontos';
 
 // Nomes das coleções do Firestore
 const FIRESTORE_COLLECTIONS = {
@@ -685,11 +688,17 @@ export const dbService = {
   },
 
   deleteLancamento(id: string, _escopo: string = 'so_esta'): void {
+    const target = cacheLancamentos.find((l) => l.id === id);
+
     deleteDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, id)).catch((e) =>
       console.warn('Erro async deleteLancamento:', e)
     );
     cacheLancamentos = cacheLancamentos.filter((l) => l.id !== id);
     notify('lancamentos');
+
+    if (target?.origem === 'folha' && target.folha_id) {
+      this.removerFolhaOrfa(target.folha_id);
+    }
   },
 
   duplicarLancamento(id: string): Lancamento | null {
@@ -729,7 +738,11 @@ export const dbService = {
       juros_multa: juros > 0 ? juros : undefined,
       desconto: desc > 0 ? desc : undefined,
     };
-    return this.saveLancamento(atualizado);
+    const salva = this.saveLancamento(atualizado);
+    if (salva.origem === 'folha' && salva.folha_id) {
+      this.espelharDespesaNaFolha(salva);
+    }
+    return salva;
   },
 
   liquidarLancamentosEmLote(params: { ids: string[]; contaId: string; dataPagamento?: string }): number {
@@ -775,7 +788,50 @@ export const dbService = {
       status: 'pendente',
       data_pagamento: null,
     };
-    return this.saveLancamento(atualizado);
+    const salva = this.saveLancamento(atualizado);
+    if (salva.origem === 'folha' && salva.folha_id) {
+      this.espelharDespesaNaFolha(salva);
+    }
+    return salva;
+  },
+
+  espelharDespesaNaFolha(desp: Lancamento): void {
+    if (desp.origem !== 'folha' || !desp.folha_id) {
+      return;
+    }
+
+    const folha = cacheLancamentosFolha.find((l) => l.id === desp.folha_id);
+    if (!folha) {
+      return;
+    }
+
+    const novoStatus: 'pago' | 'pendente' = desp.status === 'pago' ? 'pago' : 'pendente';
+    const func = this.getFuncionarioById(folha.funcionario_id);
+    const nomeDoFuncionario = func ? func.nome : '';
+
+    const folhaAtualizada: LancamentoFolha = {
+      ...folha,
+      status: novoStatus,
+      data_pagamento: desp.data_pagamento,
+      conta_id: desp.conta_id,
+      lancamento_id: desp.id,
+    };
+
+    this.saveLancamentoFolha(folhaAtualizada);
+
+    if (novoStatus === 'pago') {
+      this.registrarAuditoria(
+        'folha',
+        'pagamento',
+        `Pagamento da folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia}) no valor de R$ ${folha.valor.toFixed(2)}`
+      );
+    } else {
+      this.registrarAuditoria(
+        'folha',
+        'estorno',
+        `Estorno da folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia}) no valor de R$ ${folha.valor.toFixed(2)}`
+      );
+    }
   },
 
   // Configurações
@@ -860,33 +916,266 @@ export const dbService = {
     return item;
   },
 
-  deleteLancamentoFolha(id: string): void {
+  garantirDespesaDaFolha(folha: LancamentoFolha): Lancamento | null {
+    if (folha.tipo === 'desconto' || folha.status === 'cancelado') {
+      return null;
+    }
+    if (folha.valor <= 0) {
+      return null;
+    }
+
+    const id = folha.lancamento_id || `desp-${folha.id}`;
+    const despExistente = cacheLancamentos.find((l) => l.id === id);
+
+    if (despExistente) {
+      if (despExistente.status === 'pago') {
+        if (folha.lancamento_id !== id) {
+          this.saveLancamentoFolha({ ...folha, lancamento_id: id });
+        }
+        return despExistente;
+      }
+
+      const func = this.getFuncionarioById(folha.funcionario_id);
+      const nomeDoFuncionario = func ? func.nome : '';
+      const despAtualizada: Lancamento = {
+        ...despExistente,
+        descricao: `Folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia})`,
+        valor: folha.valor,
+        data_vencimento: folha.data_prevista,
+        conta_id: folha.conta_id,
+        funcionario_id: folha.funcionario_id,
+        folha_id: folha.id,
+      };
+      const salva = this.saveLancamento(despAtualizada);
+      if (folha.lancamento_id !== id) {
+        this.saveLancamentoFolha({ ...folha, lancamento_id: id });
+      }
+      return salva;
+    }
+
+    if (folha.status === 'pago') {
+      return null;
+    }
+
+    const cats = this.getCategorias();
+    const catSalarios = cats.find((c) => c.nome.toLowerCase() === 'salários' || c.nome.toLowerCase() === 'salarios');
+    const categoriaId = catSalarios ? catSalarios.id : 'cat-des-4';
+
+    const func = this.getFuncionarioById(folha.funcionario_id);
+    const nomeDoFuncionario = func ? func.nome : '';
+
+    const novaDespesa: Lancamento = {
+      id,
+      tipo: 'despesa',
+      descricao: `Folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia})`,
+      valor: folha.valor,
+      data_vencimento: folha.data_prevista,
+      data_pagamento: null,
+      status: 'pendente',
+      conta_id: folha.conta_id,
+      categoria_id: categoriaId,
+      forma_pagamento: 'transferencia',
+      recorrencia: 'nenhuma',
+      origem: 'folha',
+      funcionario_id: folha.funcionario_id,
+      folha_id: folha.id,
+      criado_em: new Date().toISOString(),
+    };
+
+    const salva = this.saveLancamento(novaDespesa);
+    if (folha.lancamento_id !== id) {
+      this.saveLancamentoFolha({ ...folha, lancamento_id: id });
+    }
+    return salva;
+  },
+
+  criarLancamentoFolha(item: LancamentoFolha): LancamentoFolha {
+    if (item.tipo !== 'desconto' && item.valor <= 0) {
+      const itemQuitado: LancamentoFolha = {
+        ...item,
+        status: 'pago',
+        data_pagamento: item.data_prevista,
+        observacoes: (item.observacoes ? item.observacoes + ' ' : '') + 'Quitado por compensação (líquido zero).',
+      };
+      return this.saveLancamentoFolha(itemQuitado);
+    }
+
+    const folhaSalva = this.saveLancamentoFolha(item);
+    if (folhaSalva.tipo !== 'desconto' && folhaSalva.status === 'pendente') {
+      const desp = this.garantirDespesaDaFolha(folhaSalva);
+      if (desp && folhaSalva.lancamento_id !== desp.id) {
+        folhaSalva.lancamento_id = desp.id;
+      }
+    }
+    return folhaSalva;
+  },
+
+  atualizarLancamentoFolhaPendente(
+    id: string,
+    campos: Partial<Pick<LancamentoFolha, 'valor' | 'descricao' | 'data_prevista' | 'observacoes'>>
+  ): boolean {
+    const folha = cacheLancamentosFolha.find((l) => l.id === id);
+    if (!folha || folha.status !== 'pendente') return false;
+
+    const atualizada = this.saveLancamentoFolha({
+      ...folha,
+      ...campos,
+    });
+
+    if (atualizada.tipo !== 'desconto') {
+      this.garantirDespesaDaFolha(atualizada);
+    }
+    return true;
+  },
+
+  prepararDespesasDaFolha(folhaIds: string[]): Lancamento[] {
+    const despesas: Lancamento[] = [];
+    for (const id of folhaIds) {
+      const folha = cacheLancamentosFolha.find((l) => l.id === id);
+      if (folha && folha.status === 'pendente' && folha.tipo !== 'desconto') {
+        const desp = this.garantirDespesaDaFolha(folha);
+        if (desp) despesas.push(desp);
+      }
+    }
+    return despesas;
+  },
+
+  vincularFolhasPendentesSemDespesa(): number {
+    if (!this.isCarregado()) return 0;
+    let vinculadas = 0;
+    for (const folha of cacheLancamentosFolha) {
+      if (folha.status === 'pendente' && folha.tipo !== 'desconto' && folha.valor > 0) {
+        const temDespesa =
+          (folha.lancamento_id && cacheLancamentos.some((d) => d.id === folha.lancamento_id)) ||
+          cacheLancamentos.some((d) => d.id === `desp-${folha.id}`);
+        if (!temDespesa) {
+          const desp = this.garantirDespesaDaFolha(folha);
+          if (desp) vinculadas++;
+        }
+      }
+    }
+    return vinculadas;
+  },
+
+  contarFolhasPagasSemDespesa(): number {
+    let contagem = 0;
+    for (const folha of cacheLancamentosFolha) {
+      if (folha.status === 'pago' && folha.tipo !== 'desconto' && folha.valor > 0) {
+        const temDespesa =
+          (folha.lancamento_id && cacheLancamentos.some((d) => d.id === folha.lancamento_id)) ||
+          cacheLancamentos.some((d) => d.id === `desp-${folha.id}`);
+        if (!temDespesa) {
+          contagem++;
+        }
+      }
+    }
+    return contagem;
+  },
+
+  removerRegistroFolhaBruto(id: string): void {
     deleteDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS_FOLHA, id)).catch((e) =>
-      console.warn('Erro async deleteLancamentoFolha:', e)
+      console.warn('Erro async removerRegistroFolhaBruto:', e)
     );
     cacheLancamentosFolha = cacheLancamentosFolha.filter((l) => l.id !== id);
     notify('folha');
   },
 
-  liquidarLancamentoFolha(id: string, contaId: string, dataPagamento?: string): void {
-    const folha = cacheLancamentosFolha.find((l) => l.id === id);
-    if (!folha) return;
-    const atualizado: LancamentoFolha = {
-      ...folha,
-      status: 'pago',
-      conta_id: contaId,
-      data_pagamento: dataPagamento || new Date().toISOString().split('T')[0],
-    };
-    this.saveLancamentoFolha(atualizado);
+  removerFolhaOrfa(folhaId: string): void {
+    const folha = cacheLancamentosFolha.find((l) => l.id === folhaId);
+
+    const adiantamentosComAbatimento = cacheLancamentosFolha.filter(
+      (l) => l.tipo === 'adiantamento' && (l.abatimentos || []).some((a) => a.folha_id === folhaId)
+    );
+
+    for (const ad of adiantamentosComAbatimento) {
+      const novosAbatimentos = (ad.abatimentos || []).filter((a) => a.folha_id !== folhaId);
+      const somaAbatimentos = novosAbatimentos.reduce((sum, a) => sum + a.valor, 0);
+      const saldoEmAberto = +(ad.valor - somaAbatimentos).toFixed(2);
+      const descontadoTotal = saldoEmAberto <= 0.001;
+
+      this.saveLancamentoFolha({
+        ...ad,
+        abatimentos: novosAbatimentos,
+        descontado_em_folha: descontadoTotal,
+      });
+    }
+
+    this.removerRegistroFolhaBruto(folhaId);
+
+    if (folha) {
+      const func = this.getFuncionarioById(folha.funcionario_id);
+      const nomeDoFuncionario = func ? func.nome : '';
+      this.registrarAuditoria(
+        'folha',
+        'exclusao',
+        `Exclusão da folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia}) no valor de R$ ${folha.valor.toFixed(2)}`
+      );
+    }
   },
 
-  liquidarFolhaEmLote(folhaIds: string[], contaId: string, dataPagamento: string): { quitados: number; total: number } {
-    let quitados = 0;
-    for (const id of folhaIds) {
-      this.liquidarLancamentoFolha(id, contaId, dataPagamento);
-      quitados++;
+  excluirLancamentoFolha(id: string): void {
+    const folha = cacheLancamentosFolha.find((l) => l.id === id);
+    if (!folha) return;
+
+    if (folha.lancamento_id && cacheLancamentos.some((l) => l.id === folha.lancamento_id)) {
+      this.deleteLancamento(folha.lancamento_id);
+    } else {
+      this.removerFolhaOrfa(id);
     }
-    return { quitados, total: folhaIds.length };
+  },
+
+  deleteLancamentoFolha(id: string): void {
+    this.excluirLancamentoFolha(id);
+  },
+
+  // uso programático; a interface sempre passa pelo ModalPagarReceber, que valida saldo e cheque especial
+  liquidarLancamentoFolha(
+    id: string,
+    contaId: string,
+    dataPagamento?: string
+  ): { sucesso: boolean; mensagem?: string } {
+    const folha = cacheLancamentosFolha.find((l) => l.id === id);
+    if (!folha) {
+      return { sucesso: false, mensagem: 'Lançamento de folha não encontrado.' };
+    }
+    if (folha.status === 'pago') {
+      return { sucesso: false, mensagem: 'Lançamento de folha já se encontra pago.' };
+    }
+    if (folha.tipo === 'desconto') {
+      return { sucesso: false, mensagem: 'Lançamentos de folha do tipo desconto não geram despesa financeira.' };
+    }
+
+    const desp = this.garantirDespesaDaFolha(folha);
+    if (!desp) {
+      return { sucesso: false, mensagem: 'Não foi possível garantir a despesa associada a esta folha.' };
+    }
+
+    const res = this.liquidarLancamento({ id: desp.id, contaId, dataPagamento });
+    if (!res) {
+      return { sucesso: false, mensagem: 'Não foi possível liquidar a despesa no financeiro.' };
+    }
+
+    return { sucesso: true };
+  },
+
+  liquidarFolhaEmLote(
+    folhaIds: string[],
+    contaId: string,
+    dataPagamento: string
+  ): { quitados: number; total: number; falhas: Array<{ id: string; mensagem: string }> } {
+    let quitados = 0;
+    const falhas: Array<{ id: string; mensagem: string }> = [];
+
+    for (const id of folhaIds) {
+      const res = this.liquidarLancamentoFolha(id, contaId, dataPagamento);
+      if (res.sucesso) {
+        quitados++;
+      } else {
+        falhas.push({ id, mensagem: res.mensagem || 'Falha ao liquidar lançamento de folha.' });
+      }
+    }
+
+    return { quitados, total: folhaIds.length, falhas };
   },
 
   adicionarOcorrencia(funcionarioId: string, ocorrencia: OcorrenciaFuncionario): void {
@@ -894,6 +1183,158 @@ export const dbService = {
     if (!func) return;
     const ocorrencias = func.ocorrencias ? [ocorrencia, ...func.ocorrencias] : [ocorrencia];
     this.saveFuncionario({ ...func, ocorrencias });
+  },
+
+  calcularFolhaFuncionario(
+    func: Funcionario,
+    competencia: string,
+    periodo?: 'mensal' | 'q1' | 'q2',
+    adiantamentoIdsSelecionados?: string[]
+  ): ResultadoCalculoFolha {
+    const salarioBase = func.salario_base || 0;
+
+    const adicionais =
+      func.adicional_tipo === 'periculosidade' || func.adicional_tipo === 'insalubridade'
+        ? +(salarioBase * ((func.adicional_percentual || 0) / 100)).toFixed(2)
+        : +(func.adicional_valor_fixo || 0).toFixed(2);
+
+    const lancsComp = cacheLancamentosFolha.filter(
+      (l) => l.funcionario_id === func.id && l.competencia === competencia
+    );
+
+    const tiposProventoAvulsoValidos = [
+      'comissao',
+      'hora_extra',
+      'bonus',
+      'vale',
+      'reembolso',
+      'ferias',
+      'decimo_terceiro',
+      'rescisao',
+      'outro',
+    ];
+
+    const proventosAvulsos = +lancsComp
+      .filter((l) => l.tipo_operacao === 'provento' && l.tipo !== 'salario' && tiposProventoAvulsoValidos.includes(l.tipo))
+      .reduce((sum, l) => sum + (l.valor || 0), 0)
+      .toFixed(2);
+
+    const bruto = +(salarioBase + adicionais).toFixed(2);
+
+    const lancsDesconto = lancsComp.filter((l) => l.tipo === 'desconto');
+    const descontos: ItemDescontoFolha[] = lancsDesconto.map((l) => ({
+      chave: l.id,
+      descricao: l.descricao || 'Desconto',
+      valor: l.valor || 0,
+    }));
+
+    const recorrentes = calcularDescontosRecorrentes(func.descontos_recorrentes, { salarioBase, bruto });
+    for (const rec of recorrentes) {
+      descontos.push({
+        chave: rec.chave,
+        descricao: rec.descricao,
+        valor: rec.valor,
+      });
+    }
+
+    const totalDescontos = +descontos.reduce((sum, d) => sum + d.valor, 0).toFixed(2);
+
+    const salExistente = lancsComp.find((l) => l.tipo === 'salario');
+
+    let adiantamentosElegiveis = cacheLancamentosFolha.filter((l) => {
+      if (l.funcionario_id !== func.id || l.tipo !== 'adiantamento' || l.status !== 'pago') return false;
+      const somaAbat = (l.abatimentos || []).reduce((sum, a) => sum + a.valor, 0);
+      const saldoAberto = +(l.valor - somaAbat).toFixed(2);
+
+      const abatidoNesteSalario = salExistente
+        ? (l.abatimentos || []).some((a) => a.folha_id === salExistente.id)
+        : false;
+
+      return (!l.descontado_em_folha && saldoAberto > 0) || abatidoNesteSalario;
+    });
+
+    if (adiantamentoIdsSelecionados && adiantamentoIdsSelecionados.length > 0) {
+      adiantamentosElegiveis = adiantamentosElegiveis.filter((a) =>
+        adiantamentoIdsSelecionados.includes(a.id)
+      );
+    }
+
+    const somaAdiantamentosDisponiveis = adiantamentosElegiveis.reduce((sum, a) => {
+      if (salExistente) {
+        const abatimentoOutros = (a.abatimentos || []).filter((x) => x.folha_id !== salExistente.id).reduce((s, x) => s + x.valor, 0);
+        const disponivel = +(a.valor - abatimentoOutros).toFixed(2);
+        return sum + Math.max(0, disponivel);
+      } else {
+        const somaAbat = (a.abatimentos || []).reduce((s, x) => s + x.valor, 0);
+        return sum + Math.max(0, +(a.valor - somaAbat).toFixed(2));
+      }
+    }, 0);
+
+    const maxAbatimento = Math.max(0, +(bruto - totalDescontos).toFixed(2));
+    const adiantamentosAbatidos = +Math.min(somaAdiantamentosDisponiveis, maxAbatimento).toFixed(2);
+
+    const liquido = Math.max(0, +(bruto - totalDescontos - adiantamentosAbatidos).toFixed(2));
+
+    return {
+      salarioBase,
+      adicionais,
+      proventosAvulsos,
+      bruto,
+      descontos,
+      totalDescontos,
+      adiantamentosAbatidos,
+      liquido,
+      adiantamentosDetalhados: adiantamentosElegiveis,
+    };
+  },
+
+  vincularAdiantamentos(
+    salarioId: string,
+    funcionarioId: string,
+    competencia: string,
+    valorAbater: number,
+    adiantamentoIdsSelecionados?: string[]
+  ): void {
+    if (valorAbater <= 0) return;
+
+    let emAberto = cacheLancamentosFolha.filter((l) => {
+      if (l.funcionario_id !== funcionarioId || l.tipo !== 'adiantamento' || l.status !== 'pago') return false;
+      const somaAbat = (l.abatimentos || [])
+        .filter((a) => a.folha_id !== salarioId)
+        .reduce((sum, a) => sum + a.valor, 0);
+      const saldoRemanescente = +(l.valor - somaAbat).toFixed(2);
+      return !l.descontado_em_folha && saldoRemanescente > 0;
+    });
+
+    if (adiantamentoIdsSelecionados && adiantamentoIdsSelecionados.length > 0) {
+      emAberto = emAberto.filter((a) => adiantamentoIdsSelecionados.includes(a.id));
+    }
+
+    let restante = valorAbater;
+    for (const ad of emAberto) {
+      if (restante <= 0) break;
+
+      const abatimentosOutros = (ad.abatimentos || []).filter((a) => a.folha_id !== salarioId);
+      const saldoDisponivel = +(ad.valor - abatimentosOutros.reduce((sum, a) => sum + a.valor, 0)).toFixed(2);
+      if (saldoDisponivel <= 0) continue;
+
+      const valorAbaterNeste = +Math.min(saldoDisponivel, restante).toFixed(2);
+      if (valorAbaterNeste > 0) {
+        const novosAbatimentos = [...abatimentosOutros, { folha_id: salarioId, valor: valorAbaterNeste }];
+        const totalAbatido = novosAbatimentos.reduce((sum, a) => sum + a.valor, 0);
+        const saldoFinal = +(ad.valor - totalAbatido).toFixed(2);
+        const descontadoTotal = saldoFinal <= 0.001;
+
+        this.saveLancamentoFolha({
+          ...ad,
+          abatimentos: novosAbatimentos,
+          descontado_em_folha: descontadoTotal,
+          adiantamento_vinculado_id: salarioId,
+        });
+
+        restante = +(restante - valorAbaterNeste).toFixed(2);
+      }
+    }
   },
 
   gerarFolhaDoMes(competencia: string, dataVencimento: string, contaId: string): { gerados: number; totalValor: number } {
@@ -906,23 +1347,42 @@ export const dbService = {
         (l) => l.funcionario_id === func.id && l.competencia === competencia && l.tipo === 'salario'
       );
       if (!existe) {
+        const calcFolha = this.calcularFolhaFuncionario(func, competencia);
+        const recorrentes = calcularDescontosRecorrentes(func.descontos_recorrentes, {
+          salarioBase: calcFolha.salarioBase,
+          bruto: calcFolha.bruto,
+        });
+
+        const partesObs: string[] = [];
+        if (calcFolha.adiantamentosAbatidos > 0) {
+          partesObs.push(`Dedução de R$ ${calcFolha.adiantamentosAbatidos.toFixed(2)} em adiantamentos.`);
+        }
+        if (recorrentes.length > 0) {
+          partesObs.push(`Descontos: ${recorrentes.map((r) => `${r.descricao} R$ ${r.valor}`).join('; ')}.`);
+        }
+        const obsFinal = partesObs.length > 0 ? partesObs.join(' ') : undefined;
+
         const item: LancamentoFolha = {
           id: `folha-${Date.now()}-${func.id}`,
           funcionario_id: func.id,
           tipo: 'salario',
           descricao: `Salário Mensal ${func.cargo}`,
           competencia,
-          valor: func.salario_base,
+          valor: calcFolha.liquido,
           tipo_operacao: 'provento',
           data_prevista: dataVencimento,
           data_pagamento: null,
           status: 'pendente',
           conta_id: contaId,
+          ...(obsFinal ? { observacoes: obsFinal } : {}),
           criado_em: new Date().toISOString(),
         };
-        this.saveLancamentoFolha(item);
+        const folhaSalva = this.criarLancamentoFolha(item);
+        if (calcFolha.adiantamentosAbatidos > 0) {
+          this.vincularAdiantamentos(folhaSalva.id, func.id, competencia, calcFolha.adiantamentosAbatidos);
+        }
         gerados++;
-        totalValor += func.salario_base;
+        totalValor += calcFolha.liquido;
       }
     }
     return { gerados, totalValor };
@@ -2036,6 +2496,7 @@ export const dbService = {
 
     const totaisPorTipo: Record<string, number> = {};
     let saldoAdiantamentosAberto = 0;
+    const adiantamentosEmAberto: LancamentoFolha[] = [];
     let totalPagoMes = 0;
     let totalPagoAno = 0;
 
@@ -2044,6 +2505,7 @@ export const dbService = {
 
       if (l.tipo === 'adiantamento' && !l.descontado_em_folha && l.status === 'pago') {
         saldoAdiantamentosAberto += l.valor;
+        adiantamentosEmAberto.push(l);
       }
 
       if (l.status === 'pago') {
@@ -2061,6 +2523,7 @@ export const dbService = {
       lancamentos: todos,
       totaisPorTipo,
       saldoAdiantamentosAberto: +saldoAdiantamentosAberto.toFixed(2),
+      adiantamentosEmAberto,
       totalPagoMes: +totalPagoMes.toFixed(2),
       totalPagoAno: +totalPagoAno.toFixed(2),
     };

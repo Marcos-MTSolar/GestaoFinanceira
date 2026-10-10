@@ -4,6 +4,8 @@ import { useAuth } from '../context/AuthContext';
 import { usePrivacy } from '../context/PrivacyContext';
 import { formatarMoeda, formatarDataBR, formatarCpfCnpj, formatarTelefone, obterHojeISO } from '../utils/formatters';
 import { exportarFolhaCSV } from '../utils/csvExporter';
+import { dividirQuinzenas, dataDoDiaNaCompetencia, ConfigQuinzenal } from '../utils/quinzena';
+import { calcularDescontosRecorrentes } from '../utils/descontos';
 import {
   Funcionario,
   LancamentoFolha,
@@ -15,7 +17,8 @@ import {
   BeneficioFuncionario,
   OcorrenciaFuncionario,
   ContaBancaria,
-  Lancamento
+  Lancamento,
+  DescontoRecorrente,
 } from '../types';
 import { Modal } from '../components/Modal';
 import { ModalPagarReceber } from '../components/ModalPagarReceber';
@@ -145,7 +148,6 @@ export const Funcionarios: React.FC = () => {
   const [modalNovoLancFolhaAberto, setModalNovoLancFolhaAberto] = useState(false);
   const [modalPagarFolhaAberto, setModalPagarFolhaAberto] = useState(false);
   const [lancamentoParaPagar, setLancamentoParaPagar] = useState<Lancamento[]>([]);
-  const [folhaIdParaLiquidar, setFolhaIdParaLiquidar] = useState<string | null>(null);
 
   // Modal Pagar Todos em Lote (Folha do Mês)
   const [modalPagarTodosAberto, setModalPagarTodosAberto] = useState(false);
@@ -158,6 +160,9 @@ export const Funcionarios: React.FC = () => {
   // Cópia de PIX Feedback
   const [copiouPixId, setCopiouPixId] = useState<string | null>(null);
 
+  // F9: Pagamentos de folha sem despesa no caixa
+  const [folhasPagasSemDespesaCount, setFolhasPagasSemDespesaCount] = useState<number>(0);
+
   const carregarDados = () => {
     setFuncionarios(dbService.getFuncionarios());
     setLancamentosFolha(dbService.getLancamentosFolha());
@@ -167,7 +172,7 @@ export const Funcionarios: React.FC = () => {
   useEffect(() => {
     carregarDados();
     const unsubF = subscribe('funcionarios', carregarDados);
-    const unsubLF = subscribe('lancamentos_folha', carregarDados);
+    const unsubLF = subscribe('folha', carregarDados);
     const unsubC = subscribe('contas', carregarDados);
     const unsubL = subscribe('lancamentos', carregarDados);
 
@@ -178,6 +183,28 @@ export const Funcionarios: React.FC = () => {
       unsubL();
     };
   }, []);
+
+  // F9: Tenta vincular folhas pendentes e conta folhas pagas sem despesa (somente isAdmin)
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const executarVinculacaoEContagem = () => {
+      if (dbService.isCarregado()) {
+        dbService.vincularFolhasPendentesSemDespesa();
+        setFolhasPagasSemDespesaCount(dbService.contarFolhasPagasSemDespesa());
+      }
+    };
+
+    executarVinculacaoEContagem();
+
+    const unsubLF = subscribe('folha', executarVinculacaoEContagem);
+    const unsubL = subscribe('lancamentos', executarVinculacaoEContagem);
+
+    return () => {
+      unsubLF();
+      unsubL();
+    };
+  }, [isAdmin]);
 
   // Mantém funcionarioSelecionado atualizado quando a lista muda
   useEffect(() => {
@@ -199,14 +226,16 @@ export const Funcionarios: React.FC = () => {
       custoTotalEncargos += c.custoTotalMensal;
     });
 
-    // Lançamentos da competência ativa
-    const eventosComp = lancamentosFolha.filter(l => l.competencia === competenciaAtiva);
+    // Lançamentos da competência ativa (ignora tipo === 'desconto')
+    const eventosComp = lancamentosFolha.filter(
+      l => l.competencia === competenciaAtiva && l.tipo !== 'desconto'
+    );
     const totalPagoMes = eventosComp
       .filter(l => l.status === 'pago')
-      .reduce((acc, l) => acc + (l.tipo_operacao === 'provento' ? l.valor : -l.valor), 0);
+      .reduce((acc, l) => acc + l.valor, 0);
     const totalPendenteMes = eventosComp
       .filter(l => l.status === 'pendente')
-      .reduce((acc, l) => acc + (l.tipo_operacao === 'provento' ? l.valor : -l.valor), 0);
+      .reduce((acc, l) => acc + l.valor, 0);
 
     return {
       totalAtivos: ativos.length,
@@ -235,13 +264,33 @@ export const Funcionarios: React.FC = () => {
     });
   }, [funcionarios, filtroStatus, filtroSetor, filtroContrato, busca]);
 
-  // STATUS DO PAGAMENTO DO MÊS PARA CADA FUNCIONÁRIO
+  // E1: Auxiliar — parcelas de salário do funcionário na competência ativa (exceto canceladas, ordenadas por data_prevista)
+  const parcelasSalario = (funcionarioId: string): LancamentoFolha[] =>
+    lancamentosFolha
+      .filter(
+        l =>
+          l.funcionario_id === funcionarioId &&
+          l.competencia === competenciaAtiva &&
+          l.tipo === 'salario' &&
+          l.status !== 'cancelado'
+      )
+      .sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
+
+  // E2: Status de pagamento do mês usando parcelasSalario
   const getStatusPagamentoMes = (funcionarioId: string) => {
-    const sal = lancamentosFolha.find(
-      l => l.funcionario_id === funcionarioId && l.competencia === competenciaAtiva && l.tipo === 'salario'
-    );
-    if (!sal) return { status: 'sem_lancamento', label: 'A gerar', cor: 'bg-slate-100 text-slate-600' };
-    if (sal.status === 'pago') return { status: 'pago', label: 'Pago', cor: 'bg-emerald-100 text-emerald-800' };
+    const parcelas = parcelasSalario(funcionarioId);
+    if (parcelas.length === 0)
+      return { status: 'sem_lancamento', label: 'A gerar', cor: 'bg-slate-100 text-slate-600' };
+    const totalParcelas = parcelas.length;
+    const pagas = parcelas.filter(p => p.status === 'pago').length;
+    if (pagas === totalParcelas)
+      return { status: 'pago', label: 'Pago', cor: 'bg-emerald-100 text-emerald-800' };
+    if (pagas > 0)
+      return {
+        status: 'parcial',
+        label: `Parcial (${pagas}/${totalParcelas})`,
+        cor: 'bg-blue-100 text-blue-800',
+      };
     return { status: 'pendente', label: 'Pendente', cor: 'bg-amber-100 text-amber-800' };
   };
 
@@ -295,22 +344,51 @@ export const Funcionarios: React.FC = () => {
     }
   };
 
-  // ABRIR PAGAMENTO INDIVIDUAL RÁPIDO COM SIMULAÇÃO
-  const handlePagarSalarioRapido = (f: Funcionario, e?: React.MouseEvent) => {
+  // E4: Pagamento individual rápido — suporta periodo quinzenal ('q1'|'q2')
+  const handlePagarSalarioRapido = (f: Funcionario, e?: React.MouseEvent, periodo?: 'q1' | 'q2') => {
     if (e) e.stopPropagation();
-    
-    // Busca se já tem lançamento pendente da folha
+
+    const isQuinzenal = f.forma_remuneracao === 'quinzenal';
+
+    if (isQuinzenal) {
+      // Para quinzenal: EXIGE que as parcelas já tenham sido geradas
+      const todasParcelas = parcelasSalario(f.id);
+      if (todasParcelas.length === 0) {
+        alert('Gere a folha do mês primeiro.');
+        return;
+      }
+
+      // Localiza a parcela pendente do período solicitado
+      const parcela = periodo
+        ? todasParcelas.find(p => p.periodo === periodo && p.status === 'pendente')
+        : todasParcelas.find(p => p.status === 'pendente');
+
+      if (!parcela) {
+        alert('Não há parcela pendente para o período selecionado.');
+        return;
+      }
+
+      const despesas = dbService.prepararDespesasDaFolha([parcela.id]);
+      if (despesas.length === 0) {
+        alert('Não foi possível preparar a despesa deste pagamento.');
+        return;
+      }
+      setLancamentoParaPagar(despesas);
+      setModalPagarFolhaAberto(true);
+      return;
+    }
+
+    // Fluxo mensal original
     let sal = lancamentosFolha.find(
       l => l.funcionario_id === f.id && l.competencia === competenciaAtiva && l.tipo === 'salario' && l.status === 'pendente'
     );
 
     // Se não tiver, cria um lançamento na hora para ser liquidado
     if (!sal) {
-      const calc = dbService.calcularCustoTotalFuncionario(f);
-      const ficha = dbService.obterFichaFinanceira(f.id);
-      const liquido = Math.max(0, +(calc.remuneracaoBruta - ficha.saldoAdiantamentosAberto).toFixed(2));
+      const calcFolha = dbService.calcularFolhaFuncionario(f, competenciaAtiva);
+      const liquido = calcFolha.liquido;
 
-      sal = dbService.saveLancamentoFolha({
+      sal = dbService.criarLancamentoFolha({
         id: 'folha-' + Date.now(),
         funcionario_id: f.id,
         tipo: 'salario',
@@ -322,68 +400,82 @@ export const Funcionarios: React.FC = () => {
         data_pagamento: null,
         status: 'pendente',
         conta_id: contas[0]?.id || 'conta-1',
-        observacoes: ficha.saldoAdiantamentosAberto > 0 ? `Dedução de R$ ${ficha.saldoAdiantamentosAberto.toFixed(2)} em adiantamentos.` : undefined,
+        observacoes: calcFolha.adiantamentosAbatidos > 0 ? `Dedução de R$ ${calcFolha.adiantamentosAbatidos.toFixed(2)} em adiantamentos.` : undefined,
         criado_em: new Date().toISOString(),
       });
+
+      if (calcFolha.adiantamentosAbatidos > 0) {
+        dbService.vincularAdiantamentos(sal.id, f.id, competenciaAtiva, calcFolha.adiantamentosAbatidos);
+      }
     }
 
-    // Busca o correspondente em lancamentos
-    const despesaVinculada = dbService.getLancamentos().find(l => l.id === sal?.lancamento_id) || {
-      id: sal.lancamento_id || ('folha-desc-' + sal.id),
-      tipo: 'despesa',
-      descricao: `Folha: ${sal.descricao} – ${f.nome} (${sal.competencia})`,
-      valor: sal.valor,
-      data_vencimento: sal.data_prevista,
-      data_pagamento: null,
-      status: 'pendente',
-      conta_id: sal.conta_id,
-      categoria_id: 'cat-des-4',
-      forma_pagamento: 'transferencia',
-      recorrencia: 'nenhuma',
-      origem: 'folha',
-      funcionario_id: f.id,
-      criado_em: new Date().toISOString(),
-    } as Lancamento;
+    const despesas = dbService.prepararDespesasDaFolha([sal.id]);
+    if (despesas.length === 0) {
+      alert('Não foi possível preparar a despesa deste pagamento.');
+      return;
+    }
 
-    setFolhaIdParaLiquidar(sal.id);
-    setLancamentoParaPagar([despesaVinculada]);
+    setLancamentoParaPagar(despesas);
     setModalPagarFolhaAberto(true);
   };
 
-  // GERAR FOLHA DO MÊS EM LOTE
+  // E5: Gerar Folha do Mês — exibe avisos se existirem
   const handleGerarFolhaMes = () => {
     if (!confirm(`Deseja gerar os lançamentos de salário para todos os colaboradores ativos na competência ${competenciaAtiva}?`)) return;
     const res = dbService.gerarFolhaDoMes(competenciaAtiva, obterHojeISO(), contas[0]?.id || 'conta-1');
     alert(`Folha gerada com sucesso! ${res.gerados} lançamentos criados totalizando ${formatarMoeda(res.totalValor)}.`);
+    const avisos: string[] = (res as any).avisos ?? [];
+    if (avisos.length > 0) {
+      alert(`Avisos da folha gerada:\n\n${avisos.join('\n')}`);
+    }
   };
 
   // PAGAR TODOS EM LOTE
   const handleAbrirPagarTodos = () => {
     const pendentes = lancamentosFolha.filter(
-      l => l.competencia === competenciaAtiva && l.status === 'pendente'
+      l => l.competencia === competenciaAtiva && l.status === 'pendente' && l.tipo !== 'desconto'
     );
     if (pendentes.length === 0) {
       alert(`Não há lançamentos pendentes para quitação na competência ${competenciaAtiva}.`);
       return;
     }
 
-    const idsLancamentos = pendentes.map(p => p.lancamento_id).filter(Boolean) as string[];
-    const despesasVinculadas = dbService.getLancamentos().filter(l => idsLancamentos.includes(l.id));
+    const despesas = dbService.prepararDespesasDaFolha(pendentes.map(p => p.id));
+    if (despesas.length === 0) {
+      alert(`Não foi possível preparar as despesas para quitação na competência ${competenciaAtiva}.`);
+      return;
+    }
 
-    setLancamentoParaPagar(despesasVinculadas);
+    setLancamentoParaPagar(despesas);
     setModalPagarTodosAberto(true);
   };
 
-  // EXPORTAR FOLHA CSV
+  // E5: Exportar Folha CSV — usa parcelasSalario para líquido e status
   const handleExportarFolhaCSV = () => {
     const ativos = funcionarios.filter(f => f.status === 'ativo');
     const dadosExportar = ativos.map(f => {
-      const calc = dbService.calcularCustoTotalFuncionario(f);
-      const ficha = dbService.obterFichaFinanceira(f.id);
-      const sal = lancamentosFolha.find(
-        l => l.funcionario_id === f.id && l.competencia === competenciaAtiva && l.tipo === 'salario'
-      );
-      const liquido = sal ? sal.valor : Math.max(0, calc.remuneracaoBruta - ficha.saldoAdiantamentosAberto);
+      const calcFolha = dbService.calcularFolhaFuncionario(f, competenciaAtiva);
+      const custos = dbService.calcularCustoTotalFuncionario(f);
+      const parcelas = parcelasSalario(f.id);
+
+      // Líquido: soma das parcelas; se não houver parcelas usa previsão
+      const liquido =
+        parcelas.length > 0
+          ? parcelas.reduce((acc, p) => acc + p.valor, 0)
+          : calcFolha.liquido;
+
+      // Status conforme E2
+      let statusCSV = 'A gerar';
+      if (parcelas.length > 0) {
+        const pagas = parcelas.filter(p => p.status === 'pago').length;
+        if (pagas === parcelas.length) statusCSV = 'Pago';
+        else if (pagas > 0) statusCSV = `Parcial (${pagas}/${parcelas.length})`;
+        else statusCSV = 'Pendente';
+      }
+
+      const detalheDescontosStr = calcFolha.descontos.length > 0
+        ? calcFolha.descontos.map(d => `${d.descricao} R$ ${d.valor}`).join('; ')
+        : '-';
 
       return {
         funcionarioNome: f.nome,
@@ -391,13 +483,14 @@ export const Funcionarios: React.FC = () => {
         setor: f.setor,
         cpf: f.cpf,
         tipoContrato: f.tipo_contrato,
-        salarioBase: f.salario_base,
-        adicionais: calc.adicionalValor,
-        beneficios: calc.totalBeneficios,
-        adiantamentosDescontados: ficha.saldoAdiantamentosAberto,
-        outrosDescontos: 0,
+        salarioBase: calcFolha.salarioBase,
+        adicionais: calcFolha.adicionais + calcFolha.proventosAvulsos,
+        beneficios: custos.totalBeneficios,
+        adiantamentosDescontados: calcFolha.adiantamentosAbatidos,
+        totalDescontos: calcFolha.totalDescontos,
+        detalheDescontos: detalheDescontosStr,
         liquido,
-        status: sal ? sal.status : 'A gerar',
+        status: statusCSV,
         chavePix: f.chave_pix || '-',
       };
     });
@@ -460,6 +553,16 @@ export const Funcionarios: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* FAIXA AMARELA DE AVISO (F9) */}
+      {isAdmin && folhasPagasSemDespesaCount > 0 && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-900 px-4 py-3 rounded-2xl text-xs flex items-center gap-2 shadow-2xs">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+          <span>
+            <strong>{folhasPagasSemDespesaCount}</strong> {folhasPagasSemDespesaCount === 1 ? 'pagamento de folha antigo foi marcado' : 'pagamentos de folha antigos foram marcados'} como pagos sem lançamento no caixa. Eles NÃO afetam o saldo. Confira manualmente se necessário.
+          </span>
+        </div>
+      )}
 
       {/* MÉTRICAS NO TOPO */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
@@ -916,6 +1019,7 @@ export const Funcionarios: React.FC = () => {
                     <th className="py-3 px-4">Colaborador / Cargo</th>
                     <th className="py-3 px-4 text-right">Salário Base</th>
                     <th className="py-3 px-4 text-right">Adicionais / Comissões</th>
+                    <th className="py-3 px-4 text-right">Descontos</th>
                     <th className="py-3 px-4 text-right">Adiantamentos (Abatidos)</th>
                     <th className="py-3 px-4 text-right">Líquido a Pagar</th>
                     <th className="py-3 px-4 text-center">Status</th>
@@ -924,31 +1028,73 @@ export const Funcionarios: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {funcionarios.filter(f => f.status === 'ativo').map((f) => {
-                    const calc = dbService.calcularCustoTotalFuncionario(f);
-                    const ficha = dbService.obterFichaFinanceira(f.id);
-                    const sal = lancamentosFolha.find(
-                      l => l.funcionario_id === f.id && l.competencia === competenciaAtiva && l.tipo === 'salario'
-                    );
-                    const valorLiquido = sal ? sal.valor : Math.max(0, calc.remuneracaoBruta - ficha.saldoAdiantamentosAberto);
-                    const isPago = sal?.status === 'pago';
+                    const calcFolha = dbService.calcularFolhaFuncionario(f, competenciaAtiva);
+                    const parcelas = parcelasSalario(f.id);
+                    const adicionaisTotais = calcFolha.adicionais + calcFolha.proventosAvulsos;
+                    const isQuinzenal = f.forma_remuneracao === 'quinzenal';
+
+                    // Líquido exibido: soma das parcelas (se existirem) ou previsão
+                    let valorLiquido: number;
+                    if (parcelas.length > 0) {
+                      valorLiquido = parcelas.reduce((acc, p) => acc + p.valor, 0);
+                    } else if (isQuinzenal && f.pagamento_quinzenal) {
+                      // Previsão quinzenal: usa dividirQuinzenas (já importado no topo)
+                      const div = dividirQuinzenas({
+                        bruto: calcFolha.salarioBase + (calcFolha.adicionais || 0),
+                        totalDescontos: 0,
+                        adiantamentosMax: 0,
+                        config: f.pagamento_quinzenal,
+                      });
+                      valorLiquido = div.q1 + div.q2;
+                    } else {
+                      valorLiquido = calcFolha.liquido;
+                    }
+
+                    // Status geral via getStatusPagamentoMes
+                    const statusInfo = getStatusPagamentoMes(f.id);
+                    const todasPagas = statusInfo.status === 'pago';
 
                     return (
                       <tr key={f.id} className="hover:bg-slate-50/60 transition-colors">
                         <td className="py-3.5 px-4">
                           <p className="font-bold text-slate-900">{f.nome}</p>
                           <p className="text-[11px] text-slate-500">{f.cargo} • {f.setor}</p>
+                          {isQuinzenal && (
+                            <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded-full">Quinzenal</span>
+                          )}
                         </td>
 
                         <td className="py-3.5 px-4 text-right font-serif text-slate-700">
-                          {formatarValor(f.salario_base)}
+                          {formatarValor(calcFolha.salarioBase)}
                         </td>
 
                         <td className="py-3.5 px-4 text-right font-serif text-emerald-700">
-                          {calc.adicionalValor > 0 ? `+ ${formatarValor(calc.adicionalValor)}` : '-'}
+                          {adicionaisTotais > 0 ? `+ ${formatarValor(adicionaisTotais)}` : '-'}
+                        </td>
+
+                        <td className="py-3.5 px-4 text-right font-serif text-amber-700 relative group">
+                          {calcFolha.totalDescontos > 0 ? (
+                            <span className="cursor-help underline decoration-dotted font-semibold">
+                              - {formatarValor(calcFolha.totalDescontos)}
+                            </span>
+                          ) : (
+                            '-'
+                          )}
+                          {calcFolha.descontos.length > 0 && (
+                            <div className="hidden group-hover:block absolute right-2 top-full z-30 w-52 p-2.5 bg-slate-900 text-white text-[11px] rounded-xl shadow-xl border border-slate-700 text-left font-sans">
+                              <p className="font-bold border-b border-slate-700 pb-1 mb-1.5 text-amber-400">Detalhamento dos Descontos</p>
+                              {calcFolha.descontos.map((d, i) => (
+                                <div key={i} className="flex justify-between gap-2 py-0.5">
+                                  <span className="truncate text-slate-300">{d.descricao}:</span>
+                                  <span className="font-serif font-bold text-amber-300">{formatarValor(d.valor)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </td>
 
                         <td className="py-3.5 px-4 text-right font-serif text-red-600">
-                          {ficha.saldoAdiantamentosAberto > 0 ? `- ${formatarValor(ficha.saldoAdiantamentosAberto)}` : '-'}
+                          {calcFolha.adiantamentosAbatidos > 0 ? `- ${formatarValor(calcFolha.adiantamentosAbatidos)}` : '-'}
                         </td>
 
                         <td className="py-3.5 px-4 text-right">
@@ -957,17 +1103,45 @@ export const Funcionarios: React.FC = () => {
                           </strong>
                         </td>
 
+                        {/* Coluna Status */}
                         <td className="py-3.5 px-4 text-center">
-                          <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            isPago ? 'bg-emerald-100 text-emerald-800' :
-                            sal ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'
-                          }`}>
-                            {isPago ? 'Pago' : sal ? 'Pendente' : 'Não Gerado'}
+                          <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${statusInfo.cor}`}>
+                            {statusInfo.label}
                           </span>
                         </td>
 
+                        {/* Coluna Ação — duas linhas para quinzenal com parcelas */}
                         <td className="py-3.5 px-4 text-right">
-                          {!isPago ? (
+                          {isQuinzenal && parcelas.length > 0 ? (
+                            <div className="space-y-1">
+                              {parcelas.map((p, idx) => {
+                                const label = p.periodo === 'q1' ? '1ª Quinzena' : p.periodo === 'q2' ? '2ª Quinzena' : `Parcela ${idx + 1}`;
+                                const dtArr = p.data_prevista.split('-');
+                                const dtFmt = `${dtArr[2]}/${dtArr[1]}`;
+                                const isParcPaga = p.status === 'pago';
+                                return (
+                                  <div key={p.id} className="flex items-center justify-end gap-1.5 text-[11px]">
+                                    <span className="text-slate-500 whitespace-nowrap">
+                                      {label} {dtFmt} — {formatarValor(p.valor)}
+                                    </span>
+                                    {isParcPaga ? (
+                                      <span className="text-emerald-700 font-semibold flex items-center gap-0.5">
+                                        <CheckCircle2 className="w-3 h-3" /> Quitado
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => handlePagarSalarioRapido(f, undefined, p.periodo as 'q1' | 'q2')}
+                                        className="px-2 py-0.5 font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-2xs transition-colors cursor-pointer"
+                                      >
+                                        Pagar
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : !todasPagas ? (
                             <button
                               type="button"
                               onClick={() => handlePagarSalarioRapido(f)}
@@ -986,6 +1160,7 @@ export const Funcionarios: React.FC = () => {
                     );
                   })}
                 </tbody>
+
               </table>
             </div>
           </div>
@@ -1199,6 +1374,43 @@ export const Funcionarios: React.FC = () => {
                   </button>
                 </div>
 
+                {/* D2: Descontos recorrentes ativos do colaborador */}
+                {(() => {
+                  const recsAtivos = (funcionarioSelecionado.descontos_recorrentes || []).filter((d) => d.ativo);
+                  if (recsAtivos.length === 0) return null;
+
+                  const sBase = funcionarioSelecionado.salario_base || 0;
+                  const adic =
+                    funcionarioSelecionado.adicional_tipo === 'periculosidade' || funcionarioSelecionado.adicional_tipo === 'insalubridade'
+                      ? +(sBase * ((funcionarioSelecionado.adicional_percentual || 0) / 100)).toFixed(2)
+                      : +(funcionarioSelecionado.adicional_valor_fixo || 0).toFixed(2);
+                  const bruto = +(sBase + adic).toFixed(2);
+
+                  const detalhamento = calcularDescontosRecorrentes(recsAtivos, { salarioBase: sBase, bruto });
+                  const totalEst = detalhamento.reduce((sum, d) => sum + d.valor, 0);
+
+                  return (
+                    <div className="p-3 bg-amber-50/60 rounded-xl border border-amber-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h5 className="font-bold text-amber-950 text-xs flex items-center gap-1.5">
+                          <span>Descontos Recorrentes Ativos</span>
+                        </h5>
+                        <span className="text-[11px] font-bold text-amber-900">
+                          Total Estimado: {formatarMoeda(totalEst)}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                        {detalhamento.map((d, i) => (
+                          <div key={i} className="flex justify-between items-center bg-white p-2 rounded-lg border border-amber-200/80">
+                            <span className="font-medium text-slate-700">{d.descricao}</span>
+                            <span className="font-serif font-bold text-rose-700">{formatarMoeda(d.valor)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Tabela de Lançamentos do Colaborador */}
                 <div className="border border-slate-200 rounded-xl overflow-hidden max-h-72 overflow-y-auto">
                   <table className="w-full text-left text-xs">
@@ -1239,52 +1451,84 @@ export const Funcionarios: React.FC = () => {
                                 <span className={`inline-block text-[10px] font-bold px-2 py-0.2 rounded-full ${
                                   l.status === 'pago' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                                 }`}>
-                                  {l.status}
+                                  {l.status === 'pago' ? 'pago' : l.tipo === 'desconto' ? 'Aplicado' : l.status}
                                 </span>
                               </td>
                               <td className="py-2.5 px-3 text-right">
-                                {l.status === 'pendente' ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const despesa = dbService.getLancamentos().find(lanc => lanc.id === l.lancamento_id) || {
-                                        id: l.lancamento_id || ('folha-desc-' + l.id),
-                                        tipo: 'despesa',
-                                        descricao: `Folha: ${l.descricao} – ${funcionarioSelecionado.nome} (${l.competencia})`,
-                                        valor: l.valor,
-                                        data_vencimento: l.data_prevista,
-                                        data_pagamento: null,
-                                        status: 'pendente',
-                                        conta_id: l.conta_id,
-                                        categoria_id: 'cat-des-4',
-                                        forma_pagamento: 'transferencia',
-                                        recorrencia: 'nenhuma',
-                                        origem: 'folha',
-                                        funcionario_id: funcionarioSelecionado.id,
-                                        criado_em: new Date().toISOString(),
-                                      } as Lancamento;
-
-                                      setFolhaIdParaLiquidar(l.id);
-                                      setLancamentoParaPagar([despesa]);
-                                      setModalPagarFolhaAberto(true);
-                                    }}
-                                    className="px-2 py-0.5 text-[11px] font-bold bg-emerald-600 text-white rounded-md"
-                                  >
-                                    Pagar
-                                  </button>
+                                {l.tipo === 'desconto' ? (
+                                  <div className="flex items-center justify-end gap-2">
+                                    <span className="text-[11px] text-slate-500">Abatido no líquido</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (confirm('Deseja excluir este lançamento de folha?')) {
+                                          dbService.excluirLancamentoFolha(l.id);
+                                        }
+                                      }}
+                                      className="p-1 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                                      title="Excluir lançamento"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                ) : l.status === 'pendente' ? (
+                                  <div className="flex items-center justify-end gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const despesas = dbService.prepararDespesasDaFolha([l.id]);
+                                        if (despesas.length === 0) {
+                                          alert('Não foi possível preparar a despesa deste pagamento.');
+                                          return;
+                                        }
+                                        setLancamentoParaPagar(despesas);
+                                        setModalPagarFolhaAberto(true);
+                                      }}
+                                      className="px-2 py-0.5 text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-md cursor-pointer"
+                                    >
+                                      Pagar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (confirm('Deseja excluir este lançamento de folha?')) {
+                                          dbService.excluirLancamentoFolha(l.id);
+                                        }
+                                      }}
+                                      className="p-1 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                                      title="Excluir lançamento"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
                                 ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (confirm('Deseja excluir este lançamento de folha?')) {
-                                        dbService.deleteLancamentoFolha(l.id);
-                                      }
-                                    }}
-                                    className="p-1 text-slate-400 hover:text-red-600"
-                                    title="Excluir lançamento"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
+                                  <div className="flex items-center justify-end gap-1">
+                                    {l.lancamento_id && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (confirm('Deseja estornar este lançamento de folha? O valor será estornado no caixa.')) {
+                                            dbService.estornarLancamento(l.lancamento_id!);
+                                          }
+                                        }}
+                                        className="px-2 py-0.5 text-[11px] font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-md cursor-pointer"
+                                      >
+                                        Estornar
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (confirm(`Este pagamento já foi quitado. Excluir vai devolver R$ ${l.valor.toFixed(2)} ao saldo da conta. Continuar?`)) {
+                                          dbService.excluirLancamentoFolha(l.id);
+                                        }
+                                      }}
+                                      className="p-1 text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                                      title="Excluir lançamento"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
                                 )}
                               </td>
                             </tr>
@@ -1537,22 +1781,13 @@ export const Funcionarios: React.FC = () => {
         onClose={() => {
           setModalPagarFolhaAberto(false);
           setModalPagarTodosAberto(false);
-          setFolhaIdParaLiquidar(null);
         }}
         lancamentosAlvo={lancamentoParaPagar}
         tipoOperacao="pagar"
         onSucesso={() => {
-          if (folhaIdParaLiquidar) {
-            dbService.liquidarLancamentoFolha(folhaIdParaLiquidar, contas[0]?.id || 'conta-1');
-          } else if (modalPagarTodosAberto) {
-            // Liquidar todos os eventos da competência
-            const pendentes = lancamentosFolha.filter(l => l.competencia === competenciaAtiva && l.status === 'pendente');
-            dbService.liquidarFolhaEmLote(pendentes.map(p => p.id), contas[0]?.id || 'conta-1', obterHojeISO());
-          }
           carregarDados();
           setModalPagarFolhaAberto(false);
           setModalPagarTodosAberto(false);
-          setFolhaIdParaLiquidar(null);
         }}
       />
 
@@ -1676,6 +1911,14 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
   const [adicionalPercentual, setAdicionalPercentual] = useState('30');
   const [adicionalValorFixo, setAdicionalValorFixo] = useState('0');
 
+  // D1: Configuração Pagamento Quinzenal
+  const [pagDia1, setPagDia1] = useState<number>(15);
+  const [pagDia2, setPagDia2] = useState<number>(30);
+  const [pagModo, setPagModo] = useState<'percentual' | 'fixo'>('percentual');
+  const [pagValor1, setPagValor1] = useState<string>('50');
+  const [pagValor2, setPagValor2] = useState<string>('');
+  const [pagValor2Auto, setPagValor2Auto] = useState<boolean>(true);
+
   // 4. Benefícios
   const [beneficios, setBeneficios] = useState<BeneficioFuncionario[]>([
     { id: 'b1', nome: 'Vale-Alimentação / Refeição', valor: 450.00 },
@@ -1683,6 +1926,9 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
   ]);
   const [novoBenefNome, setNovoBenefNome] = useState('');
   const [novoBenefValor, setNovoBenefValor] = useState('');
+
+  // C1: Descontos Recorrentes em Folha
+  const [descontosRec, setDescontosRec] = useState<DescontoRecorrente[]>([]);
 
   // 5. Encargos & Provisões (com padrões)
   const [inssPatronal, setInssPatronal] = useState('20.0');
@@ -1731,6 +1977,23 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
       setAdicionalPercentual(String(funcionarioParaEditar.adicional_percentual));
       setAdicionalValorFixo(String(funcionarioParaEditar.adicional_valor_fixo));
 
+      if (funcionarioParaEditar.pagamento_quinzenal) {
+        const pq = funcionarioParaEditar.pagamento_quinzenal;
+        setPagDia1(pq.dia_1);
+        setPagDia2(pq.dia_2);
+        setPagModo(pq.modo);
+        setPagValor1(String(pq.valor_1));
+        setPagValor2(pq.valor_2 !== null ? String(pq.valor_2) : '');
+        setPagValor2Auto(pq.valor_2 === null);
+      } else {
+        setPagDia1(15);
+        setPagDia2(30);
+        setPagModo('percentual');
+        setPagValor1('50');
+        setPagValor2('');
+        setPagValor2Auto(true);
+      }
+
       setBeneficios(funcionarioParaEditar.beneficios || []);
       setInssPatronal(String(funcionarioParaEditar.inss_patronal_percentual));
       setFgts(String(funcionarioParaEditar.fgts_percentual));
@@ -1744,6 +2007,7 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
       setTipoChavePix(funcionarioParaEditar.tipo_chave_pix);
       setChavePix(funcionarioParaEditar.chave_pix);
       setObservacoes(funcionarioParaEditar.observacoes || '');
+      setDescontosRec(funcionarioParaEditar.descontos_recorrentes || []);
     } else {
       // Valores padrão para novo cadastro
       setNome('');
@@ -1791,6 +2055,7 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
       setTipoChavePix('cpf');
       setChavePix('');
       setObservacoes('');
+      setDescontosRec([]);
     }
     setSecaoAtiva(1);
   }, [funcionarioParaEditar, isOpen]);
@@ -1824,10 +2089,81 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
     };
   }, [salarioBase, adicionalTipo, adicionalPercentual, adicionalValorFixo, beneficios, tipoContrato, inssPatronal, fgts, provisaoFerias, provisao13, outrosEncargos]);
 
+  // D4: Validação da configuração quinzenal ao salvar
+  const validarQuinzenal = (): string | null => {
+    if (formaRemuneracao !== 'quinzenal') return null;
+
+    const d1 = Number(pagDia1);
+    const d2 = Number(pagDia2);
+    if (!Number.isInteger(d1) || d1 < 1 || d1 > 31 || !Number.isInteger(d2) || d2 < 1 || d2 > 31) {
+      return 'Os dias das quinzenas devem ser números inteiros entre 1 e 31.';
+    }
+    if (d1 >= d2) {
+      return 'O dia da 1ª quinzena deve ser menor que o dia da 2ª quinzena (dia_1 < dia_2).';
+    }
+
+    const v1 = Number(pagValor1);
+    if (isNaN(v1)) {
+      return 'Informe um valor válido para a 1ª quinzena.';
+    }
+
+    if (pagModo === 'percentual') {
+      if (v1 < 0 || v1 > 100) {
+        return 'No modo percentual, o valor da 1ª quinzena deve ser entre 0% e 100%.';
+      }
+      if (!pagValor2Auto) {
+        const v2 = Number(pagValor2);
+        if (isNaN(v2) || v2 < 0 || v2 > 100) {
+          return 'No modo percentual, o valor da 2ª quinzena deve ser entre 0% e 100%.';
+        }
+      }
+    } else {
+      if (v1 < 0) {
+        return 'No modo fixo, o valor da 1ª quinzena deve ser maior ou igual a 0.';
+      }
+      if (!pagValor2Auto) {
+        const v2 = Number(pagValor2);
+        if (isNaN(v2) || v2 < 0) {
+          return 'No modo fixo, o valor da 2ª quinzena deve ser maior ou igual a 0.';
+        }
+      }
+    }
+
+    return null;
+  };
+
+  // C4: Validação dos descontos recorrentes
+  const validarDescontosRecorrentes = (): string | null => {
+    for (const d of descontosRec) {
+      if (!d.nome.trim()) {
+        return 'Todos os descontos recorrentes devem ter um nome preenchido.';
+      }
+      if (isNaN(d.valor) || d.valor <= 0) {
+        return `O desconto "${d.nome}" deve possuir um valor maior que zero.`;
+      }
+      if (d.tipo === 'percentual' && d.valor > 100) {
+        return `O desconto "${d.nome}" possui percentual acima de 100%.`;
+      }
+    }
+    return null;
+  };
+
   const handleSalvar = (e: React.FormEvent) => {
     e.preventDefault();
     if (!nome.trim()) {
       alert('Informe o nome do funcionário.');
+      return;
+    }
+
+    const erroQuinzena = validarQuinzenal();
+    if (erroQuinzena) {
+      alert(erroQuinzena);
+      return;
+    }
+
+    const erroDescontos = validarDescontosRecorrentes();
+    if (erroDescontos) {
+      alert(erroDescontos);
       return;
     }
 
@@ -1861,6 +2197,18 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
       adicional_percentual: Number(adicionalPercentual) || 0,
       adicional_valor_fixo: Number(adicionalValorFixo) || 0,
 
+      ...(formaRemuneracao === 'quinzenal'
+        ? {
+            pagamento_quinzenal: {
+              dia_1: Number(pagDia1) || 15,
+              dia_2: Number(pagDia2) || 30,
+              modo: pagModo,
+              valor_1: Number(pagValor1) || 0,
+              valor_2: pagValor2Auto ? null : Number(pagValor2) || 0,
+            },
+          }
+        : {}),
+
       beneficios,
       inss_patronal_percentual: Number(inssPatronal) || 0,
       fgts_percentual: Number(fgts) || 0,
@@ -1876,6 +2224,9 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
 
       observacoes: observacoes.trim(),
       ocorrencias: funcionarioParaEditar?.ocorrencias || [],
+      ...((descontosRec.length > 0 || (funcionarioParaEditar && funcionarioParaEditar.descontos_recorrentes && funcionarioParaEditar.descontos_recorrentes.length > 0))
+        ? { descontos_recorrentes: descontosRec }
+        : {}),
       criado_em: funcionarioParaEditar?.criado_em || new Date().toISOString(),
     };
 
@@ -2163,17 +2514,148 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
                 </select>
               </div>
 
-              <div>
-                <label className="block text-slate-700 font-semibold mb-1">Dia do Pagamento (Mês)</label>
-                <input
-                  type="number"
-                  min="1"
-                  max="31"
-                  value={diaPagamento}
-                  onChange={(e) => setDiaPagamento(Number(e.target.value))}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl"
-                />
-              </div>
+              {formaRemuneracao === 'quinzenal' ? (
+                <div className="sm:col-span-3 p-3.5 bg-blue-50/60 rounded-xl border border-blue-200 space-y-3">
+                  <h4 className="font-bold text-[#003064] text-xs">Configuração do Pagamento Quinzenal</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-slate-700 font-semibold mb-1">Dia da 1ª quinzena</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={pagDia1}
+                        onChange={(e) => setPagDia1(Number(e.target.value))}
+                        className="w-full px-3 py-1.5 border border-slate-300 rounded-xl bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-700 font-semibold mb-1">Dia da 2ª quinzena</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={pagDia2}
+                        onChange={(e) => setPagDia2(Number(e.target.value))}
+                        className="w-full px-3 py-1.5 border border-slate-300 rounded-xl bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-700 font-semibold mb-1">Valores em</label>
+                      <select
+                        value={pagModo}
+                        onChange={(e) => setPagModo(e.target.value as 'percentual' | 'fixo')}
+                        className="w-full px-3 py-1.5 border border-slate-300 rounded-xl bg-white font-medium"
+                      >
+                        <option value="percentual">% do bruto</option>
+                        <option value="fixo">R$ fixo</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-700 font-semibold mb-1">Valor da 1ª parcela</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={pagValor1}
+                        onChange={(e) => setPagValor1(e.target.value)}
+                        className="w-full px-3 py-1.5 border border-slate-300 rounded-xl bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-700 font-semibold mb-1">Valor da 2ª parcela</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={pagValor2}
+                        disabled={pagValor2Auto}
+                        onChange={(e) => setPagValor2(e.target.value)}
+                        className={`w-full px-3 py-1.5 border border-slate-300 rounded-xl ${
+                          pagValor2Auto ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-white'
+                        }`}
+                      />
+                    </div>
+
+                    <div className="flex items-center pt-5">
+                      <label className="flex items-center gap-2 cursor-pointer text-slate-700 font-medium">
+                        <input
+                          type="checkbox"
+                          checked={pagValor2Auto}
+                          onChange={(e) => setPagValor2Auto(e.target.checked)}
+                          className="rounded text-[#003064] focus:ring-0"
+                        />
+                        <span>2ª parcela = restante automático</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* D5: PRÉVIA AO VIVO DAS QUINZENAS */}
+                  {(() => {
+                    const sb = Number(salarioBase) || 0;
+                    let ad = 0;
+                    if (adicionalTipo && adicionalTipo !== 'nenhum') {
+                      const p = Number(adicionalPercentual) || 0;
+                      const f = Number(adicionalValorFixo) || 0;
+                      if (p > 0) ad = +((sb * p) / 100).toFixed(2);
+                      else if (f > 0) ad = f;
+                    }
+                    const brutoCalculado = +(sb + ad).toFixed(2);
+
+                    const cfgForm: ConfigQuinzenal = {
+                      dia_1: Number(pagDia1) || 15,
+                      dia_2: Number(pagDia2) || 30,
+                      modo: pagModo,
+                      valor_1: Number(pagValor1) || 0,
+                      valor_2: pagValor2Auto ? null : Number(pagValor2) || 0,
+                    };
+
+                    const divRes = dividirQuinzenas({
+                      bruto: brutoCalculado,
+                      totalDescontos: 0,
+                      adiantamentosMax: 0,
+                      config: cfgForm,
+                    });
+
+                    const now = new Date();
+                    const mmStr = String(now.getMonth() + 1).padStart(2, '0');
+                    const comp = `${mmStr}/${now.getFullYear()}`;
+                    const iso1 = dataDoDiaNaCompetencia(comp, cfgForm.dia_1);
+                    const iso2 = dataDoDiaNaCompetencia(comp, cfgForm.dia_2);
+                    const dt1 = `${iso1.split('-')[2]}/${iso1.split('-')[1]}`;
+                    const dt2 = `${iso2.split('-')[2]}/${iso2.split('-')[1]}`;
+
+                    return (
+                      <div className="space-y-1.5 border-t border-blue-200/80 pt-2.5">
+                        <p className="font-semibold text-blue-950 text-[11px]">
+                          1ª: R$ {divRes.q1.toFixed(2)} em {dt1} • 2ª: R$ {divRes.q2.toFixed(2)} em {dt2} • Total R$ {brutoCalculado.toFixed(2)} (antes de descontos e adiantamentos)
+                        </p>
+                        {divRes.avisos.map((aviso, idx) => (
+                          <div key={idx} className="bg-amber-100 border border-amber-300 text-amber-900 p-2 rounded-lg text-[11px]">
+                            ⚠️ {aviso}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-slate-700 font-semibold mb-1">Dia do Pagamento (Mês)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    value={diaPagamento}
+                    onChange={(e) => setDiaPagamento(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Comissões & Adicionais */}
@@ -2239,6 +2721,157 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* C2 & C3 & C5: DESCONTOS RECORRENTES */}
+            <div className="p-3 bg-[#003064]/5 rounded-xl border border-[#003064]/20 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                <div>
+                  <h4 className="font-bold text-[#003064] text-xs">Descontos Recorrentes em Folha</h4>
+                  <p className="text-[11px] text-slate-500">Configuração de descontos aplicados automaticamente no cálculo mensal</p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                      setDescontosRec(prev => [...prev, { id: newId, nome: 'Vale-transporte', tipo: 'percentual', valor: 6, base: 'salario_base', ativo: true }]);
+                    }}
+                    className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                  >
+                    + VT 6% (base)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                      setDescontosRec(prev => [...prev, { id: newId, nome: 'Plano de saúde', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
+                    }}
+                    className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                  >
+                    + Plano saúde (R$)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                      setDescontosRec(prev => [...prev, { id: newId, nome: 'Pensão alimentícia', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
+                    }}
+                    className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                  >
+                    + Pensão (R$)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                      setDescontosRec(prev => [...prev, { id: newId, nome: 'Outro desconto', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
+                    }}
+                    className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                  >
+                    + Outro
+                  </button>
+                </div>
+              </div>
+
+              {descontosRec.length === 0 ? (
+                <p className="text-[11px] text-slate-400 italic py-1">Nenhum desconto recorrente cadastrado.</p>
+              ) : (
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {descontosRec.map((d, index) => (
+                    <div key={d.id} className="flex flex-wrap sm:flex-nowrap items-center gap-2 bg-white p-2 rounded-lg border border-slate-200 text-xs">
+                      <input
+                        type="text"
+                        value={d.nome}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setDescontosRec(prev => prev.map((item, i) => i === index ? { ...item, nome: val } : item));
+                        }}
+                        placeholder="Nome do desconto"
+                        className="flex-1 min-w-[120px] px-2 py-1 border border-slate-300 rounded-lg"
+                      />
+                      <select
+                        value={d.tipo}
+                        onChange={(e) => {
+                          const val = e.target.value as 'percentual' | 'fixo';
+                          setDescontosRec(prev => prev.map((item, i) => i === index ? { ...item, tipo: val } : item));
+                        }}
+                        className="px-2 py-1 border border-slate-300 rounded-lg bg-white font-medium"
+                      >
+                        <option value="percentual">%</option>
+                        <option value="fixo">R$ fixo</option>
+                      </select>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={d.valor}
+                        onChange={(e) => {
+                          const val = Number(e.target.value) || 0;
+                          setDescontosRec(prev => prev.map((item, i) => i === index ? { ...item, valor: val } : item));
+                        }}
+                        placeholder="Valor"
+                        className="w-20 px-2 py-1 border border-slate-300 rounded-lg text-right"
+                      />
+                      <select
+                        value={d.base}
+                        onChange={(e) => {
+                          const val = e.target.value as 'salario_base' | 'bruto';
+                          setDescontosRec(prev => prev.map((item, i) => i === index ? { ...item, base: val } : item));
+                        }}
+                        className="px-2 py-1 border border-slate-300 rounded-lg bg-white"
+                      >
+                        <option value="salario_base">Salário base</option>
+                        <option value="bruto">Bruto</option>
+                      </select>
+                      <label className="flex items-center gap-1 cursor-pointer font-medium text-slate-700 px-1">
+                        <input
+                          type="checkbox"
+                          checked={d.ativo}
+                          onChange={(e) => {
+                            const val = e.target.checked;
+                            setDescontosRec(prev => prev.map((item, i) => i === index ? { ...item, ativo: val } : item));
+                          }}
+                          className="rounded text-[#003064]"
+                        />
+                        <span>Ativo</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setDescontosRec(prev => prev.filter((_, i) => i !== index))}
+                        className="p-1 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors font-bold"
+                        title="Remover desconto"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* C5: PRÉVIA DE DESCONTOS E LÍQUIDO ESTIMADO */}
+              {(() => {
+                const sBase = Number(salarioBase) || 0;
+                let ad = 0;
+                if (adicionalTipo && adicionalTipo !== 'nenhum') {
+                  const p = Number(adicionalPercentual) || 0;
+                  const f = Number(adicionalValorFixo) || 0;
+                  if (p > 0) ad = +((sBase * p) / 100).toFixed(2);
+                  else if (f > 0) ad = f;
+                }
+                const brutoForm = +(sBase + ad).toFixed(2);
+                const recsCalculados = calcularDescontosRecorrentes(descontosRec, { salarioBase: sBase, bruto: brutoForm });
+                const totalDescontosEst = +recsCalculados.reduce((acc, curr) => acc + curr.valor, 0).toFixed(2);
+                const liquidoEst = +Math.max(0, brutoForm - totalDescontosEst).toFixed(2);
+
+                return (
+                  <div className="border-t border-slate-200 pt-2 text-[11px] font-semibold text-slate-700 flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      Descontos mensais estimados: <strong className="text-rose-700">R$ {totalDescontosEst.toFixed(2)}</strong> • Líquido estimado: <strong className="text-emerald-700">R$ {liquidoEst.toFixed(2)}</strong> (antes de adiantamentos)
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -2540,23 +3173,43 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
   const [competencia, setCompetencia] = useState(competenciaDefault);
   const [dataPrevista, setDataPrevista] = useState(obterHojeISO());
   const [contaId, setContaId] = useState(contas[0]?.id || 'conta-1');
-  const [abaterAdiantamento, setAbaterAdiantamento] = useState(false);
 
   const ficha = dbService.obterFichaFinanceira(funcionario.id);
+  const adiantamentosDisponiveis = ficha.adiantamentosEmAberto || [];
+
+  const [adiantamentosSelecionados, setAdiantamentosSelecionados] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (isOpen) {
+      setAdiantamentosSelecionados(adiantamentosDisponiveis.map(a => a.id));
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
+  const calcFolha = dbService.calcularFolhaFuncionario(
+    funcionario,
+    competencia,
+    undefined,
+    adiantamentosSelecionados
+  );
+
+  const toggleAdiantamento = (id: string) => {
+    setAdiantamentosSelecionados(prev =>
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
   const handleSalvar = (e: React.FormEvent) => {
     e.preventDefault();
-    const numValor = Number(valor) || 0;
     const configTipo = TIPOS_LANCAMENTO_FOLHA.find(t => t.id === tipo);
 
-    let valorFinal = numValor;
-    if (tipo === 'salario' && abaterAdiantamento && ficha.saldoAdiantamentosAberto > 0) {
-      valorFinal = Math.max(0, +(numValor - ficha.saldoAdiantamentosAberto).toFixed(2));
+    let valorFinal = Number(valor) || 0;
+    if (tipo === 'salario') {
+      valorFinal = calcFolha.liquido;
     }
 
-    dbService.saveLancamentoFolha({
+    const sal = dbService.criarLancamentoFolha({
       id: 'folha-' + Date.now(),
       funcionario_id: funcionario.id,
       tipo,
@@ -2568,9 +3221,19 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
       data_pagamento: null,
       status: 'pendente',
       conta_id: contaId,
-      observacoes: abaterAdiantamento ? `Abatimento de R$ ${ficha.saldoAdiantamentosAberto.toFixed(2)} em adiantamentos.` : undefined,
+      observacoes: calcFolha.adiantamentosAbatidos > 0 ? `Abatimento de R$ ${calcFolha.adiantamentosAbatidos.toFixed(2)} em adiantamentos.` : undefined,
       criado_em: new Date().toISOString(),
     });
+
+    if (tipo === 'salario' && calcFolha.adiantamentosAbatidos > 0) {
+      dbService.vincularAdiantamentos(
+        sal.id,
+        funcionario.id,
+        competencia,
+        calcFolha.adiantamentosAbatidos,
+        adiantamentosSelecionados
+      );
+    }
 
     onSucesso();
   };
@@ -2639,22 +3302,74 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
           </div>
         </div>
 
-        {/* Opção de Abater Adiantamentos em Aberto */}
-        {tipo === 'salario' && ficha.saldoAdiantamentosAberto > 0 && (
-          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 space-y-1.5">
-            <label className="flex items-start gap-2 cursor-pointer font-bold">
-              <input
-                type="checkbox"
-                checked={abaterAdiantamento}
-                onChange={(e) => setAbaterAdiantamento(e.target.checked)}
-                className="mt-0.5 rounded-sm"
-              />
-              <span>
-                Abater {formatarMoeda(ficha.saldoAdiantamentosAberto)} de adiantamentos em aberto?
-              </span>
-            </label>
-            <p className="text-[11px] text-amber-800">
-              O valor líquido a pagar será de: <strong>{formatarMoeda(Math.max(0, (Number(valor) || 0) - (abaterAdiantamento ? ficha.saldoAdiantamentosAberto : 0)))}</strong>
+        {/* D4: Prévia ao escolher Desconto Diversos */}
+        {tipo === 'desconto' && (
+          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 space-y-2">
+            <h5 className="font-bold text-xs border-b border-amber-200 pb-1 text-amber-950">
+              Prévia do Impacto no Salário
+            </h5>
+            <div className="space-y-1 text-[11px]">
+              <div className="flex justify-between">
+                <span>Bruto estimado:</span>
+                <strong className="font-serif">{formatarMoeda(calcFolha.bruto)}</strong>
+              </div>
+              {calcFolha.descontos.length > 0 && (
+                <div className="space-y-0.5 border-t border-amber-200/60 pt-1">
+                  <span className="font-semibold text-amber-950">Descontos recorrentes aplicados:</span>
+                  {calcFolha.descontos.map((d, idx) => (
+                    <div key={idx} className="flex justify-between pl-2 text-slate-700">
+                      <span>• {d.descricao}:</span>
+                      <span className="font-serif font-semibold text-rose-700">- {formatarMoeda(d.valor)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex justify-between border-t border-amber-200/60 pt-1">
+                <span>Este desconto avulso:</span>
+                <strong className="font-serif text-rose-700">- {formatarMoeda(Number(valor) || 0)}</strong>
+              </div>
+              {(() => {
+                const descAvulso = Number(valor) || 0;
+                const liqEst = Math.max(0, +(calcFolha.bruto - calcFolha.totalDescontos - descAvulso).toFixed(2));
+                return (
+                  <div className="flex justify-between border-t border-amber-300 pt-1.5 font-bold text-xs text-[#003064]">
+                    <span>Líquido estimado pós-desconto:</span>
+                    <strong className="font-serif text-sm font-black">{formatarMoeda(liqEst)}</strong>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* Opção de Seleção de Adiantamentos a Abater */}
+        {tipo === 'salario' && adiantamentosDisponiveis.length > 0 && (
+          <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 space-y-2">
+            <p className="font-bold flex items-center justify-between text-xs">
+              <span>Adiantamentos disponíveis para abatimento:</span>
+              <span className="font-serif text-amber-800">{formatarMoeda(calcFolha.adiantamentosAbatidos)} abatido(s)</span>
+            </p>
+            <div className="space-y-1 max-h-32 overflow-y-auto">
+              {adiantamentosDisponiveis.map(ad => (
+                <label key={ad.id} className="flex items-center justify-between gap-2 p-1.5 bg-white/80 rounded-lg border border-amber-200 cursor-pointer hover:bg-white transition-colors">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={adiantamentosSelecionados.includes(ad.id)}
+                      onChange={() => toggleAdiantamento(ad.id)}
+                      className="rounded-sm"
+                    />
+                    <span className="text-[11px] text-slate-700">
+                      {ad.descricao} ({formatarDataBR(ad.data_pagamento || ad.data_prevista)})
+                    </span>
+                  </div>
+                  <strong className="font-serif text-amber-900">{formatarMoeda(ad.valor)}</strong>
+                </label>
+              ))}
+            </div>
+            <p className="text-[11px] text-amber-800 pt-1 border-t border-amber-200/60 flex justify-between">
+              <span>Líquido estimado a pagar:</span>
+              <strong className="font-serif text-sm font-black text-[#003064]">{formatarMoeda(calcFolha.liquido)}</strong>
             </p>
           </div>
         )}
@@ -2752,9 +3467,9 @@ const ModalImpressaoFolha: React.FC<ImpressaoProps> = ({
             </thead>
             <tbody className="divide-y divide-slate-200">
               {funcionarios.map(f => {
-                const calc = dbService.calcularCustoTotalFuncionario(f);
+                const calcFolha = dbService.calcularFolhaFuncionario(f, competencia);
                 const sal = lancamentosFolha.find(l => l.funcionario_id === f.id && l.competencia === competencia && l.tipo === 'salario');
-                const liquido = sal ? sal.valor : calc.remuneracaoBruta;
+                const liquido = sal ? sal.valor : calcFolha.liquido;
 
                 return (
                   <tr key={f.id}>

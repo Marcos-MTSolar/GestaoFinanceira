@@ -87,6 +87,7 @@ export interface Lancamento {
   observacoes?: string;
   origem: 'manual' | 'folha' | 'transferencia' | 'ajuste';
   funcionario_id?: string;
+  folha_id?: string;
   criado_em: string;
 }
 
@@ -175,6 +176,8 @@ export interface OcorrenciaFuncionario {
   registrado_em: string;
 }
 
+export interface DescontoRecorrente { id: string; nome: string; tipo: 'percentual' | 'fixo'; valor: number; base: 'salario_base' | 'bruto'; ativo: boolean; }
+
 export interface Funcionario {
   id: string;
   // 1. Dados Pessoais
@@ -229,6 +232,8 @@ export interface Funcionario {
   // 7. Observações e Ocorrências
   observacoes?: string;
   ocorrencias?: OcorrenciaFuncionario[];
+  pagamento_quinzenal?: { dia_1: number; dia_2: number; modo: 'percentual' | 'fixo'; valor_1: number; valor_2: number | null };
+  descontos_recorrentes?: DescontoRecorrente[];
   criado_em: string;
 }
 
@@ -245,10 +250,30 @@ export interface LancamentoFolha {
   data_pagamento: string | null; // YYYY-MM-DD
   status: 'pendente' | 'pago' | 'cancelado';
   conta_id: string;
-  descontado_em_folha?: boolean; // Para adiantamentos que já foram abatidos do salário
+  descontado_em_folha?: boolean; // Para adiantamentos que já foram totalmente abatidos do salário
   adiantamento_vinculado_id?: string;
+  abatimentos?: Array<{ folha_id: string; valor: number }>;
+  periodo?: 'mensal' | 'q1' | 'q2';
   observacoes?: string;
   criado_em: string;
+}
+
+export interface ItemDescontoFolha {
+  chave: string;
+  descricao: string;
+  valor: number;
+}
+
+export interface ResultadoCalculoFolha {
+  salarioBase: number;
+  adicionais: number;
+  proventosAvulsos: number;
+  bruto: number;
+  descontos: ItemDescontoFolha[];
+  totalDescontos: number;
+  adiantamentosAbatidos: number;
+  liquido: number;
+  adiantamentosDetalhados?: LancamentoFolha[];
 }
 
 export interface RegistroAuditoria {

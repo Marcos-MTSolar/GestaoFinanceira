@@ -1,24 +1,34 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 09/10/2026 11:04:00
+**Última Atualização:** 10/10/2026 15:23:05 (Parte 4D implementada)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
-  - Restauração de todas as 35 funções originais de cálculo e estatísticas no `src/services/storage.ts` alimentadas por cache síncrono via `onSnapshot` do Firestore.
-  - Implementação do `ErrorBoundary` em `src/components/ErrorBoundary.tsx` e envolvimento da aplicação em `src/App.tsx`.
-  - Tratamento resiliente no `AuthContext.tsx`: bypass imediato sem Firestore para `mtsolar.energia@gmail.com`, tratamento gracioso de e-mails não autorizados (`permission-denied`), encerramento de sessão sem exceções não tratadas para popups fechados pelo usuário e inicialização/desativação dos listeners do storage atrelada ao ciclo de vida do usuário autenticado.
-  - Ajuste de `firestore.rules` com acesso por documento próprio em `usuarios_autorizados` e admin inicial fixo `mtsolar.energia@gmail.com` com `email_verified == true`.
-  - Atualização da página `src/pages/Login.tsx` removendo o botão/modo de visualizador sem login e ajustando textos de permissão.
-  - Inclusão da meta tag `<meta name="mobile-web-app-capable" content="yes">` em `index.html`.
-  - Verificação com `npx tsc --noEmit` e `npm run build` bem-sucedidos.
-- **Arquivos modificados/criados:**
-  - `src/services/storage.ts` (restauradas todas as funções síncronas de cálculo e relatórios, adicionado gerenciamento de ciclo de vida de listeners)
-  - `src/components/ErrorBoundary.tsx` (componente de classe criado para capturar exceções React com UI amigável em português)
-  - `src/App.tsx` (envolvido com `ErrorBoundary`)
-  - `src/context/AuthContext.tsx` (refatorado tratamento de admin fixo, autorização, permission-denied e listeners)
-  - `src/pages/Login.tsx` (removido botão de visualizador sem login e atualizada mensagem de orientação)
-  - `firestore.rules` (regras alinhadas ao código com permissão individual para `usuarios_autorizados`)
-  - `index.html` (adicionada meta tag `mobile-web-app-capable`)
-  - `RESUMO_MESTRE.md` (atualizado)
+  - **Parte 4A - Estrutura e cálculo de descontos recorrentes**:
+    - **A1 (`src/types/index.ts`)**: Adicionada interface `DescontoRecorrente` e propriedade opcional `descontos_recorrentes?: DescontoRecorrente[]` na interface `Funcionario`.
+    - **A2 (`src/utils/descontos.ts`)**: Criada a função utilitária `calcularDescontosRecorrentes` sem dependências do Firebase/storage.
+    - **A3 (`scripts/test_4A.ts`)**: Criado o script de testes cobrindo os 7 casos de testes (a a g) importando diretamente de `src/utils/descontos.ts`, com aprovação total de 100%.
+  - **Parte 4B - Integração de descontos recorrentes no cálculo de folha**:
+    - **B1 (`src/services/storage.ts`)**: Importada `calcularDescontosRecorrentes` de `'../utils/descontos'`; atualizado `calcularFolhaFuncionario` para calcular os descontos recorrentes e incluí-los no array `descontos` e `totalDescontos`.
+    - **B2 & B3 (`src/services/storage.ts`)**: Confirmado que `maxAbatimento` (`Math.max(0, +(bruto - totalDescontos).toFixed(2))`) e `liquido` (`Math.max(0, +(bruto - totalDescontos - adiantamentosAbatidos).toFixed(2))`) utilizam o `totalDescontos` atualizado, impedindo saldo negativo.
+    - **B4 (`src/services/storage.ts`)**: Atualizado `gerarFolhaDoMes` para concatenar o texto de descontos recorrentes na propriedade `observacoes` utilizando spread condicional sem gravar `undefined`.
+  - **Parte 4C - Formulário de cadastro/edição de colaboradores**:
+    - **C1 (`src/pages/Funcionarios.tsx`)**: Adicionado estado `descontosRec: DescontoRecorrente[]` com carga inicial de `funcionarioParaEditar.descontos_recorrentes` e reset para novos cadastros.
+    - **C2 & C3 (`src/pages/Funcionarios.tsx`)**: Criada a seção "Descontos Recorrentes em Folha" no modal com lista editável (nome, tipo, valor, base, ativo, remover) e 4 botões de atalho ("VT 6%", "Plano saúde", "Pensão", "Outro") com gerações de IDs determinísticos.
+    - **C4 (`src/pages/Funcionarios.tsx`)**: Criada a função de validação `validarDescontosRecorrentes` (nome obrigatório, valor > 0, percentual <= 100%) bloqueando o salvamento via `alert` e gravando via spread condicional.
+    - **C5 (`src/pages/Funcionarios.tsx`)**: Adicionada a prévia ao vivo dos descontos mensais estimados e do líquido estimado (antes de adiantamentos).
+  - **Parte 4D - Exibição, exportação e prévias de descontos recorrentes**:
+    - **D1 (`src/pages/Funcionarios.tsx`)**: Confirmado que o tooltip da coluna "Descontos" na tabela "Folha do Mês" já renderiza dinamicamente cada desconto recorrente pelo nome e valor via `calcFolha.descontos`. (JÁ EXISTIA)
+    - **D2 (`src/pages/Funcionarios.tsx`)**: Adicionado bloco de Descontos Recorrentes Ativos na Ficha do Colaborador (aba financeira), listando o nome e o valor mensal estimado de cada item ativo.
+    - **D3 (`src/utils/csvExporter.ts` e `src/pages/Funcionarios.tsx`)**: Adicionada a coluna "Detalhe dos descontos" no exportador de CSV com o texto formatado `"Nome R$ x; Nome R$ y"`.
+    - **D4 (`src/pages/Funcionarios.tsx`)**: Adicionada prévia ao vivo de impacto no salário ao selecionar o evento "Desconto Diversos" no modal de novo lançamento de folha.
+- **Arquivos modificados:**
+  - `src/pages/Funcionarios.tsx`
+  - `src/services/storage.ts`
+  - `src/types/index.ts`
+  - `src/utils/csvExporter.ts`
+  - `src/utils/descontos.ts`
+  - `scripts/test_4A.ts`
+  - `RESUMO_MESTRE.md`
 
 ---
 

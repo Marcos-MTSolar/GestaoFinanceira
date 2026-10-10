@@ -62,13 +62,14 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
 
   const isLote = lancamentosAlvo.length > 1;
   const isPagar = tipoOperacao === 'pagar';
+  const todosFolha = lancamentosAlvo.length > 0 && lancamentosAlvo.every((l) => l.origem === 'folha');
 
   const conta = contas.find((c) => c.id === contaSelecionadaId);
   const resumoConta = conta ? dbService.calcularResumoConta(conta) : null;
 
   const valorOriginalTotal = lancamentosAlvo.reduce((acc, l) => acc + l.valor, 0);
-  const numJuros = Number(jurosMulta) || 0;
-  const numDesconto = Number(desconto) || 0;
+  const numJuros = todosFolha ? 0 : Number(jurosMulta) || 0;
+  const numDesconto = todosFolha ? 0 : Number(desconto) || 0;
 
   // Valor final a pagar ou receber
   const valorFinalTotal = isLote
@@ -120,8 +121,8 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
         id: lancamentosAlvo[0].id,
         contaId: contaSelecionadaId,
         dataPagamento,
-        jurosMulta: numJuros,
-        desconto: numDesconto,
+        jurosMulta: todosFolha ? 0 : numJuros,
+        desconto: todosFolha ? 0 : numDesconto,
         valorFinal: valorFinalTotal,
       });
     }
@@ -214,7 +215,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
         </div>
 
         {/* Ajustes: Juros / Multa e Desconto (Apenas individual) */}
-        {!isLote && (
+        {!isLote && !todosFolha && (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-[#F5F7FA] p-3 rounded-xl border border-slate-200">
             <div>
               <label className="block text-[11px] font-semibold text-slate-600 mb-1">
@@ -253,6 +254,17 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
                 placeholder="0.00"
                 className="w-full px-2.5 py-1 text-xs border border-slate-300 rounded-lg bg-white"
               />
+            </div>
+          </div>
+        )}
+
+        {!isLote && todosFolha && (
+          <div className="bg-[#F5F7FA] p-3 rounded-xl border border-slate-200">
+            <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+              Valor Original
+            </label>
+            <div className="font-serif font-bold text-xs text-slate-700 py-1.5">
+              {formatarMoeda(valorOriginalTotal)}
             </div>
           </div>
         )}

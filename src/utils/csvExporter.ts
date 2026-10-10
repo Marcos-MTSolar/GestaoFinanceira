@@ -82,7 +82,8 @@ export function exportarFolhaCSV(
     adicionais: number;
     beneficios: number;
     adiantamentosDescontados: number;
-    outrosDescontos: number;
+    totalDescontos: number;
+    detalheDescontos?: string;
     liquido: number;
     status: string;
     chavePix: string;
@@ -99,7 +100,8 @@ export function exportarFolhaCSV(
     'Adicionais / Comissões (R$)',
     'Benefícios (R$)',
     'Adiantamentos Descontados (R$)',
-    'Outros Descontos (R$)',
+    'Descontos (R$)',
+    'Detalhe dos descontos',
     'Líquido a Pagar (R$)',
     'Status',
     'Chave PIX',
@@ -115,7 +117,8 @@ export function exportarFolhaCSV(
     i.adicionais.toFixed(2).replace('.', ','),
     i.beneficios.toFixed(2).replace('.', ','),
     i.adiantamentosDescontados.toFixed(2).replace('.', ','),
-    i.outrosDescontos.toFixed(2).replace('.', ','),
+    i.totalDescontos.toFixed(2).replace('.', ','),
+    `"${(i.detalheDescontos || '-').replace(/"/g, '""')}"`,
     i.liquido.toFixed(2).replace('.', ','),
     i.status.toUpperCase(),
     `"${i.chavePix.replace(/"/g, '""')}"`,

@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
@@ -24,6 +24,12 @@ googleProvider.setCustomParameters({
 });
 
 // Inicializa o Firestore no banco padrão (default)
-export const db = getFirestore(app);
+let dbInstance;
+try {
+  dbInstance = initializeFirestore(app, { ignoreUndefinedProperties: true });
+} catch {
+  dbInstance = getFirestore(app);
+}
+export const db = dbInstance;
 
 export default app;
