@@ -1,7 +1,15 @@
-# RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃƒO FINANCEIRA
+# RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Ãšltima AtualizaÃ§Ã£o:** 12/10/2026 11:20:00 (Parte 7C implementada)
-**HistÃ³rico de AlteraÃ§Ãµes Recentes:**
+**Última Atualização:** 15/10/2026 07:27:00 (Parte 10A implementada)
+**Histórico de Alterações Recentes:**
+- **O que foi feito:**
+  - **Parte 10A - Correção da ordem das chamadas na exclusão de folha pendente (`src/services/storage.ts`)**:
+    - **A1 (`deleteLancamento`)**: O bloco `if (target?.origem === 'folha' && target.folha_id) { this.removerFolhaOrfa(target.folha_id); }` foi movido para ANTES do `deleteDoc`, do filtro no cache `cacheLancamentos` e do `notify('lancamentos')`. Com isso, a folha vinculada é removida antes de qualquer notificação síncrona aos assinantes de lançamentos.
+    - **A2 (`removerFolhaOrfa`)**: A remoção bruta do registro da folha (`this.removerRegistroFolhaBruto(folhaId)`) foi movida para ser executada PRIMEIRO, antes do loop de reversão de abatimentos. A ordem final ficou: (1) captura `folha`; (2) captura `adiantamentosComAbatimento`; (3) `this.removerRegistroFolhaBruto(folhaId)`; (4) loop que reverte os abatimentos; (5) auditoria. Isso assegura que notificações geradas durante a reversão não encontrem mais a folha no cache.
+    - **A3 (`excluirLancamentoFolha`)**: Confirmado que a exclusão direta da folha sem despesa já cai no ramo `else { this.removerFolhaOrfa(id); }`, usufruindo da ordem segura ajustada em A2.
+  - **Arquivos modificados:** `src/services/storage.ts`.
+
+**Histórico de Alterações Recentes (anteriores):**
 - **O que foi feito:**
   - **Parte 7C - Recibos individuais de pagamento para impressÃ£o com discriminaÃ§Ã£o de proventos, descontos e quinzenas**:
     - **C1 (`src/pages/Funcionarios.tsx`)**: No `ModalImpressaoFolha`, quando `modoImpressao === 'recibos'`, renderiza um recibo por colaborador dentro do `<PrintPortal>`, cada um encapsulado em `<section className="print-recibo">` (uma pÃ¡gina A4 retrato por recibo, com isolamento de quebra via CSS). Adicionado seletor de colaborador ("Todos | <nome>") nos controles superiores do modal para permitir a impressÃ£o de um recibo especÃ­fico ou de todos em lote.

@@ -691,15 +691,15 @@ export const dbService = {
   deleteLancamento(id: string, _escopo: string = 'so_esta'): void {
     const target = cacheLancamentos.find((l) => l.id === id);
 
+    if (target?.origem === 'folha' && target.folha_id) {
+      this.removerFolhaOrfa(target.folha_id);
+    }
+
     deleteDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, id)).catch((e) =>
       console.warn('Erro async deleteLancamento:', e)
     );
     cacheLancamentos = cacheLancamentos.filter((l) => l.id !== id);
     notify('lancamentos');
-
-    if (target?.origem === 'folha' && target.folha_id) {
-      this.removerFolhaOrfa(target.folha_id);
-    }
   },
 
   duplicarLancamento(id: string): Lancamento | null {
@@ -1088,6 +1088,8 @@ export const dbService = {
       (l) => l.tipo === 'adiantamento' && (l.abatimentos || []).some((a) => a.folha_id === folhaId)
     );
 
+    this.removerRegistroFolhaBruto(folhaId);
+
     for (const ad of adiantamentosComAbatimento) {
       const novosAbatimentos = (ad.abatimentos || []).filter((a) => a.folha_id !== folhaId);
       const somaAbatimentos = novosAbatimentos.reduce((sum, a) => sum + a.valor, 0);
@@ -1100,8 +1102,6 @@ export const dbService = {
         descontado_em_folha: descontadoTotal,
       });
     }
-
-    this.removerRegistroFolhaBruto(folhaId);
 
     if (folha) {
       const func = this.getFuncionarioById(folha.funcionario_id);
