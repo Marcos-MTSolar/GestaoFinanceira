@@ -25,6 +25,7 @@ import {
   ItemDescontoFolha,
 } from '../types';
 import { calcularDescontosRecorrentes } from '../utils/descontos';
+import { CONFIG_QUINZENAL_PADRAO, dataDoDiaNaCompetencia, dividirQuinzenas } from '../utils/quinzena';
 
 // Nomes das coleções do Firestore
 const FIRESTORE_COLLECTIONS = {
@@ -1239,7 +1240,7 @@ export const dbService = {
 
     const totalDescontos = +descontos.reduce((sum, d) => sum + d.valor, 0).toFixed(2);
 
-    const salExistente = lancsComp.find((l) => l.tipo === 'salario');
+    const salExistente = lancsComp.find((l) => l.tipo === 'salario' && l.periodo !== 'q1');
 
     let adiantamentosElegiveis = cacheLancamentosFolha.filter((l) => {
       if (l.funcionario_id !== func.id || l.tipo !== 'adiantamento' || l.status !== 'pago') return false;
@@ -1337,55 +1338,155 @@ export const dbService = {
     }
   },
 
-  gerarFolhaDoMes(competencia: string, dataVencimento: string, contaId: string): { gerados: number; totalValor: number } {
-    const ativos = this.getFuncionarios().filter((f) => f.status === 'ativo');
-    let gerados = 0;
-    let totalValor = 0;
+  calcularParcelasQuinzena(
+    func: Funcionario,
+    competencia: string,
+    adiantamentoIdsSelecionados?: string[]
+  ) {
+    if (func.forma_remuneracao !== 'quinzenal') {
+      return { quinzenal: false as const };
+    }
+    const calc = this.calcularFolhaFuncionario(func, competencia, undefined, adiantamentoIdsSelecionados);
+    const config = func.pagamento_quinzenal || CONFIG_QUINZENAL_PADRAO;
+    const divisao = dividirQuinzenas({
+      bruto: calc.bruto,
+      totalDescontos: calc.totalDescontos,
+      adiantamentosMax: calc.adiantamentosAbatidos,
+      config,
+    });
+    return {
+      quinzenal: true as const,
+      config,
+      calc,
+      divisao,
+      parcelas: [
+        { periodo: 'q1' as const, dia: config.dia_1, data_prevista: dataDoDiaNaCompetencia(competencia, config.dia_1), valor: divisao.q1 },
+        { periodo: 'q2' as const, dia: config.dia_2, data_prevista: dataDoDiaNaCompetencia(competencia, config.dia_2), valor: divisao.q2 },
+      ],
+    };
+  },
 
-    for (const func of ativos) {
-      const existe = cacheLancamentosFolha.some(
-        (l) => l.funcionario_id === func.id && l.competencia === competencia && l.tipo === 'salario'
-      );
-      if (!existe) {
-        const calcFolha = this.calcularFolhaFuncionario(func, competencia);
-        const recorrentes = calcularDescontosRecorrentes(func.descontos_recorrentes, {
-          salarioBase: calcFolha.salarioBase,
-          bruto: calcFolha.bruto,
-        });
+  gerarFolhaDoFuncionario(
+    func: Funcionario,
+    competencia: string,
+    dataVencimento: string,
+    contaId: string
+  ): { gerados: number; totalValor: number; avisos: string[] } {
+    const avisos: string[] = [];
+    const salariosComp = cacheLancamentosFolha.filter(
+      (l) => l.funcionario_id === func.id && l.competencia === competencia && l.tipo === 'salario'
+    );
+
+    if (func.forma_remuneracao === 'quinzenal') {
+      // Já existe salário mensal (legado) na competência: não gera quinzenas.
+      if (salariosComp.some((l) => !l.periodo || l.periodo === 'mensal')) {
+        return { gerados: 0, totalValor: 0, avisos };
+      }
+      const info = this.calcularParcelasQuinzena(func, competencia);
+      if (!info.quinzenal) return { gerados: 0, totalValor: 0, avisos };
+
+      const rotulos = { q1: '1ª Quinzena', q2: '2ª Quinzena' } as const;
+      const agora = Date.now();
+      let gerados = 0;
+      let totalValor = 0;
+
+      for (const parcela of info.parcelas) {
+        if (salariosComp.some((l) => l.periodo === parcela.periodo)) continue;
 
         const partesObs: string[] = [];
-        if (calcFolha.adiantamentosAbatidos > 0) {
-          partesObs.push(`Dedução de R$ ${calcFolha.adiantamentosAbatidos.toFixed(2)} em adiantamentos.`);
+        if (parcela.periodo === 'q2') {
+          if (info.divisao.abatimentoAdiantamentos > 0) {
+            partesObs.push(`Dedução de R$ ${info.divisao.abatimentoAdiantamentos.toFixed(2)} em adiantamentos.`);
+          }
+          if (info.calc.descontos.length > 0) {
+            partesObs.push(`Descontos: ${info.calc.descontos.map((d) => `${d.descricao} R$ ${d.valor.toFixed(2)}`).join('; ')}.`);
+          }
         }
-        if (recorrentes.length > 0) {
-          partesObs.push(`Descontos: ${recorrentes.map((r) => `${r.descricao} R$ ${r.valor}`).join('; ')}.`);
-        }
-        const obsFinal = partesObs.length > 0 ? partesObs.join(' ') : undefined;
+        const obs = partesObs.length > 0 ? partesObs.join(' ') : undefined;
 
         const item: LancamentoFolha = {
-          id: `folha-${Date.now()}-${func.id}`,
+          id: `folha-${agora}-${func.id}-${parcela.periodo}`,
           funcionario_id: func.id,
           tipo: 'salario',
-          descricao: `Salário Mensal ${func.cargo}`,
+          descricao: `${rotulos[parcela.periodo]} – ${func.cargo}`,
+          periodo: parcela.periodo,
           competencia,
-          valor: calcFolha.liquido,
+          valor: parcela.valor,
           tipo_operacao: 'provento',
-          data_prevista: dataVencimento,
+          data_prevista: parcela.data_prevista,
           data_pagamento: null,
           status: 'pendente',
           conta_id: contaId,
-          ...(obsFinal ? { observacoes: obsFinal } : {}),
+          ...(obs ? { observacoes: obs } : {}),
           criado_em: new Date().toISOString(),
         };
-        const folhaSalva = this.criarLancamentoFolha(item);
-        if (calcFolha.adiantamentosAbatidos > 0) {
-          this.vincularAdiantamentos(folhaSalva.id, func.id, competencia, calcFolha.adiantamentosAbatidos);
+        const salva = this.criarLancamentoFolha(item);
+        if (parcela.periodo === 'q2' && info.divisao.abatimentoAdiantamentos > 0) {
+          this.vincularAdiantamentos(salva.id, func.id, competencia, info.divisao.abatimentoAdiantamentos);
         }
         gerados++;
-        totalValor += calcFolha.liquido;
+        totalValor += parcela.valor;
       }
+      avisos.push(...info.divisao.avisos.map((a) => `${func.nome}: ${a}`));
+      return { gerados, totalValor: +totalValor.toFixed(2), avisos };
     }
-    return { gerados, totalValor };
+
+    // MENSAL (comportamento anterior, agora com periodo 'mensal')
+    if (salariosComp.length > 0) return { gerados: 0, totalValor: 0, avisos };
+
+    const calcFolha = this.calcularFolhaFuncionario(func, competencia);
+    const recorrentes = calcularDescontosRecorrentes(func.descontos_recorrentes, {
+      salarioBase: calcFolha.salarioBase,
+      bruto: calcFolha.bruto,
+    });
+    const partesObs: string[] = [];
+    if (calcFolha.adiantamentosAbatidos > 0) {
+      partesObs.push(`Dedução de R$ ${calcFolha.adiantamentosAbatidos.toFixed(2)} em adiantamentos.`);
+    }
+    if (recorrentes.length > 0) {
+      partesObs.push(`Descontos: ${recorrentes.map((r) => `${r.descricao} R$ ${r.valor.toFixed(2)}`).join('; ')}.`);
+    }
+    const obsFinal = partesObs.length > 0 ? partesObs.join(' ') : undefined;
+
+    const item: LancamentoFolha = {
+      id: `folha-${Date.now()}-${func.id}`,
+      funcionario_id: func.id,
+      tipo: 'salario',
+      descricao: `Salário Mensal ${func.cargo}`,
+      periodo: 'mensal',
+      competencia,
+      valor: calcFolha.liquido,
+      tipo_operacao: 'provento',
+      data_prevista: dataVencimento,
+      data_pagamento: null,
+      status: 'pendente',
+      conta_id: contaId,
+      ...(obsFinal ? { observacoes: obsFinal } : {}),
+      criado_em: new Date().toISOString(),
+    };
+    const folhaSalva = this.criarLancamentoFolha(item);
+    if (calcFolha.adiantamentosAbatidos > 0) {
+      this.vincularAdiantamentos(folhaSalva.id, func.id, competencia, calcFolha.adiantamentosAbatidos);
+    }
+    return { gerados: 1, totalValor: calcFolha.liquido, avisos };
+  },
+
+  gerarFolhaDoMes(
+    competencia: string,
+    dataVencimento: string,
+    contaId: string
+  ): { gerados: number; totalValor: number; avisos: string[] } {
+    const ativos = this.getFuncionarios().filter((f) => f.status === 'ativo');
+    let gerados = 0;
+    let totalValor = 0;
+    const avisos: string[] = [];
+    for (const func of ativos) {
+      const r = this.gerarFolhaDoFuncionario(func, competencia, dataVencimento, contaId);
+      gerados += r.gerados;
+      totalValor += r.totalValor;
+      avisos.push(...r.avisos);
+    }
+    return { gerados, totalValor: +totalValor.toFixed(2), avisos };
   },
 
   gerarFolhaMes(competencia: string, contaIdPadrao: string): number {
@@ -2346,7 +2447,7 @@ export const dbService = {
     };
   },
 
-  gerarRelatorioFuncionariosFolha(ano?: number) {
+  gerarRelatorioFuncionariosFolha(ano?: number, dataIni?: string, dataFim?: string) {
     const anoAlvo = ano || new Date().getFullYear();
     const funcionarios = this.getFuncionarios();
     const folha = this.getLancamentosFolha();
@@ -2379,25 +2480,71 @@ export const dbService = {
     const mesesNomes = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
     const folhaMensalAno = [];
 
-    for (let m = 0; m < 12; m++) {
-      const mesPad = String(m + 1).padStart(2, '0');
-      const comp = `${mesPad}/${anoAlvo}`;
-      const eventosMes = folha.filter((l) => l.competencia === comp);
-      const proventos = eventosMes.filter((l) => l.tipo_operacao === 'provento').reduce((a, b) => a + b.valor, 0);
-      const descontos = eventosMes.filter((l) => l.tipo_operacao === 'desconto').reduce((a, b) => a + b.valor, 0);
-      const totalLiquido = Math.max(0, +(proventos - descontos).toFixed(2));
+    if (dataIni && dataFim) {
+      // Modo multi-ano: percorre todos os anos de anoIni até anoFim
+      const anoIni = Number(dataIni.slice(0, 4));
+      const anoFim = Number(dataFim.slice(0, 4));
+      const multiAno = anoIni !== anoFim;
 
-      folhaMensalAno.push({
-        mesIndex: m + 1,
-        mesNome: mesesNomes[m],
-        rotulo: `${mesesNomes[m]}/${String(anoAlvo).slice(2)}`,
-        competencia: comp,
-        totalPago: eventosMes
-          .filter((ev) => ev.status === 'pago')
-          .reduce((acc, ev) => acc + (ev.tipo_operacao === 'provento' ? ev.valor : -ev.valor), 0),
-        totalLiquido,
-        quantidadeLancamentos: eventosMes.length,
-      });
+      for (let a = anoIni; a <= anoFim; a++) {
+        for (let m = 0; m < 12; m++) {
+          const mesPad = String(m + 1).padStart(2, '0');
+          const comp = `${mesPad}/${a}`;
+
+          // Filtra eventos desta competência cuja data esteja dentro do período
+          const eventosMes = folha.filter((l) => {
+            if (l.competencia !== comp) return false;
+            const dt = l.data_pagamento || l.data_prevista;
+            if (!dt) return false;
+            return dt >= dataIni && dt <= dataFim;
+          });
+
+          // Inclui o mês somente se houver eventos OU se a competência estiver dentro do intervalo
+          const compData = `${a}-${mesPad}`;
+          const iniData = `${dataIni.slice(0, 4)}-${dataIni.slice(5, 7)}`;
+          const fimData = `${dataFim.slice(0, 4)}-${dataFim.slice(5, 7)}`;
+          if (compData < iniData || compData > fimData) continue;
+
+          const saidas = eventosMes.filter((l) => l.tipo !== 'desconto' && l.status !== 'cancelado');
+          const totalLiquido = +saidas.reduce((a, l) => a + l.valor, 0).toFixed(2);
+          const totalPago = +saidas.filter((l) => l.status === 'pago').reduce((a, l) => a + l.valor, 0).toFixed(2);
+
+          // Rótulo inclui o ano quando o período cruza anos diferentes
+          const rotulo = multiAno
+            ? `${mesPad}/${a}`
+            : `${mesesNomes[m]}/${String(a).slice(2)}`;
+
+          folhaMensalAno.push({
+            mesIndex: m + 1,
+            mesNome: mesesNomes[m],
+            rotulo,
+            competencia: comp,
+            totalPago,
+            totalLiquido,
+            quantidadeLancamentos: eventosMes.length,
+          });
+        }
+      }
+    } else {
+      // Modo mono-ano (comportamento original): percorre os 12 meses de anoAlvo
+      for (let m = 0; m < 12; m++) {
+        const mesPad = String(m + 1).padStart(2, '0');
+        const comp = `${mesPad}/${anoAlvo}`;
+        const eventosMes = folha.filter((l) => l.competencia === comp);
+        const saidas = eventosMes.filter((l) => l.tipo !== 'desconto' && l.status !== 'cancelado');
+        const totalLiquido = +saidas.reduce((a, l) => a + l.valor, 0).toFixed(2);
+        const totalPago = +saidas.filter((l) => l.status === 'pago').reduce((a, l) => a + l.valor, 0).toFixed(2);
+
+        folhaMensalAno.push({
+          mesIndex: m + 1,
+          mesNome: mesesNomes[m],
+          rotulo: `${mesesNomes[m]}/${String(anoAlvo).slice(2)}`,
+          competencia: comp,
+          totalPago,
+          totalLiquido,
+          quantidadeLancamentos: eventosMes.length,
+        });
+      }
     }
 
     return {
@@ -2408,6 +2555,7 @@ export const dbService = {
       totalGeralMensalEmpresa: porFuncionario.reduce((acc, f) => acc + f.custoTotalMensal, 0),
     };
   },
+
 
   gerarRelatorioComparativoMesAMes(ano?: number) {
     const anoAlvo = ano || new Date().getFullYear();

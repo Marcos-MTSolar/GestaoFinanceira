@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { usePrivacy } from '../context/PrivacyContext';
 import { formatarMoeda, formatarDataBR, formatarCpfCnpj } from '../utils/formatters';
 import { exportarTabelaGenericaCSV } from '../utils/csvExporter';
+import { mesesDoPeriodo } from '../utils/periodo';
 import { Logo } from '../components/Logo';
 import {
   ResponsiveContainer,
@@ -45,6 +46,11 @@ import {
   Filter,
   FileText
 } from 'lucide-react';
+
+// B1: Paletas de cores para gráficos de categoria (independentes da cor cadastrada)
+const PALETA_RECEITAS = ['#16A34A', '#2563EB', '#0891B2', '#CA8A04', '#7C3AED', '#0F766E', '#DB2777', '#475569'];
+const PALETA_DESPESAS = ['#DC2626', '#EA580C', '#7C3AED', '#BE185D', '#CA8A04', '#7F1D1D', '#92400E', '#475569'];
+const corPorIndice = (paleta: string[], i: number) => paleta[i % paleta.length];
 
 type TipoRelatorio =
   | 'dre'
@@ -108,14 +114,33 @@ export const Relatorios: React.FC = () => {
     }
   };
 
-  // Carregar dados conforme o relatório
+
+  // A6: datas efetivas — se início > fim, usa os dois valores trocados nos cálculos
+  const periodoInvertido = dataInicio > dataFim;
+  const iniEfetivo = periodoInvertido ? dataFim : dataInicio;
+  const fimEfetivo = periodoInvertido ? dataInicio : dataFim;
+
+  // A3: dadosDRE usa iniEfetivo/fimEfetivo para respeitar período invertido
   const dadosDRE = useMemo(() => {
-    return dbService.gerarRelatorioDRE(dataInicio, dataFim);
-  }, [dataInicio, dataFim, versaoDados]);
+    return dbService.gerarRelatorioDRE(iniEfetivo, fimEfetivo);
+  }, [iniEfetivo, fimEfetivo, versaoDados]);
+
+  // A4: Fluxo de Caixa — agrega todos os anos do período e filtra meses presentes
 
   const dadosFluxo = useMemo(() => {
-    return dbService.gerarRelatorioFluxoCaixa(anoSelecionado);
-  }, [anoSelecionado, versaoDados]);
+    const meses = mesesDoPeriodo(iniEfetivo, fimEfetivo);
+    const anoIni = Number(iniEfetivo.slice(0, 4));
+    const anoFim = Number(fimEfetivo.slice(0, 4));
+    const todosMeses: ReturnType<typeof dbService.gerarRelatorioFluxoCaixa>['meses'] = [];
+    for (let a = anoIni; a <= anoFim; a++) {
+      const dados = dbService.gerarRelatorioFluxoCaixa(a);
+      dados.meses.forEach((m) => {
+        const chave = `${a}-${String(m.mesIndex).padStart(2, '0')}`;
+        if (meses.includes(chave)) todosMeses.push(m);
+      });
+    }
+    return { ano: anoIni === anoFim ? anoIni : anoIni, meses: todosMeses };
+  }, [iniEfetivo, fimEfetivo, versaoDados]);
 
   const dadosCategorias = useMemo(() => {
     const todos = dbService.getLancamentos().filter(
@@ -125,7 +150,7 @@ export const Relatorios: React.FC = () => {
 
     const filtrados = todos.filter(l => {
       const dt = l.data_pagamento || l.data_vencimento;
-      return dt >= dataInicio && dt <= dataFim;
+      return dt >= iniEfetivo && dt <= fimEfetivo;
     });
 
     const receitasMap = new Map<string, number>();
@@ -143,27 +168,34 @@ export const Relatorios: React.FC = () => {
       }
     });
 
+    // B2: ordena primeiro, depois atribui cor da paleta por índice (maior fatia = 1ª cor)
     const listaReceitas = Array.from(receitasMap.entries()).map(([id, val]) => {
       const c = categorias.find(cat => cat.id === id);
       return {
         id,
         nome: c ? c.nome : 'Outras Receitas',
-        cor: c?.cor || '#16A34A',
+        cor: '', // preenchido após sort
         valor: val,
         percentual: totalRec > 0 ? +((val / totalRec) * 100).toFixed(1) : 0,
       };
-    }).sort((a, b) => b.valor - a.valor);
+    }).sort((a, b) => b.valor - a.valor).map((item, i) => ({
+      ...item,
+      cor: corPorIndice(PALETA_RECEITAS, i),
+    }));
 
     const listaDespesas = Array.from(despesasMap.entries()).map(([id, val]) => {
       const c = categorias.find(cat => cat.id === id);
       return {
         id,
         nome: c ? c.nome : 'Outras Despesas',
-        cor: c?.cor || '#DC2626',
+        cor: '', // preenchido após sort
         valor: val,
         percentual: totalDes > 0 ? +((val / totalDes) * 100).toFixed(1) : 0,
       };
-    }).sort((a, b) => b.valor - a.valor);
+    }).sort((a, b) => b.valor - a.valor).map((item, i) => ({
+      ...item,
+      cor: corPorIndice(PALETA_DESPESAS, i),
+    }));
 
     return {
       totalRec,
@@ -171,7 +203,7 @@ export const Relatorios: React.FC = () => {
       listaReceitas,
       listaDespesas,
     };
-  }, [dataInicio, dataFim, versaoDados]);
+  }, [iniEfetivo, fimEfetivo, versaoDados]);
 
   const dadosProjetos = useMemo(() => {
     return dbService.gerarRelatorioLucratividadeProjetos();
@@ -182,20 +214,36 @@ export const Relatorios: React.FC = () => {
   }, [versaoDados]);
 
   const dadosCheque = useMemo(() => {
-    return dbService.gerarRelatorioChequeEspecial(dataInicio, dataFim);
-  }, [dataInicio, dataFim, versaoDados]);
+    return dbService.gerarRelatorioChequeEspecial(iniEfetivo, fimEfetivo);
+  }, [iniEfetivo, fimEfetivo, versaoDados]);
 
+  // A4: Funcionários & Folha — passa as datas para filtrar lançamentos de folha
   const dadosFuncionarios = useMemo(() => {
-    return dbService.gerarRelatorioFuncionariosFolha(anoSelecionado);
-  }, [anoSelecionado, versaoDados]);
+    const anoIni = Number(iniEfetivo.slice(0, 4));
+    return dbService.gerarRelatorioFuncionariosFolha(anoIni, iniEfetivo, fimEfetivo);
+  }, [iniEfetivo, fimEfetivo, versaoDados]);
 
+  // A4: Comparativo — agrega anos do período e filtra meses
   const dadosComparativo = useMemo(() => {
-    return dbService.gerarRelatorioComparativoMesAMes(anoSelecionado);
-  }, [anoSelecionado, versaoDados]);
+    const meses = mesesDoPeriodo(iniEfetivo, fimEfetivo);
+    const anoIni = Number(iniEfetivo.slice(0, 4));
+    const anoFim = Number(fimEfetivo.slice(0, 4));
+    type MesComp = ReturnType<typeof dbService.gerarRelatorioComparativoMesAMes>['meses'][number];
+    const todosMeses: MesComp[] = [];
+    for (let a = anoIni; a <= anoFim; a++) {
+      const dados = dbService.gerarRelatorioComparativoMesAMes(a);
+      dados.meses.forEach((m) => {
+        const chave = `${a}-${String(m.mesIndex).padStart(2, '0')}`;
+        if (meses.includes(chave)) todosMeses.push(m);
+      });
+    }
+    return { ano: anoIni, meses: todosMeses };
+  }, [iniEfetivo, fimEfetivo, versaoDados]);
 
   // Função de Impressão
   const handleImprimir = () => {
-    window.print();
+    window.dispatchEvent(new Event('resize'));
+    setTimeout(() => window.print(), 400);
   };
 
   // Exportação CSV do Relatório Selecionado
@@ -492,20 +540,30 @@ export const Relatorios: React.FC = () => {
         </div>
 
         {periodoPreset === 'personalizado' ? (
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex items-center gap-2 text-xs flex-wrap">
             <input
               type="date"
               value={dataInicio}
               onChange={(e) => setDataInicio(e.target.value)}
-              className="px-2.5 py-1.5 border border-slate-300 rounded-lg text-slate-700 bg-white"
+              className={`px-2.5 py-1.5 border rounded-lg text-slate-700 bg-white ${
+                periodoInvertido ? 'border-red-400' : 'border-slate-300'
+              }`}
             />
             <span className="text-slate-400">até</span>
             <input
               type="date"
               value={dataFim}
               onChange={(e) => setDataFim(e.target.value)}
-              className="px-2.5 py-1.5 border border-slate-300 rounded-lg text-slate-700 bg-white"
+              className={`px-2.5 py-1.5 border rounded-lg text-slate-700 bg-white ${
+                periodoInvertido ? 'border-red-400' : 'border-slate-300'
+              }`}
             />
+            {/* A6: aviso de período invertido */}
+            {periodoInvertido && (
+              <span className="text-xs font-semibold text-red-600">
+                A data inicial é maior que a final
+              </span>
+            )}
           </div>
         ) : (
           <div className="text-xs text-slate-500 font-medium">
@@ -521,7 +579,7 @@ export const Relatorios: React.FC = () => {
         <div className="space-y-6">
           {/* Cards Resumo */}
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Receita Bruta Realizada</span>
               <p className="font-serif text-2xl font-bold text-emerald-600 mt-1">
                 {formatarValor(dadosDRE.receitaTotal)}
@@ -529,7 +587,7 @@ export const Relatorios: React.FC = () => {
               <span className="text-[11px] text-slate-400">Total faturado no período</span>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Custos e Despesas Totais</span>
               <p className="font-serif text-2xl font-bold text-red-600 mt-1">
                 {formatarValor(dadosDRE.despesaTotal)}
@@ -537,7 +595,7 @@ export const Relatorios: React.FC = () => {
               <span className="text-[11px] text-slate-400">Operacional, insumos e equipes</span>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Resultado Líquido do Exercício</span>
               <p className={`font-serif text-2xl font-bold mt-1 ${dadosDRE.resultadoLiquido >= 0 ? 'text-[#003064]' : 'text-red-600'}`}>
                 {formatarValor(dadosDRE.resultadoLiquido)}
@@ -545,7 +603,7 @@ export const Relatorios: React.FC = () => {
               <span className="text-[11px] text-slate-400">Receitas (-) Despesas</span>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Margem Líquida</span>
               <p className="font-serif text-2xl font-bold text-[#FCBC00] mt-1">
                 {dadosDRE.margemLiquida}%
@@ -557,16 +615,16 @@ export const Relatorios: React.FC = () => {
           {/* Tabelas de DRE Detalhadas */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Receitas */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <h3 className="font-serif font-bold text-base text-[#16A34A] mb-3 pb-2 border-b border-slate-100 flex items-center justify-between">
                 <span>Receitas por Categoria (+)</span>
                 <span className="text-xs font-bold text-slate-500">{formatarValor(dadosDRE.receitaTotal)}</span>
               </h3>
               <div className="space-y-2">
-                {dadosDRE.linhasReceitas.map((r) => (
+                {dadosDRE.linhasReceitas.map((r, i) => (
                   <div key={r.categoriaId} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 text-xs">
                     <div className="flex items-center gap-2">
-                      <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: r.cor }} />
+                      <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: corPorIndice(PALETA_RECEITAS, i) }} />
                       <span className="font-semibold text-slate-800">{r.nome}</span>
                     </div>
                     <div className="text-right">
@@ -579,16 +637,16 @@ export const Relatorios: React.FC = () => {
             </div>
 
             {/* Despesas */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <h3 className="font-serif font-bold text-base text-[#DC2626] mb-3 pb-2 border-b border-slate-100 flex items-center justify-between">
                 <span>Despesas por Categoria (-)</span>
                 <span className="text-xs font-bold text-slate-500">{formatarValor(dadosDRE.despesaTotal)}</span>
               </h3>
               <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
-                {dadosDRE.linhasDespesas.map((d) => (
+                {dadosDRE.linhasDespesas.map((d, i) => (
                   <div key={d.categoriaId} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 text-xs">
                     <div className="flex items-center gap-2">
-                      <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: d.cor }} />
+                      <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: corPorIndice(PALETA_DESPESAS, i) }} />
                       <span className="font-semibold text-slate-800">{d.nome}</span>
                     </div>
                     <div className="text-right">
@@ -606,7 +664,7 @@ export const Relatorios: React.FC = () => {
       {/* 2. FLUXO DE CAIXA: REALIZADO VS PREVISTO */}
       {relatorioAtivo === 'fluxo_caixa' && (
         <div className="space-y-6">
-          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6">
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h3 className="font-serif font-bold text-lg text-[#003064]">
@@ -622,20 +680,20 @@ export const Relatorios: React.FC = () => {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={dadosFluxo.meses} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                  <XAxis dataKey="mesNome" tick={{ fontSize: 11 }} />
+                  <XAxis dataKey="rotulo" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `R$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip formatter={(v: any) => formatarValor(Number(v))} />
                   <Legend />
-                  <Bar dataKey="realizadoEntradas" name="Realizado Entradas" fill="#003064" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="realizadoSaidas" name="Realizado Saídas" fill="#FCBC00" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="previstoEntradas" name="Previsto Entradas" fill="#1A4A85" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="previstoSaidas" name="Previsto Saídas" fill="#DC2626" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="realizadoEntradas" name="Realizado Entradas" fill="#003064" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                  <Bar dataKey="realizadoSaidas" name="Realizado Saídas" fill="#FCBC00" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                  <Bar dataKey="previstoEntradas" name="Previsto Entradas" fill="#1A4A85" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                  <Bar dataKey="previstoSaidas" name="Previsto Saídas" fill="#DC2626" radius={[4, 4, 0, 0]} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-slate-600">
+              <table className="w-full text-left text-xs text-slate-600 print:text-[10pt] [&_th]:print:border [&_th]:print:border-slate-300 [&_td]:print:border [&_td]:print:border-slate-300">
                 <thead className="bg-[#F5F7FA] text-slate-500 font-semibold border-b border-slate-200">
                   <tr>
                     <th className="py-2.5 px-3">Mês</th>
@@ -649,7 +707,7 @@ export const Relatorios: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {dadosFluxo.meses.map((m) => (
-                    <tr key={m.mesIndex} className="hover:bg-slate-50">
+                    <tr key={m.rotulo} className="hover:bg-slate-50">
                       <td className="py-2.5 px-3 font-bold text-slate-800">{m.rotulo}</td>
                       <td className="py-2.5 px-3 text-right font-medium text-emerald-700">{formatarValor(m.realizadoEntradas)}</td>
                       <td className="py-2.5 px-3 text-right font-medium text-red-600">{formatarValor(m.realizadoSaidas)}</td>
@@ -673,7 +731,7 @@ export const Relatorios: React.FC = () => {
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Gráfico Rosca Despesas */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6">
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <h3 className="font-serif font-bold text-base text-[#003064] mb-1">
                 Composição de Despesas por Centro de Custo
               </h3>
@@ -691,6 +749,7 @@ export const Relatorios: React.FC = () => {
                       innerRadius={55}
                       outerRadius={80}
                       paddingAngle={2}
+                      isAnimationActive={false}
                     >
                       {dadosCategorias.listaDespesas.map((d) => (
                         <Cell key={d.id} fill={d.cor} />
@@ -715,7 +774,7 @@ export const Relatorios: React.FC = () => {
             </div>
 
             {/* Gráfico Rosca Receitas */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6">
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <h3 className="font-serif font-bold text-base text-[#003064] mb-1">
                 Composição de Receitas da MT Solar
               </h3>
@@ -733,6 +792,7 @@ export const Relatorios: React.FC = () => {
                       innerRadius={55}
                       outerRadius={80}
                       paddingAngle={2}
+                      isAnimationActive={false}
                     >
                       {dadosCategorias.listaReceitas.map((r) => (
                         <Cell key={r.id} fill={r.cor} />
@@ -762,34 +822,38 @@ export const Relatorios: React.FC = () => {
       {/* 4. LUCRATIVIDADE POR PROJETO */}
       {relatorioAtivo === 'lucratividade_projetos' && (
         <div className="space-y-6">
+          {/* A5: aviso de que este relatório não depende do período */}
+          <p className="text-xs text-slate-400 font-medium">
+            Posição atual — não depende do período selecionado
+          </p>
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[10px] font-bold uppercase text-slate-400 block">Total Contratado</span>
               <p className="font-serif text-2xl font-bold text-[#003064] mt-0.5">{formatarValor(dadosProjetos.totalContratado)}</p>
             </div>
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[10px] font-bold uppercase text-slate-400 block">Faturado em Caixa</span>
               <p className="font-serif text-2xl font-bold text-emerald-600 mt-0.5">{formatarValor(dadosProjetos.totalRecebido)}</p>
             </div>
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[10px] font-bold uppercase text-slate-400 block">Custos Obras Realizados</span>
               <p className="font-serif text-2xl font-bold text-red-600 mt-0.5">{formatarValor(dadosProjetos.totalCustosRealizados)}</p>
             </div>
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[10px] font-bold uppercase text-slate-400 block">Lucro Realizado Global</span>
               <p className="font-serif text-2xl font-bold text-[#1A4A85] mt-0.5">{formatarValor(dadosProjetos.totalLucroRealizado)}</p>
               <span className="text-[11px] font-semibold text-emerald-700">Margem Média: {dadosProjetos.margemMediaRealizada}%</span>
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
             <div className="p-5 border-b border-slate-100">
               <h3 className="font-serif font-bold text-lg text-[#003064]">Demonstrativo de Lucratividade por Obra Fotovoltaica</h3>
               <p className="text-xs text-slate-500">Valores apurados com base no valor contratado e notas/lançamentos vinculados de cada instalação.</p>
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-slate-600">
+              <table className="w-full text-left text-xs text-slate-600 print:text-[10pt] [&_th]:print:border [&_th]:print:border-slate-300 [&_td]:print:border [&_td]:print:border-slate-300">
                 <thead className="bg-[#F5F7FA] text-slate-500 font-semibold border-b border-slate-200">
                   <tr>
                     <th className="py-3 px-4">Projeto & Cliente</th>
@@ -836,14 +900,18 @@ export const Relatorios: React.FC = () => {
       {/* 5. QUEM MAIS NOS DEVE E A QUEM DEVEMOS (COM INADIMPLÊNCIA) */}
       {relatorioAtivo === 'inadimplencia_contatos' && (
         <div className="space-y-6">
+          {/* A5: aviso de que este relatório não depende do período */}
+          <p className="text-xs text-slate-400 font-medium">
+            Posição atual — não depende do período selecionado
+          </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-red-200 bg-red-50/20 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-red-200 bg-red-50/20 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-red-600 block">Total Vencido a Receber (Inadimplência)</span>
               <p className="font-serif text-2xl font-bold text-red-700 mt-1">{formatarValor(dadosInadimplencia.totalInadimplenciaReceber)}</p>
               <span className="text-xs text-slate-500">Clientes com parcelas em atraso na MT Solar</span>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-amber-200 bg-amber-50/20 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-amber-200 bg-amber-50/20 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-amber-700 block">Total Vencido a Pagar (Atrasos da Empresa)</span>
               <p className="font-serif text-2xl font-bold text-amber-800 mt-1">{formatarValor(dadosInadimplencia.totalVencidoPagar)}</p>
               <span className="text-xs text-slate-500">Boletos e duplicatas vencidas com fornecedores</span>
@@ -852,7 +920,7 @@ export const Relatorios: React.FC = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Quem mais nos deve */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <h3 className="font-serif font-bold text-base text-[#003064] mb-3 pb-2 border-b border-slate-100 flex items-center justify-between">
                 <span>Quem Mais Nos Deve (Clientes)</span>
                 <span className="text-xs text-red-600 font-bold">{dadosInadimplencia.quemNosDeve.length} devedores</span>
@@ -882,7 +950,7 @@ export const Relatorios: React.FC = () => {
             </div>
 
             {/* A quem mais devemos */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <h3 className="font-serif font-bold text-base text-[#003064] mb-3 pb-2 border-b border-slate-100 flex items-center justify-between">
                 <span>A Quem Mais Devemos (Fornecedores)</span>
                 <span className="text-xs text-amber-700 font-bold">{dadosInadimplencia.aQuemDevemos.length} credores</span>
@@ -914,33 +982,33 @@ export const Relatorios: React.FC = () => {
       {relatorioAtivo === 'cheque_especial' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Dias no Negativo (Período)</span>
               <p className="font-serif text-2xl font-bold text-red-600 mt-1">{dadosCheque.diasNoNegativo} dias</p>
               <span className="text-xs text-slate-500">Dias com saldo real abaixo de zero</span>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Maior Pico de Utilização</span>
               <p className="font-serif text-2xl font-bold text-[#003064] mt-1">{formatarValor(dadosCheque.maiorValorUtilizado)}</p>
               <span className="text-xs text-slate-500">Pico máximo atingido no limite</span>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Custo Estimado de Juros</span>
               <p className="font-serif text-2xl font-bold text-amber-700 mt-1">{formatarValor(dadosCheque.custoTotalJurosEstimado)}</p>
               <span className="text-xs text-slate-500">Estimativa baseada na taxa cadastrada</span>
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
             <div className="p-5 border-b border-slate-100">
               <h3 className="font-serif font-bold text-lg text-[#003064]">Detalhamento por Conta Bancária MT Solar</h3>
               <p className="text-xs text-slate-500">Acompanhamento da exposição financeira em cada instituição bancária.</p>
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-slate-600">
+              <table className="w-full text-left text-xs text-slate-600 print:text-[10pt] [&_th]:print:border [&_th]:print:border-slate-300 [&_td]:print:border [&_td]:print:border-slate-300">
                 <thead className="bg-[#F5F7FA] text-slate-500 font-semibold border-b border-slate-200">
                   <tr>
                     <th className="py-3 px-4">Conta Bancária</th>
@@ -976,20 +1044,23 @@ export const Relatorios: React.FC = () => {
       {/* 7. FUNCIONÁRIOS: CUSTO POR FUNCIONÁRIO E SETOR */}
       {relatorioAtivo === 'funcionarios_folha' && (
         <div className="space-y-6">
+          <p className="text-xs text-slate-500">
+            Custo por colaborador e por setor = custo mensal estimado atual (não depende do período). A tabela abaixo mostra a folha do período selecionado.
+          </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Total de Colaboradores</span>
               <p className="font-serif text-2xl font-bold text-[#003064] mt-1">{dadosFuncionarios.porFuncionario.length}</p>
               <span className="text-xs text-slate-500">Equipe técnica e administrativa</span>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Custo Mensal Global Empresa</span>
               <p className="font-serif text-2xl font-bold text-red-600 mt-1">{formatarValor(dadosFuncionarios.totalGeralMensalEmpresa)}</p>
               <span className="text-xs text-slate-500">Salários + Benefícios + Encargos</span>
             </div>
 
-            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <span className="text-[11px] font-bold uppercase text-slate-400 block">Setor com Maior Custo</span>
               <p className="font-serif text-xl font-bold text-[#1A4A85] mt-1">{dadosFuncionarios.porSetor[0]?.setor || 'Instalação'}</p>
               <span className="text-xs text-slate-500">{formatarValor(dadosFuncionarios.porSetor[0]?.totalCusto || 0)} / mês</span>
@@ -998,7 +1069,7 @@ export const Relatorios: React.FC = () => {
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Custo por Colaborador */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <h3 className="font-serif font-bold text-base text-[#003064] mb-3 pb-2 border-b border-slate-100">
                 Custo Total por Funcionário (com Encargos)
               </h3>
@@ -1020,7 +1091,7 @@ export const Relatorios: React.FC = () => {
             </div>
 
             {/* Custo por Setor */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
               <h3 className="font-serif font-bold text-base text-[#003064] mb-3 pb-2 border-b border-slate-100">
                 Distribuição de Custos por Setor
               </h3>
@@ -1040,20 +1111,79 @@ export const Relatorios: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Folha de Pagamento no Período */}
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
+            <h3 className="font-serif font-bold text-base text-[#003064] mb-3 pb-2 border-b border-slate-100">
+              Folha de Pagamento no Período
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-600 print:text-[10pt] [&_th]:print:border [&_th]:print:border-slate-300 [&_td]:print:border [&_td]:print:border-slate-300">
+                <thead className="bg-[#F5F7FA] text-slate-500 font-semibold border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4">Competência</th>
+                    <th className="py-3 px-4 text-right">Já Pago</th>
+                    <th className="py-3 px-4 text-right">Total do Mês</th>
+                    <th className="py-3 px-4 text-right">Lançamentos</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {dadosFuncionarios.folhaMensalAno.map((m) => {
+                    const temLanc = m.quantidadeLancamentos > 0;
+                    return (
+                      <tr key={m.competencia} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-bold text-slate-800">{m.rotulo}</td>
+                        <td className="py-3 px-4 text-right font-medium text-emerald-700">
+                          {temLanc ? formatarValor(m.totalPago) : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-right font-serif font-bold text-[#003064]">
+                          {temLanc ? formatarValor(m.totalLiquido) : '-'}
+                        </td>
+                        <td className="py-3 px-4 text-right font-medium text-slate-600">
+                          {temLanc ? m.quantidadeLancamentos : '-'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {dadosFuncionarios.folhaMensalAno.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="py-4 text-center text-slate-400 italic">
+                        Nenhum lançamento no período selecionado.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-[#F5F7FA] font-bold border-t border-slate-300 text-slate-800">
+                    <td className="py-3 px-4 font-bold">TOTAIS</td>
+                    <td className="py-3 px-4 text-right font-medium text-emerald-700">
+                      {formatarValor(dadosFuncionarios.folhaMensalAno.reduce((acc, m) => acc + m.totalPago, 0))}
+                    </td>
+                    <td className="py-3 px-4 text-right font-serif font-bold text-[#003064]">
+                      {formatarValor(dadosFuncionarios.folhaMensalAno.reduce((acc, m) => acc + m.totalLiquido, 0))}
+                    </td>
+                    <td className="py-3 px-4 text-right font-bold text-slate-800">
+                      {dadosFuncionarios.folhaMensalAno.reduce((acc, m) => acc + m.quantidadeLancamentos, 0)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
       {/* 8. COMPARATIVO MÊS A MÊS */}
       {relatorioAtivo === 'comparativo_mensal' && (
         <div className="space-y-6">
-          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6">
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 print-avoid-break print:shadow-none print:border print:border-slate-300 print:rounded-none">
             <h3 className="font-serif font-bold text-lg text-[#003064] mb-1">
               Comparativo Evolutivo Mensal – Ano {dadosComparativo.ano}
             </h3>
             <p className="text-xs text-slate-500 mb-6">Oscilação percentual e crescimento nominal mês a mês.</p>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-slate-600">
+              <table className="w-full text-left text-xs text-slate-600 print:text-[10pt] [&_th]:print:border [&_th]:print:border-slate-300 [&_td]:print:border [&_td]:print:border-slate-300">
                 <thead className="bg-[#F5F7FA] text-slate-500 font-semibold border-b border-slate-200">
                   <tr>
                     <th className="py-3 px-4">Mês</th>
@@ -1066,7 +1196,7 @@ export const Relatorios: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {dadosComparativo.meses.map((m) => (
-                    <tr key={m.mesIndex} className="hover:bg-slate-50">
+                    <tr key={m.rotulo} className="hover:bg-slate-50">
                       <td className="py-3 px-4 font-bold text-slate-800">{m.rotulo}</td>
                       <td className="py-3 px-4 text-right font-medium text-emerald-700">{formatarValor(m.realizadoEntradas)}</td>
                       <td className={`py-3 px-4 text-right font-bold ${m.variacaoReceitas >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
@@ -1087,6 +1217,11 @@ export const Relatorios: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* RODAPÉ DE IMPRESSÃO (APARECE APENAS NO PRINT / PDF) */}
+      <div className="hidden print:block fixed bottom-0 left-0 right-0 text-center text-[9px] text-slate-400">
+        MT Solar — Relatório gerado pelo sistema de Gestão Financeira
+      </div>
 
     </div>
   );

@@ -152,13 +152,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       {/* Desktop Sidebar (Fixo) */}
-      <aside className="hidden lg:block w-64 h-screen sticky top-0 flex-shrink-0 z-20">
+      <aside className="hidden lg:block w-64 h-screen sticky top-0 flex-shrink-0 z-20 print:hidden">
         {navContent}
       </aside>
 
       {/* Mobile Drawer (Sobreposição) */}
       {isOpenMobile && (
-        <div className="lg:hidden fixed inset-0 z-50 flex">
+        <div className="lg:hidden fixed inset-0 z-50 flex print:hidden">
           <div
             className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs transition-opacity"
             onClick={onCloseMobile}

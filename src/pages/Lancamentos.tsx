@@ -130,6 +130,8 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
   const [novoProjetoNome, setNovoProjetoNome] = useState('');
   const [novoProjetoValor, setNovoProjetoValor] = useState('');
 
+  const contaEfetivaId = contas.some(c => c.id === contaId) ? contaId : (contas[0]?.id || '');
+
   const carregarDados = () => {
     setLancamentos(dbService.getLancamentos());
     const c = dbService.getContas();
@@ -174,7 +176,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
     setDataVencimento(new Date().toISOString().split('T')[0]);
     setDataPagamento(new Date().toISOString().split('T')[0]);
     setStatus('pago');
-    setContaId(contas[0]?.id || '');
+    setContaId(dbService.getContas()[0]?.id || '');
     
     const catPadrao = categorias.find(c => c.tipo === (tipoFixo || 'receita'));
     setCategoriaId(catPadrao?.id || '');
@@ -291,8 +293,8 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
       return;
     }
 
-    if (!contaId) {
-      alert('Selecione uma conta bancária de débito/crédito.');
+    if (!contaEfetivaId) {
+      alert('Cadastre uma conta bancária antes de criar lançamentos.');
       return;
     }
 
@@ -315,7 +317,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
           data_vencimento: vencIso,
           data_pagamento: i === 1 && status === 'pago' ? (dataPagamento || vencIso) : null,
           status: i === 1 && status === 'pago' ? 'pago' : 'pendente',
-          conta_id: contaId,
+          conta_id: contaEfetivaId,
           categoria_id: categoriaId,
           contato_id: contatoId || undefined,
           projeto_id: projetoId || undefined,
@@ -357,7 +359,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
           data_vencimento: vencIso,
           data_pagamento: i === 1 && status === 'pago' ? (dataPagamento || vencIso) : null,
           status: i === 1 && status === 'pago' ? 'pago' : 'pendente',
-          conta_id: contaId,
+          conta_id: contaEfetivaId,
           categoria_id: categoriaId,
           contato_id: contatoId || undefined,
           projeto_id: projetoId || undefined,
@@ -381,7 +383,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
         data_vencimento: dataVencimento,
         data_pagamento: status === 'pago' ? (dataPagamento || dataVencimento) : null,
         status,
-        conta_id: contaId,
+        conta_id: contaEfetivaId,
         categoria_id: categoriaId,
         contato_id: contatoId || undefined,
         projeto_id: projetoId || undefined,
@@ -1058,7 +1060,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
                 Conta Bancária / Destino *
               </label>
               <select
-                value={contaId}
+                value={contaEfetivaId}
                 onChange={(e) => setContaId(e.target.value)}
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064]"
                 required

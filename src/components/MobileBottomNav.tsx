@@ -20,7 +20,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   onToggleMenu,
 }) => {
   return (
-    <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200/90 shadow-lg px-2 py-1.5 flex items-center justify-around safe-bottom">
+    <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200/90 shadow-lg px-2 py-1.5 flex items-center justify-around safe-bottom print:hidden">
       <button
         onClick={() => onNavegar('painel')}
         className={`flex flex-col items-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors ${

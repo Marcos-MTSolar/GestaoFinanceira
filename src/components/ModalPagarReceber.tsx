@@ -41,6 +41,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
       : contas[0]?.id || '';
 
   const [contaSelecionadaId, setContaSelecionadaId] = useState(contaPadraoId);
+  const contaEfetivaId = contas.some(c => c.id === contaSelecionadaId) ? contaSelecionadaId : contaPadraoId;
   const [dataPagamento, setDataPagamento] = useState(
     new Date().toISOString().split('T')[0]
   );
@@ -64,7 +65,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
   const isPagar = tipoOperacao === 'pagar';
   const todosFolha = lancamentosAlvo.length > 0 && lancamentosAlvo.every((l) => l.origem === 'folha');
 
-  const conta = contas.find((c) => c.id === contaSelecionadaId);
+  const conta = contas.find((c) => c.id === contaEfetivaId);
   const resumoConta = conta ? dbService.calcularResumoConta(conta) : null;
 
   const valorOriginalTotal = lancamentosAlvo.reduce((acc, l) => acc + l.valor, 0);
@@ -113,13 +114,13 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
     if (isLote) {
       dbService.liquidarLancamentosEmLote({
         ids: lancamentosAlvo.map((l) => l.id),
-        contaId: contaSelecionadaId,
+        contaId: contaEfetivaId,
         dataPagamento,
       });
     } else {
       dbService.liquidarLancamento({
         id: lancamentosAlvo[0].id,
-        contaId: contaSelecionadaId,
+        contaId: contaEfetivaId,
         dataPagamento,
         jurosMulta: todosFolha ? 0 : numJuros,
         desconto: todosFolha ? 0 : numDesconto,
@@ -187,7 +188,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
               {isPagar ? 'Conta de onde sai o dinheiro *' : 'Conta onde entra o dinheiro *'}
             </label>
             <select
-              value={contaSelecionadaId}
+              value={contaEfetivaId}
               onChange={(e) => setContaSelecionadaId(e.target.value)}
               className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064]"
               required

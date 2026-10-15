@@ -9,3 +9,23 @@
     font-family: 'Playfair Display', Georgia, serif;
   }
 }
+
+@media print {
+  @page { size: A4 portrait; margin: 14mm; }
+  html, body { background: #fff !important; overflow: visible !important; height: auto !important; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  thead { display: table-header-group; }
+  tr, .print-avoid-break { break-inside: avoid; }
+  .recharts-wrapper, .recharts-surface { max-width: 100% !important; }
+}
+
+@media screen { #print-root { display: none; } }
+@media print {
+  body.print-portal-ativo > #root { display: none !important; }
+  body.print-portal-ativo #print-root { display: block !important; }
+  @page folha { size: A4 landscape; margin: 12mm; }
+  @page recibo { size: A4 portrait; margin: 14mm; }
+  .print-folha { page: folha; }
+  .print-recibo { page: recibo; break-after: page; }
+  .print-recibo:last-child { break-after: auto; }
+}

@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { usePrivacy } from '../context/PrivacyContext';
 import { formatarMoeda, formatarDataBR, formatarCpfCnpj, formatarTelefone, obterHojeISO } from '../utils/formatters';
 import { exportarFolhaCSV } from '../utils/csvExporter';
-import { dividirQuinzenas, dataDoDiaNaCompetencia, ConfigQuinzenal } from '../utils/quinzena';
+import { dividirQuinzenas, dataDoDiaNaCompetencia, ConfigQuinzenal, CONFIG_QUINZENAL_PADRAO } from '../utils/quinzena';
 import { calcularDescontosRecorrentes } from '../utils/descontos';
 import {
   Funcionario,
@@ -23,6 +23,7 @@ import {
 import { Modal } from '../components/Modal';
 import { ModalPagarReceber } from '../components/ModalPagarReceber';
 import { Logo } from '../components/Logo';
+import { PrintPortal } from '../components/PrintPortal';
 import {
   ResponsiveContainer,
   BarChart,
@@ -152,9 +153,12 @@ export const Funcionarios: React.FC = () => {
   // Modal Pagar Todos em Lote (Folha do Mês)
   const [modalPagarTodosAberto, setModalPagarTodosAberto] = useState(false);
   const [selecionadosLoteFolha, setSelecionadosLoteFolha] = useState<string[]>([]);
+  const [modoLote, setModoLote] = useState<'proxima' | 'todas' | 'q1' | 'q2'>('proxima');
 
   // Modal de Impressão da Folha
   const [modalImpressaoAberto, setModalImpressaoAberto] = useState(false);
+  const [impressaoModo, setImpressaoModo] = useState<'geral' | 'recibos'>('geral');
+  const [impressaoFuncionarioId, setImpressaoFuncionarioId] = useState<string>('todos');
   const [modalHistoricoAberto, setModalHistoricoAberto] = useState(false);
 
   // Cópia de PIX Feedback
@@ -276,6 +280,18 @@ export const Funcionarios: React.FC = () => {
       )
       .sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
 
+  const parcelasSalarioAtuais = (funcionarioId: string): LancamentoFolha[] =>
+    dbService
+      .getLancamentosFolha()
+      .filter(
+        l =>
+          l.funcionario_id === funcionarioId &&
+          l.competencia === competenciaAtiva &&
+          l.tipo === 'salario' &&
+          l.status !== 'cancelado'
+      )
+      .sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
+
   // E2: Status de pagamento do mês usando parcelasSalario
   const getStatusPagamentoMes = (funcionarioId: string) => {
     const parcelas = parcelasSalario(funcionarioId);
@@ -344,72 +360,39 @@ export const Funcionarios: React.FC = () => {
     }
   };
 
-  // E4: Pagamento individual rápido — suporta periodo quinzenal ('q1'|'q2')
+  // E4: Pagamento individual rápido — mensal e quinzenal unificados via gerarFolhaDoFuncionario
   const handlePagarSalarioRapido = (f: Funcionario, e?: React.MouseEvent, periodo?: 'q1' | 'q2') => {
     if (e) e.stopPropagation();
 
-    const isQuinzenal = f.forma_remuneracao === 'quinzenal';
+    let parcelas = parcelasSalarioAtuais(f.id);
 
-    if (isQuinzenal) {
-      // Para quinzenal: EXIGE que as parcelas já tenham sido geradas
-      const todasParcelas = parcelasSalario(f.id);
-      if (todasParcelas.length === 0) {
-        alert('Gere a folha do mês primeiro.');
+    if (parcelas.length === 0) {
+      const res = dbService.gerarFolhaDoFuncionario(
+        f,
+        competenciaAtiva,
+        obterHojeISO(),
+        contas[0]?.id || 'conta-1'
+      );
+      if (res.avisos.length > 0) {
+        alert(res.avisos.join('\n'));
+      }
+      parcelas = parcelasSalarioAtuais(f.id);
+      if (parcelas.length === 0) {
+        alert('Não foi possível gerar a folha deste colaborador.');
         return;
       }
+    }
 
-      // Localiza a parcela pendente do período solicitado
-      const parcela = periodo
-        ? todasParcelas.find(p => p.periodo === periodo && p.status === 'pendente')
-        : todasParcelas.find(p => p.status === 'pendente');
+    const parcela = periodo
+      ? parcelas.find(p => p.periodo === periodo && p.status === 'pendente')
+      : parcelas.find(p => p.status === 'pendente');
 
-      if (!parcela) {
-        alert('Não há parcela pendente para o período selecionado.');
-        return;
-      }
-
-      const despesas = dbService.prepararDespesasDaFolha([parcela.id]);
-      if (despesas.length === 0) {
-        alert('Não foi possível preparar a despesa deste pagamento.');
-        return;
-      }
-      setLancamentoParaPagar(despesas);
-      setModalPagarFolhaAberto(true);
+    if (!parcela) {
+      alert('Todas as parcelas deste colaborador já estão pagas.');
       return;
     }
 
-    // Fluxo mensal original
-    let sal = lancamentosFolha.find(
-      l => l.funcionario_id === f.id && l.competencia === competenciaAtiva && l.tipo === 'salario' && l.status === 'pendente'
-    );
-
-    // Se não tiver, cria um lançamento na hora para ser liquidado
-    if (!sal) {
-      const calcFolha = dbService.calcularFolhaFuncionario(f, competenciaAtiva);
-      const liquido = calcFolha.liquido;
-
-      sal = dbService.criarLancamentoFolha({
-        id: 'folha-' + Date.now(),
-        funcionario_id: f.id,
-        tipo: 'salario',
-        descricao: `Salário Mensal ${f.cargo}`,
-        competencia: competenciaAtiva,
-        valor: liquido,
-        tipo_operacao: 'provento',
-        data_prevista: obterHojeISO(),
-        data_pagamento: null,
-        status: 'pendente',
-        conta_id: contas[0]?.id || 'conta-1',
-        observacoes: calcFolha.adiantamentosAbatidos > 0 ? `Dedução de R$ ${calcFolha.adiantamentosAbatidos.toFixed(2)} em adiantamentos.` : undefined,
-        criado_em: new Date().toISOString(),
-      });
-
-      if (calcFolha.adiantamentosAbatidos > 0) {
-        dbService.vincularAdiantamentos(sal.id, f.id, competenciaAtiva, calcFolha.adiantamentosAbatidos);
-      }
-    }
-
-    const despesas = dbService.prepararDespesasDaFolha([sal.id]);
+    const despesas = dbService.prepararDespesasDaFolha([parcela.id]);
     if (despesas.length === 0) {
       alert('Não foi possível preparar a despesa deste pagamento.');
       return;
@@ -432,15 +415,71 @@ export const Funcionarios: React.FC = () => {
 
   // PAGAR TODOS EM LOTE
   const handleAbrirPagarTodos = () => {
-    const pendentes = lancamentosFolha.filter(
+    // 1. Liste os colaboradores ATIVOS sem nenhuma parcela de salário na competência (use dbService.getLancamentosFolha())
+    const todosAtivos = funcionarios.filter(f => f.status === 'ativo');
+    const lancsAtuais1 = dbService.getLancamentosFolha();
+    const semFolha = todosAtivos.filter(f =>
+      !lancsAtuais1.some(
+        l => l.funcionario_id === f.id && l.competencia === competenciaAtiva && l.tipo === 'salario' && l.status !== 'cancelado'
+      )
+    );
+
+    if (semFolha.length > 0) {
+      const nomes = semFolha.map(f => f.nome).join(', ');
+      const querGerar = confirm(
+        `${semFolha.length} colaborador(es) ainda não têm folha gerada: ${nomes}. Gerar agora?`
+      );
+      if (querGerar) {
+        const res = dbService.gerarFolhaDoMes(
+          competenciaAtiva,
+          obterHojeISO(),
+          contas[0]?.id || 'conta-1'
+        );
+        if (res.avisos && res.avisos.length > 0) {
+          alert(`Avisos da folha gerada:\n\n${res.avisos.join('\n')}`);
+        }
+      }
+    }
+
+    // 2. Releia dbService.getLancamentosFolha(). Pendentes = competência ativa, status 'pendente', tipo !== 'desconto'
+    const lancsAtuais2 = dbService.getLancamentosFolha();
+    const todasPendentes = lancsAtuais2.filter(
       l => l.competencia === competenciaAtiva && l.status === 'pendente' && l.tipo !== 'desconto'
     );
-    if (pendentes.length === 0) {
-      alert(`Não há lançamentos pendentes para quitação na competência ${competenciaAtiva}.`);
+
+    // 3. Filtre pelo modo: 'proxima' → UMA por colaborador (menor data_prevista); 'todas' → todas; 'q1' → periodo === 'q1'; 'q2' → periodo === 'q2'
+    let selecionadas: LancamentoFolha[] = [];
+    if (modoLote === 'proxima') {
+      const porFuncionario = new Map<string, LancamentoFolha>();
+      const ordenadas = [...todasPendentes].sort((a, b) =>
+        a.data_prevista > b.data_prevista ? 1 : a.data_prevista < b.data_prevista ? -1 : 0
+      );
+      for (const p of ordenadas) {
+        if (!porFuncionario.has(p.funcionario_id)) {
+          porFuncionario.set(p.funcionario_id, p);
+        }
+      }
+      selecionadas = Array.from(porFuncionario.values());
+    } else if (modoLote === 'todas') {
+      selecionadas = todasPendentes;
+    } else if (modoLote === 'q1') {
+      selecionadas = todasPendentes.filter(p => p.periodo === 'q1');
+    } else if (modoLote === 'q2') {
+      selecionadas = todasPendentes.filter(p => p.periodo === 'q2');
+    }
+
+    // 4. Se vazio: se não existir nenhuma pendente → alert('Todas as folhas desta competência já foram pagas.'); senão alert('Nenhum lançamento pendente para a opção escolhida.'). Return.
+    if (selecionadas.length === 0) {
+      if (todasPendentes.length === 0) {
+        alert('Todas as folhas desta competência já foram pagas.');
+      } else {
+        alert('Nenhum lançamento pendente para a opção escolhida.');
+      }
       return;
     }
 
-    const despesas = dbService.prepararDespesasDaFolha(pendentes.map(p => p.id));
+    // 5. dbService.prepararDespesasDaFolha(ids) → setLancamentoParaPagar → abre o modal de lote (fluxo atual)
+    const despesas = dbService.prepararDespesasDaFolha(selecionadas.map(p => p.id));
     if (despesas.length === 0) {
       alert(`Não foi possível preparar as despesas para quitação na competência ${competenciaAtiva}.`);
       return;
@@ -484,7 +523,7 @@ export const Funcionarios: React.FC = () => {
         cpf: f.cpf,
         tipoContrato: f.tipo_contrato,
         salarioBase: calcFolha.salarioBase,
-        adicionais: calcFolha.adicionais + calcFolha.proventosAvulsos,
+        adicionais: calcFolha.adicionais,
         beneficios: custos.totalBeneficios,
         adiantamentosDescontados: calcFolha.adiantamentosAbatidos,
         totalDescontos: calcFolha.totalDescontos,
@@ -980,13 +1019,26 @@ export const Funcionarios: React.FC = () => {
                     <span>Gerar Folha do Mês</span>
                   </button>
 
-                  <button
-                    onClick={handleAbrirPagarTodos}
-                    className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-2xs cursor-pointer border-b border-emerald-800"
-                  >
-                    <CheckSquare className="w-3.5 h-3.5" />
-                    <span>Pagar Todos em Lote</span>
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <select
+                      value={modoLote}
+                      onChange={(e) => setModoLote(e.target.value as 'proxima' | 'todas' | 'q1' | 'q2')}
+                      className="bg-white text-slate-700 border border-slate-300 rounded-xl px-2.5 py-2 text-xs font-semibold focus:ring-2 focus:ring-[#003064] cursor-pointer"
+                    >
+                      <option value="proxima">Próxima parcela de cada colaborador</option>
+                      <option value="todas">Todas as pendentes</option>
+                      <option value="q1">Só 1ª quinzena</option>
+                      <option value="q2">Só 2ª quinzena</option>
+                    </select>
+
+                    <button
+                      onClick={handleAbrirPagarTodos}
+                      className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-2xs cursor-pointer border-b border-emerald-800 whitespace-nowrap"
+                    >
+                      <CheckSquare className="w-3.5 h-3.5" />
+                      <span>Pagar Todos em Lote</span>
+                    </button>
+                  </div>
                 </>
               )}
 
@@ -1000,7 +1052,11 @@ export const Funcionarios: React.FC = () => {
               </button>
 
               <button
-                onClick={() => setModalImpressaoAberto(true)}
+                onClick={() => {
+                  setImpressaoModo('geral');
+                  setImpressaoFuncionarioId('todos');
+                  setModalImpressaoAberto(true);
+                }}
                 className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer border border-slate-200"
                 title="Versão para impressão / recibos"
               >
@@ -1035,19 +1091,31 @@ export const Funcionarios: React.FC = () => {
 
                     // Líquido exibido: soma das parcelas (se existirem) ou previsão
                     let valorLiquido: number;
+                    // D1: Previsão quinzenal via calcularParcelasQuinzena (inclui descontos e adiantamentos)
+                    const prevQuinzena = isQuinzenal
+                      ? dbService.calcularParcelasQuinzena(f, competenciaAtiva)
+                      : null;
+
                     if (parcelas.length > 0) {
                       valorLiquido = parcelas.reduce((acc, p) => acc + p.valor, 0);
-                    } else if (isQuinzenal && f.pagamento_quinzenal) {
-                      // Previsão quinzenal: usa dividirQuinzenas (já importado no topo)
-                      const div = dividirQuinzenas({
-                        bruto: calcFolha.salarioBase + (calcFolha.adicionais || 0),
-                        totalDescontos: 0,
-                        adiantamentosMax: 0,
-                        config: f.pagamento_quinzenal,
-                      });
-                      valorLiquido = div.q1 + div.q2;
+                    } else if (isQuinzenal) {
+                      valorLiquido = prevQuinzena?.quinzenal
+                        ? +prevQuinzena.parcelas.reduce((a, p) => a + p.valor, 0).toFixed(2)
+                        : calcFolha.liquido;
                     } else {
                       valorLiquido = calcFolha.liquido;
+                    }
+
+                    // D3: Detectar valor gerado desatualizado (parcelas pendentes vs. previsão atual)
+                    const parcelasPendentes = parcelas.filter((p) => p.status === 'pendente');
+                    const temParcelasPendentes = parcelasPendentes.length > 0;
+                    let valorDesatualizado = false;
+                    if (parcelas.length > 0 && temParcelasPendentes) {
+                      const previsto = isQuinzenal && prevQuinzena?.quinzenal
+                        ? +prevQuinzena.parcelas.reduce((a, p) => a + p.valor, 0).toFixed(2)
+                        : calcFolha.liquido;
+                      const somaParcelas = +parcelas.reduce((acc, p) => acc + p.valor, 0).toFixed(2);
+                      valorDesatualizado = Math.abs(somaParcelas - previsto) > 0.01;
                     }
 
                     // Status geral via getStatusPagamentoMes
@@ -1101,6 +1169,21 @@ export const Funcionarios: React.FC = () => {
                           <strong className="font-serif font-black text-sm text-[#003064]">
                             {formatarValor(valorLiquido)}
                           </strong>
+                          {/* D2: Previsão por quinzena quando sem parcelas geradas */}
+                          {isQuinzenal && parcelas.length === 0 && prevQuinzena?.quinzenal && (
+                            <p className="text-[10px] text-slate-500 mt-0.5 font-sans">
+                              Prev.: 1ª {formatarValor(prevQuinzena.parcelas[0].valor)} • 2ª {formatarValor(prevQuinzena.parcelas[1].valor)}
+                            </p>
+                          )}
+                          {/* D3: Selo âmbar de valor gerado desatualizado */}
+                          {valorDesatualizado && (
+                            <span
+                              className="inline-block mt-1 text-[10px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded-full cursor-help"
+                              title="Os descontos ou o cadastro mudaram depois da geração. Exclua as parcelas pendentes e gere novamente."
+                            >
+                              ⚠ Valor gerado desatualizado
+                            </span>
+                          )}
                         </td>
 
                         {/* Coluna Status */}
@@ -1228,14 +1311,30 @@ export const Funcionarios: React.FC = () => {
                   </button>
                 )}
 
-                <button
-                  type="button"
-                  onClick={() => handlePagarSalarioRapido(funcionarioSelecionado)}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-xs font-bold text-white shadow-xs cursor-pointer border-b-2 border-emerald-800"
-                >
-                  <DollarSign className="w-3.5 h-3.5" />
-                  <span>Lançar Pagamento</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImpressaoModo('recibos');
+                      setImpressaoFuncionarioId(funcionarioSelecionado.id);
+                      setModalImpressaoAberto(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold text-white border border-white/20 transition-all cursor-pointer"
+                    title="Imprimir recibo deste colaborador"
+                  >
+                    <Printer className="w-3.5 h-3.5 text-[#FCBC00]" />
+                    <span>Imprimir Recibo</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handlePagarSalarioRapido(funcionarioSelecionado)}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-xs font-bold text-white shadow-xs cursor-pointer border-b-2 border-emerald-800"
+                  >
+                    <DollarSign className="w-3.5 h-3.5" />
+                    <span>Lançar Pagamento</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1800,6 +1899,8 @@ export const Funcionarios: React.FC = () => {
         competencia={competenciaAtiva}
         funcionarios={funcionarios.filter(f => f.status === 'ativo')}
         lancamentosFolha={lancamentosFolha}
+        initialModo={impressaoModo}
+        initialFuncionarioId={impressaoFuncionarioId}
       />
 
       {/* ========================================================= */}
@@ -3420,7 +3521,720 @@ interface ImpressaoProps {
   competencia: string;
   funcionarios: Funcionario[];
   lancamentosFolha: LancamentoFolha[];
+  initialModo?: 'geral' | 'recibos';
+  initialFuncionarioId?: string;
 }
+
+function carregarImagem(src: string): Promise<void> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve();
+    img.onerror = () => resolve();
+    img.src = src;
+  });
+}
+
+// ============================================================================
+// SUBCOMPONENTE: FOLHA GERAL DE IMPRESSÃO (PARTE 7B)
+// ============================================================================
+interface FolhaGeralProps {
+  competencia: string;
+  periodo: 'mes' | 'q1' | 'q2';
+  funcionarios: Funcionario[];
+  lancamentosFolha: LancamentoFolha[];
+}
+
+export const FolhaGeralImpressao: React.FC<FolhaGeralProps> = ({
+  competencia,
+  periodo,
+  funcionarios,
+  lancamentosFolha,
+}) => {
+  // B2: Filtrar colaboradores ATIVOS
+  const ativos = funcionarios.filter((f) => f.status === 'ativo');
+
+  // Filtrar conforme o período selecionado (em 'q1' ou 'q2' entram só os quinzenais)
+  const colaboradoresAlvo = ativos.filter((f) => {
+    if (periodo === 'q1' || periodo === 'q2') {
+      return f.forma_remuneracao === 'quinzenal';
+    }
+    return true; // 'mes' entram todos
+  });
+
+  // Montar linhas com dados pré-calculados (PROIBIDO recalcular regras internas)
+  const linhas = colaboradoresAlvo.map((f) => {
+    const calcFolha = dbService.calcularFolhaFuncionario(f, competencia);
+    const parcelasGeradas = lancamentosFolha
+      .filter(
+        (l) =>
+          l.funcionario_id === f.id &&
+          l.competencia === competencia &&
+          l.tipo === 'salario' &&
+          l.status !== 'cancelado'
+      )
+      .sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
+
+    const isQuinzenal = f.forma_remuneracao === 'quinzenal';
+    const prevQuinzena = isQuinzenal
+      ? dbService.calcularParcelasQuinzena(f, competencia)
+      : null;
+
+    const formatarDiaMes = (dt?: string) => {
+      if (!dt) return '';
+      const br = formatarDataBR(dt);
+      return br.length >= 5 ? br.slice(0, 5) : br;
+    };
+
+    if (periodo === 'q1') {
+      // B2: identifica por p.periodo === 'q1'; fallback por posição/data
+      const p1Gerada =
+        parcelasGeradas.find((p) => p.periodo === 'q1') ||
+        parcelasGeradas.sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1))[0];
+      const p1Prev = prevQuinzena?.quinzenal
+        ? prevQuinzena.parcelas.find((p) => p.periodo === 'q1')
+        : undefined;
+      const valParcela = p1Gerada
+        ? p1Gerada.valor
+        : p1Prev
+        ? p1Prev.valor
+        : calcFolha.liquido;
+      const dtParcela = p1Gerada
+        ? p1Gerada.data_prevista
+        : p1Prev
+        ? p1Prev.data_prevista
+        : '';
+
+      return {
+        id: f.id,
+        nome: f.nome,
+        cargo: f.cargo,
+        salarioBase: f.salario_base,
+        // B3: q1 — adicionais reais; descontos e adiantamentos = 0
+        adicionais: calcFolha.adicionais,
+        descontos: 0,
+        adiantamentos: 0,
+        liquido: valParcela,
+        parcelasTexto: `1ª ${formatarDiaMes(dtParcela)} ${formatarMoeda(valParcela)}`,
+      };
+    }
+
+    if (periodo === 'q2') {
+      // B2: identifica por p.periodo === 'q2'; fallback por posição/data
+      const parcelasOrdenadas = [...parcelasGeradas].sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
+      const p2Gerada =
+        parcelasGeradas.find((p) => p.periodo === 'q2') ||
+        (parcelasOrdenadas.length > 1 ? parcelasOrdenadas[1] : undefined);
+      const p2Prev = prevQuinzena?.quinzenal
+        ? prevQuinzena.parcelas.find((p) => p.periodo === 'q2')
+        : undefined;
+      const valParcela = p2Gerada
+        ? p2Gerada.valor
+        : p2Prev
+        ? p2Prev.valor
+        : calcFolha.liquido;
+      const dtParcela = p2Gerada
+        ? p2Gerada.data_prevista
+        : p2Prev
+        ? p2Prev.data_prevista
+        : '';
+
+      return {
+        id: f.id,
+        nome: f.nome,
+        cargo: f.cargo,
+        salarioBase: f.salario_base,
+        // B3: q2 — adicionais reais (SEM proventosAvulsos); descontos e adiantamentos reais
+        adicionais: calcFolha.adicionais,
+        descontos: calcFolha.totalDescontos,
+        adiantamentos: calcFolha.adiantamentosAbatidos,
+        liquido: valParcela,
+        parcelasTexto: `2ª ${formatarDiaMes(dtParcela)} ${formatarMoeda(valParcela)}`,
+      };
+    }
+
+    // Período 'mes' (mensal completo)
+    let liquidoTotal: number;
+    let parcelasTexto = '';
+
+    if (isQuinzenal) {
+      // B2: identifica por p.periodo; fallback por data
+      const parcelasOrd = [...parcelasGeradas].sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
+      const p1Gerada =
+        parcelasGeradas.find((p) => p.periodo === 'q1') || parcelasOrd[0];
+      const p2Gerada =
+        parcelasGeradas.find((p) => p.periodo === 'q2') ||
+        (parcelasOrd.length > 1 ? parcelasOrd[1] : undefined);
+
+      const p1Prev = prevQuinzena?.quinzenal
+        ? prevQuinzena.parcelas.find((p) => p.periodo === 'q1')
+        : undefined;
+      const p2Prev = prevQuinzena?.quinzenal
+        ? prevQuinzena.parcelas.find((p) => p.periodo === 'q2')
+        : undefined;
+
+      const p1Val = p1Gerada ? p1Gerada.valor : (p1Prev ? p1Prev.valor : 0);
+      const p1Dt = p1Gerada ? p1Gerada.data_prevista : (p1Prev ? p1Prev.data_prevista : '');
+      const p2Val = p2Gerada ? p2Gerada.valor : (p2Prev ? p2Prev.valor : 0);
+      const p2Dt = p2Gerada ? p2Gerada.data_prevista : (p2Prev ? p2Prev.data_prevista : '');
+
+      if (parcelasGeradas.length > 0) {
+        liquidoTotal = parcelasGeradas.reduce((acc, p) => acc + p.valor, 0);
+      } else if (prevQuinzena?.quinzenal) {
+        liquidoTotal = +prevQuinzena.parcelas.reduce((acc, p) => acc + p.valor, 0).toFixed(2);
+      } else {
+        liquidoTotal = calcFolha.liquido;
+      }
+
+      parcelasTexto = `1ª ${formatarDiaMes(p1Dt)} ${formatarMoeda(p1Val)} • 2ª ${formatarDiaMes(p2Dt)} ${formatarMoeda(p2Val)}`;
+    } else {
+      if (parcelasGeradas.length > 0) {
+        liquidoTotal = parcelasGeradas[0].valor;
+        parcelasTexto = `Mês ${formatarDiaMes(parcelasGeradas[0].data_prevista)} ${formatarMoeda(parcelasGeradas[0].valor)}`;
+      } else {
+        liquidoTotal = calcFolha.liquido;
+        const dt = dataDoDiaNaCompetencia(competencia, f.dia_pagamento || 5);
+        parcelasTexto = `Mês ${formatarDiaMes(dt)} ${formatarMoeda(calcFolha.liquido)}`;
+      }
+    }
+
+    return {
+      id: f.id,
+      nome: f.nome,
+      cargo: f.cargo,
+      salarioBase: f.salario_base,
+      // B3: 'mes' — adicionais reais (SEM proventosAvulsos, pagos à parte)
+      adicionais: calcFolha.adicionais,
+      descontos: calcFolha.totalDescontos,
+      adiantamentos: calcFolha.adiantamentosAbatidos,
+      liquido: liquidoTotal,
+      parcelasTexto,
+    };
+  });
+
+  // Totais gerais
+  const totalBase = linhas.reduce((a, l) => a + l.salarioBase, 0);
+  const totalAdicionais = linhas.reduce((a, l) => a + l.adicionais, 0);
+  const totalDescontos = linhas.reduce((a, l) => a + l.descontos, 0);
+  const totalAdiantamentos = linhas.reduce((a, l) => a + l.adiantamentos, 0);
+  const totalLiquido = linhas.reduce((a, l) => a + l.liquido, 0);
+
+  const sufixoPeriodo =
+    periodo === 'q1'
+      ? ' – 1ª QUINZENA'
+      : periodo === 'q2'
+      ? ' – 2ª QUINZENA'
+      : '';
+
+  return (
+    <div className="bg-white p-6 text-slate-800 text-[10pt] space-y-4">
+      {/* B3: nota de período em q1/q2 */}
+      {(periodo === 'q1' || periodo === 'q2') && (
+        <p className="text-[8.5pt] text-slate-500 italic">
+          Salário base e adicionais referem-se ao mês; o líquido refere-se somente ao período impresso.
+        </p>
+      )}
+      {/* Topo com Logotipo e Dados da Empresa */}
+      <div className="flex items-center justify-between pb-3 border-b-2 border-[#003064]">
+        <Logo size="md" withWhiteBadge={false} />
+        <div className="text-right text-[9pt] text-slate-600 leading-tight">
+          <strong className="block text-slate-900 font-bold text-[10pt]">
+            MT SOLAR SOLUÇÕES EM ENERGIA RENOVÁVEL LTDA
+          </strong>
+          <span>CNPJ: 34.892.105/0001-44 • Cuiabá - MT</span>
+          <span className="block font-bold text-[#003064] text-[10.5pt] mt-0.5">
+            FOLHA DE PAGAMENTO – COMPETÊNCIA {competencia}{sufixoPeriodo}
+          </span>
+        </div>
+      </div>
+
+      {/* Tabela de Colaboradores e Assinaturas (B3 & B4) */}
+      <table className="w-full text-left border-collapse text-[10pt] border border-slate-300">
+        <thead>
+          <tr className="bg-slate-100 text-slate-800 font-bold text-[9pt]">
+            <th className="py-1.5 px-2 border border-slate-300">Colaborador</th>
+            <th className="py-1.5 px-2 border border-slate-300">Cargo</th>
+            <th className="py-1.5 px-2 text-right border border-slate-300">Salário Base</th>
+            <th className="py-1.5 px-2 text-right border border-slate-300">Adicionais</th>
+            <th className="py-1.5 px-2 text-right border border-slate-300">Descontos</th>
+            <th className="py-1.5 px-2 text-right border border-slate-300">Adiantamentos</th>
+            <th className="py-1.5 px-2 text-right border border-slate-300">Líquido</th>
+            <th className="py-1.5 px-2 border border-slate-300">Parcelas</th>
+            <th className="py-1.5 px-2 text-center border border-slate-300">Assinatura</th>
+          </tr>
+        </thead>
+        <tbody>
+          {linhas.map((l) => (
+            <tr key={l.id} className="break-inside-avoid">
+              <td className="py-1.5 px-2 font-bold text-slate-900 border border-slate-300">
+                {l.nome}
+              </td>
+              <td className="py-1.5 px-2 text-slate-600 border border-slate-300">
+                {l.cargo}
+              </td>
+              <td className="py-1.5 px-2 text-right font-serif border border-slate-300">
+                {formatarMoeda(l.salarioBase)}
+              </td>
+              <td className="py-1.5 px-2 text-right font-serif text-emerald-700 border border-slate-300">
+                {formatarMoeda(l.adicionais)}
+              </td>
+              <td className="py-1.5 px-2 text-right font-serif text-red-600 border border-slate-300">
+                {formatarMoeda(l.descontos)}
+              </td>
+              <td className="py-1.5 px-2 text-right font-serif text-amber-700 border border-slate-300">
+                {formatarMoeda(l.adiantamentos)}
+              </td>
+              <td className="py-1.5 px-2 text-right font-serif font-bold text-[#003064] border border-slate-300">
+                {formatarMoeda(l.liquido)}
+              </td>
+              <td className="py-1.5 px-2 text-[8.5pt] text-slate-600 border border-slate-300 whitespace-nowrap">
+                {l.parcelasTexto}
+              </td>
+              <td className="py-1.5 px-2 text-center text-slate-400 border border-slate-300 text-[8pt]">
+                _______________________
+              </td>
+            </tr>
+          ))}
+          {linhas.length === 0 && (
+            <tr>
+              <td colSpan={9} className="py-4 text-center text-slate-500 border border-slate-300">
+                Nenhum colaborador encontrado para este período.
+              </td>
+            </tr>
+          )}
+        </tbody>
+        <tfoot>
+          <tr className="bg-slate-100 font-bold text-slate-900 break-inside-avoid">
+            <td colSpan={2} className="py-2 px-2 border border-slate-300 text-right uppercase text-[9pt]">
+              Totais Gerais:
+            </td>
+            <td className="py-2 px-2 text-right font-serif border border-slate-300">
+              {formatarMoeda(totalBase)}
+            </td>
+            <td className="py-2 px-2 text-right font-serif text-emerald-700 border border-slate-300">
+              {formatarMoeda(totalAdicionais)}
+            </td>
+            <td className="py-2 px-2 text-right font-serif text-red-600 border border-slate-300">
+              {formatarMoeda(totalDescontos)}
+            </td>
+            <td className="py-2 px-2 text-right font-serif text-amber-700 border border-slate-300">
+              {formatarMoeda(totalAdiantamentos)}
+            </td>
+            <td className="py-2 px-2 text-right font-serif font-bold text-[#003064] border border-slate-300">
+              {formatarMoeda(totalLiquido)}
+            </td>
+            <td colSpan={2} className="py-2 px-2 border border-slate-300 text-right text-[8.5pt] text-slate-500">
+              {linhas.length} colaborador(es)
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+
+      {/* Rodapé da Folha com Assinatura da Diretoria */}
+      <div className="pt-4 flex justify-between items-end text-[9pt] text-slate-600 break-inside-avoid">
+        <div>
+          <p>Emitido em: {formatarDataBR(obterHojeISO())}</p>
+          <p>Sistema MT Solar Gestão Financeira Empresarial</p>
+        </div>
+        <div className="text-center">
+          <div className="w-56 border-b border-slate-400 mb-1" />
+          <p className="font-bold text-slate-800">Diretoria Financeira MT Solar</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============================================================================
+// SUBCOMPONENTE: RECIBO INDIVIDUAL DE PAGAMENTO (PARTE 7C)
+// ============================================================================
+interface ReciboIndividualProps {
+  funcionario: Funcionario;
+  competencia: string;
+  periodo: 'mes' | 'q1' | 'q2';
+  lancamentosFolha: LancamentoFolha[];
+}
+
+export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
+  funcionario,
+  competencia,
+  periodo,
+  lancamentosFolha,
+}) => {
+  // C4: Valores apenas dos cálculos existentes (PROIBIDO recalcular regras internas)
+  const calcFolha = dbService.calcularFolhaFuncionario(funcionario, competencia);
+  const parcelasGeradas = lancamentosFolha
+    .filter(
+      (l) =>
+        l.funcionario_id === funcionario.id &&
+        l.competencia === competencia &&
+        l.tipo === 'salario' &&
+        l.status !== 'cancelado'
+    )
+    .sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
+
+  const isQuinzenal = funcionario.forma_remuneracao === 'quinzenal';
+  const prevQuinzena = isQuinzenal
+    ? dbService.calcularParcelasQuinzena(funcionario, competencia)
+    : null;
+
+  // Determinar proventos, descontos, composição e datas por período
+  let tituloPeriodo = 'MÊS COMPLETO';
+  let textoComposicao = '';
+  let dataPrevista = '';
+  let itensProventos: { descricao: string; referencia: string; valor: number }[] = [];
+  let itensDescontos: { descricao: string; referencia: string; valor: number }[] = [];
+  let valorLiquido = 0;
+
+  if (periodo === 'q1') {
+    tituloPeriodo = '1ª QUINZENA';
+    // B1: usa cfg dinâmico em vez de '50%' fixo
+    const cfg = funcionario.pagamento_quinzenal || CONFIG_QUINZENAL_PADRAO;
+    textoComposicao = cfg.modo === 'percentual'
+      ? `1ª quinzena: ${cfg.valor_1}% do bruto, sem descontos`
+      : `1ª quinzena: valor fixo de ${formatarMoeda(cfg.valor_1)}, sem descontos`;
+
+    // B2: identifica por p.periodo === 'q1'; fallback por data
+    const p1Gerada =
+      parcelasGeradas.find((p) => p.periodo === 'q1') ||
+      [...parcelasGeradas].sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1))[0];
+    const p1Prev = prevQuinzena?.quinzenal
+      ? prevQuinzena.parcelas.find((p) => p.periodo === 'q1')
+      : undefined;
+
+    valorLiquido = p1Gerada
+      ? p1Gerada.valor
+      : p1Prev
+      ? p1Prev.valor
+      : calcFolha.liquido;
+    dataPrevista = p1Gerada
+      ? p1Gerada.data_prevista
+      : p1Prev
+      ? p1Prev.data_prevista
+      : dataDoDiaNaCompetencia(competencia, funcionario.pagamento_quinzenal?.dia_1 || 15);
+
+    itensProventos.push({
+      descricao: cfg.modo === 'percentual'
+        ? `Adiantamento Quinzenal (1ª Quinzena - ${cfg.valor_1}% do bruto)`
+        : 'Adiantamento Quinzenal (1ª Quinzena - valor fixo)',
+      referencia: cfg.modo === 'percentual' ? `${cfg.valor_1}%` : 'Fixo',
+      valor: valorLiquido,
+    });
+    // Descontos são zero na 1ª quinzena
+  } else if (periodo === 'q2') {
+    tituloPeriodo = '2ª QUINZENA';
+    // B1: usa cfg dinâmico
+    const cfgQ2 = funcionario.pagamento_quinzenal || CONFIG_QUINZENAL_PADRAO;
+    textoComposicao = cfgQ2.valor_2 === null
+      ? '2ª quinzena: restante do bruto menos descontos e adiantamentos'
+      : cfgQ2.modo === 'percentual'
+        ? `2ª quinzena: ${cfgQ2.valor_2}% do bruto menos descontos e adiantamentos`
+        : `2ª quinzena: valor fixo de ${formatarMoeda(cfgQ2.valor_2)} menos descontos e adiantamentos`;
+
+    // B2: identifica por p.periodo === 'q2'; fallback por posição/data
+    const parcelasOrdQ2 = [...parcelasGeradas].sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
+    const p2Gerada =
+      parcelasGeradas.find((p) => p.periodo === 'q2') ||
+      (parcelasOrdQ2.length > 1 ? parcelasOrdQ2[1] : undefined);
+    const p2Prev = prevQuinzena?.quinzenal
+      ? prevQuinzena.parcelas.find((p) => p.periodo === 'q2')
+      : undefined;
+
+    valorLiquido = p2Gerada
+      ? p2Gerada.valor
+      : p2Prev
+      ? p2Prev.valor
+      : calcFolha.liquido;
+    dataPrevista = p2Gerada
+      ? p2Gerada.data_prevista
+      : p2Prev
+      ? p2Prev.data_prevista
+      : dataDoDiaNaCompetencia(competencia, funcionario.pagamento_quinzenal?.dia_2 || 30);
+
+    // Na 2ª quinzena, discrimina proventos integrais
+    itensProventos.push({
+      descricao: 'Salário Base Mensal',
+      referencia: '30 dias',
+      valor: funcionario.salario_base,
+    });
+    if (calcFolha.adicionais > 0) {
+      itensProventos.push({
+        descricao: `Adicional (${funcionario.adicional_tipo || 'Periculosidade'})`,
+        referencia: funcionario.adicional_percentual ? `${funcionario.adicional_percentual}%` : 'Fixo',
+        valor: calcFolha.adicionais,
+      });
+    }
+
+    // B1: valor da parcela q1 — usa a gerada (por periodo) ou a prevista; REMOVE fallback bruto/2
+    const q1GeradaParaDesconto =
+      parcelasGeradas.find((p) => p.periodo === 'q1') ||
+      [...parcelasGeradas].sort((a2, b2) => (a2.data_prevista > b2.data_prevista ? 1 : -1))[0];
+    const valQ1 = q1GeradaParaDesconto
+      ? q1GeradaParaDesconto.valor
+      : prevQuinzena?.quinzenal
+        ? prevQuinzena.parcelas.find((p) => p.periodo === 'q1')?.valor || 0
+        : 0;
+    itensDescontos.push({
+      descricao: 'Adiantamento 1ª Quinzena (Já Creditado)',
+      referencia: '1ª Q.',
+      valor: valQ1,
+    });
+
+    // Descontos por nome (recorrentes e outros)
+    for (const d of calcFolha.descontos) {
+      itensDescontos.push({
+        descricao: d.descricao,
+        referencia: '-',
+        valor: d.valor,
+      });
+    }
+
+    // Adiantamentos salariais avulsos abatidos
+    if (calcFolha.adiantamentosAbatidos > 0) {
+      itensDescontos.push({
+        descricao: 'Adiantamento Salarial / Vale (Abatimento)',
+        referencia: '-',
+        valor: calcFolha.adiantamentosAbatidos,
+      });
+    }
+  } else {
+    // Período 'mes' (mês completo)
+    tituloPeriodo = 'MÊS COMPLETO';
+    if (isQuinzenal) {
+      textoComposicao = 'Remuneração quinzenal (1ª e 2ª parcelas consolidadas)';
+      if (parcelasGeradas.length > 0) {
+        valorLiquido = parcelasGeradas.reduce((a, b) => a + b.valor, 0);
+        dataPrevista = parcelasGeradas[0].data_prevista;
+      } else if (prevQuinzena?.quinzenal) {
+        valorLiquido = +prevQuinzena.parcelas.reduce((a, b) => a + b.valor, 0).toFixed(2);
+        dataPrevista = prevQuinzena.parcelas[0].data_prevista;
+      } else {
+        valorLiquido = calcFolha.liquido;
+        dataPrevista = dataDoDiaNaCompetencia(competencia, funcionario.dia_pagamento || 5);
+      }
+    } else {
+      valorLiquido = parcelasGeradas[0]?.valor ?? calcFolha.liquido;
+      dataPrevista = parcelasGeradas[0]?.data_prevista ?? dataDoDiaNaCompetencia(competencia, funcionario.dia_pagamento || 5);
+    }
+
+    itensProventos.push({
+      descricao: 'Salário Base',
+      referencia: '30 dias',
+      valor: funcionario.salario_base,
+    });
+    if (calcFolha.adicionais > 0) {
+      itensProventos.push({
+        descricao: `Adicional (${funcionario.adicional_tipo || 'Periculosidade'})`,
+        referencia: funcionario.adicional_percentual ? `${funcionario.adicional_percentual}%` : 'Fixo',
+        valor: calcFolha.adicionais,
+      });
+    }
+
+    // Descontos por nome
+    for (const d of calcFolha.descontos) {
+      itensDescontos.push({
+        descricao: d.descricao,
+        referencia: '-',
+        valor: d.valor,
+      });
+    }
+
+    // Adiantamentos abatidos
+    if (calcFolha.adiantamentosAbatidos > 0) {
+      itensDescontos.push({
+        descricao: 'Adiantamento Salarial / Vale (Abatimento)',
+        referencia: '-',
+        valor: calcFolha.adiantamentosAbatidos,
+      });
+    }
+  }
+
+  const totalProventos = itensProventos.reduce((a, b) => a + b.valor, 0);
+  const totalDescontos = itensDescontos.reduce((a, b) => a + b.valor, 0);
+
+  return (
+    <section className="print-recibo bg-white p-6 sm:p-8 text-slate-800 text-[10pt] flex flex-col justify-between min-h-[920px]">
+      <div className="space-y-4">
+        {/* Cabeçalho da Empresa */}
+        <div className="flex items-center justify-between pb-3 border-b-2 border-[#003064]">
+          <Logo size="md" withWhiteBadge={false} />
+          <div className="text-right text-[9pt] text-slate-600 leading-tight">
+            <strong className="block text-slate-900 font-bold text-[10pt]">
+              MT SOLAR SOLUÇÕES EM ENERGIA RENOVÁVEL LTDA
+            </strong>
+            <span>CNPJ: 34.892.105/0001-44 • Cuiabá - MT</span>
+            <span className="block font-bold text-[#003064] text-[10.5pt] mt-0.5">
+              RECIBO DE PAGAMENTO — COMPETÊNCIA {competencia} ({tituloPeriodo})
+            </span>
+          </div>
+        </div>
+
+        {/* Dados do Colaborador (C2) */}
+        <div className="bg-slate-50 border border-slate-300 rounded-lg p-3 text-[9.5pt]">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div>
+              <span className="text-slate-500 font-medium">Colaborador:</span>
+              <p className="font-bold text-slate-900 text-[10.5pt]">{funcionario.nome}</p>
+            </div>
+            <div>
+              <span className="text-slate-500 font-medium">Cargo / Setor:</span>
+              <p className="font-semibold text-slate-800">{funcionario.cargo} • {funcionario.setor}</p>
+            </div>
+            <div>
+              <span className="text-slate-500 font-medium">CPF:</span>
+              <p className="font-semibold text-slate-800 font-mono">{formatarCpfCnpj(funcionario.cpf)}</p>
+            </div>
+          </div>
+          {textoComposicao && (
+            <div className="mt-2 pt-2 border-t border-slate-200 text-[8.5pt] text-slate-600 italic">
+              ℹ {textoComposicao}
+            </div>
+          )}
+        </div>
+
+        {/* Tabela de Proventos e Descontos */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Tabela de Proventos */}
+          <div className="border border-slate-300 rounded-lg overflow-hidden">
+            <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-300 font-bold text-slate-800 text-[9pt] uppercase flex justify-between">
+              <span>Proventos</span>
+              <span>Valor (R$)</span>
+            </div>
+            <table className="w-full text-left border-collapse text-[9.5pt]">
+              <tbody className="divide-y divide-slate-200">
+                {itensProventos.map((item, idx) => (
+                  <tr key={idx}>
+                    <td className="py-1.5 px-3">
+                      <span className="font-medium text-slate-800">{item.descricao}</span>
+                      {item.referencia !== '-' && (
+                        <span className="text-[8pt] text-slate-500 ml-1">({item.referencia})</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 px-3 text-right font-serif text-emerald-700 font-semibold whitespace-nowrap">
+                      {formatarMoeda(item.valor)}
+                    </td>
+                  </tr>
+                ))}
+                {itensProventos.length === 0 && (
+                  <tr>
+                    <td colSpan={2} className="py-2 px-3 text-slate-400 text-center italic">
+                      Nenhum provento
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-50 border-t border-slate-300 font-bold text-slate-900">
+                  <td className="py-1.5 px-3 text-[9pt]">Total Proventos:</td>
+                  <td className="py-1.5 px-3 text-right font-serif text-emerald-700 whitespace-nowrap">
+                    {formatarMoeda(totalProventos)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {/* Tabela de Descontos */}
+          <div className="border border-slate-300 rounded-lg overflow-hidden">
+            <div className="bg-slate-100 px-3 py-1.5 border-b border-slate-300 font-bold text-slate-800 text-[9pt] uppercase flex justify-between">
+              <span>Descontos</span>
+              <span>Valor (R$)</span>
+            </div>
+            <table className="w-full text-left border-collapse text-[9.5pt]">
+              <tbody className="divide-y divide-slate-200">
+                {itensDescontos.map((item, idx) => (
+                  <tr key={idx}>
+                    <td className="py-1.5 px-3">
+                      <span className="font-medium text-slate-800">{item.descricao}</span>
+                      {item.referencia !== '-' && (
+                        <span className="text-[8pt] text-slate-500 ml-1">({item.referencia})</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 px-3 text-right font-serif text-red-600 font-semibold whitespace-nowrap">
+                      {formatarMoeda(item.valor)}
+                    </td>
+                  </tr>
+                ))}
+                {itensDescontos.length === 0 && (
+                  <tr>
+                    <td colSpan={2} className="py-2 px-3 text-slate-400 text-center italic">
+                      Nenhum desconto
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-50 border-t border-slate-300 font-bold text-slate-900">
+                  <td className="py-1.5 px-3 text-[9pt]">Total Descontos:</td>
+                  <td className="py-1.5 px-3 text-right font-serif text-red-600 whitespace-nowrap">
+                    {formatarMoeda(totalDescontos)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+
+        {/* B2: Proventos avulsos pagos separadamente */}
+        {calcFolha.proventosAvulsos > 0 && (
+          <p className="text-[8.5pt] text-slate-500">
+            Proventos avulsos desta competência (pagos separadamente): {formatarMoeda(calcFolha.proventosAvulsos)}
+          </p>
+        )}
+
+        {/* Quadro de Destaque: Líquido e Data Prevista (C2) */}
+        <div className="bg-[#003064]/5 border-2 border-[#003064]/20 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <span className="text-[9pt] text-slate-500 font-semibold uppercase tracking-wider block">
+              Valor Líquido a Receber
+            </span>
+            <span className="text-2xl font-black text-[#003064] font-serif">
+              {formatarMoeda(valorLiquido)}
+            </span>
+          </div>
+          <div className="text-right">
+            <span className="text-[8.5pt] text-slate-500 font-medium block">Data Prevista de Pagamento:</span>
+            <span className="text-[11pt] font-bold text-slate-800">
+              {dataPrevista ? formatarDataBR(dataPrevista) : 'A definir'}
+            </span>
+            {funcionario.banco && (
+              <span className="block text-[8pt] text-slate-500 mt-0.5">
+                Crédito em: {funcionario.banco} • Ag: {funcionario.agencia} • Cc: {funcionario.conta}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Termo de Quitação */}
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-[8.5pt] text-slate-600 leading-relaxed text-justify">
+          Declaro ter recebido da empresa <strong>MT SOLAR SOLUÇÕES EM ENERGIA RENOVÁVEL LTDA</strong> a importância líquida
+          acima discriminada de <strong>{formatarMoeda(valorLiquido)}</strong>, correspondente à quitação dos meus proventos
+          da competência de <strong>{competencia} ({tituloPeriodo})</strong>, nada tendo a reclamar quanto aos valores expressos neste recibo.
+        </div>
+      </div>
+
+      {/* Duas Linhas de Assinatura (C2) e Rodapé */}
+      <div className="pt-8 space-y-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 text-center text-[9pt]">
+          <div>
+            <div className="border-b border-slate-400 mb-2 w-4/5 mx-auto" />
+            <p className="font-bold text-slate-900">{funcionario.nome}</p>
+            <p className="text-slate-500 text-[8.5pt]">Assinatura do Colaborador • CPF: {formatarCpfCnpj(funcionario.cpf)}</p>
+          </div>
+          <div>
+            <div className="border-b border-slate-400 mb-2 w-4/5 mx-auto" />
+            <p className="font-bold text-slate-900">MT SOLAR SOLUÇÕES EM ENERGIA RENOVÁVEL LTDA</p>
+            <p className="text-slate-500 text-[8.5pt]">Empregador • CNPJ: 34.892.105/0001-44</p>
+          </div>
+        </div>
+
+        <div className="pt-2 border-t border-slate-200 flex justify-between items-center text-[8pt] text-slate-500">
+          <span>Emitido em: {formatarDataBR(obterHojeISO())}</span>
+          <span>Sistema MT Solar Gestão Financeira Empresarial • Recibo de Pagamento</span>
+        </div>
+      </div>
+    </section>
+  );
+};
 
 const ModalImpressaoFolha: React.FC<ImpressaoProps> = ({
   isOpen,
@@ -3428,94 +4242,223 @@ const ModalImpressaoFolha: React.FC<ImpressaoProps> = ({
   competencia,
   funcionarios,
   lancamentosFolha,
+  initialModo,
+  initialFuncionarioId,
 }) => {
+  // B1 & C1: Estados no modal
+  const [modoImpressao, setModoImpressao] = useState<'geral' | 'recibos'>(initialModo || 'geral');
+  const [periodoImpressao, setPeriodoImpressao] = useState<'mes' | 'q1' | 'q2'>('mes');
+  const [funcionarioFiltroId, setFuncionarioFiltroId] = useState<string>(initialFuncionarioId || 'todos');
+
+  // Atualizar quando abrir o modal com props iniciais
+  useEffect(() => {
+    if (isOpen) {
+      if (initialModo) setModoImpressao(initialModo);
+      if (initialFuncionarioId) setFuncionarioFiltroId(initialFuncionarioId);
+    }
+  }, [isOpen, initialModo, initialFuncionarioId]);
+
   if (!isOpen) return null;
 
+  // C1: Filtrar colaboradores elegíveis e para recibos
+  const colaboradoresElegiveis = funcionarios.filter((f) => {
+    if (f.status !== 'ativo') return false;
+    if (periodoImpressao === 'q1' || periodoImpressao === 'q2') {
+      return f.forma_remuneracao === 'quinzenal';
+    }
+    return true;
+  });
+
+  const colaboradoresParaRecibo =
+    funcionarioFiltroId === 'todos'
+      ? colaboradoresElegiveis
+      : colaboradoresElegiveis.filter((f) => f.id === funcionarioFiltroId);
+
+  const handleImprimir = async () => {
+    try {
+      await Promise.all([
+        (document as any).fonts?.ready || Promise.resolve(),
+        carregarImagem('/logo.png'),
+      ]);
+    } catch (e) {
+      console.warn('Erro ao carregar recursos de impressão:', e);
+    }
+    window.print();
+  };
+
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title="Versão para Impressão da Folha MT Solar"
-      subtitle={`Visualização pronta para impressão com comprovantes • Competência ${competencia}`}
-      maxWidth="2xl"
-    >
-      <div className="space-y-6">
-        
-        {/* Folha Formatada para Impressão */}
-        <div id="folha-impressao" className="bg-white p-6 border border-slate-300 rounded-xl shadow-xs space-y-4 text-xs">
-          
-          {/* Topo com Logotipo e Dados da Empresa */}
-          <div className="flex items-center justify-between pb-4 border-b-2 border-[#003064]">
-            <Logo size="md" withWhiteBadge={false} />
-            <div className="text-right text-[11px] text-slate-600">
-              <strong className="block text-slate-900 font-bold">MT SOLAR SOLUÇÕES EM ENERGIA RENOVÁVEL LTDA</strong>
-              <span>CNPJ: 34.892.105/0001-44 • Cuiabá - MT</span>
-              <span className="block font-bold text-[#003064] mt-0.5">FOLHA DE PAGAMENTO – COMPETÊNCIA {competencia}</span>
+    <>
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Versão para Impressão da Folha MT Solar"
+        subtitle={`Visualização pronta para impressão com comprovantes • Competência ${competencia}`}
+        maxWidth="2xl"
+      >
+        <div className="space-y-6">
+          {/* B1 & C1: Controles de Impressão na parte superior (apenas em tela) */}
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-700">Modo:</span>
+              <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setModoImpressao('geral')}
+                  className={`px-3 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                    modoImpressao === 'geral'
+                      ? 'bg-[#003064] text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Folha Geral
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModoImpressao('recibos')}
+                  className={`px-3 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                    modoImpressao === 'recibos'
+                      ? 'bg-[#003064] text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Recibos Individuais
+                </button>
+              </div>
             </div>
+
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-700">Período:</span>
+              <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setPeriodoImpressao('mes')}
+                  className={`px-3 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                    periodoImpressao === 'mes'
+                      ? 'bg-[#003064] text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Mês Completo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPeriodoImpressao('q1')}
+                  className={`px-3 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                    periodoImpressao === 'q1'
+                      ? 'bg-[#003064] text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  1ª Quinzena
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPeriodoImpressao('q2')}
+                  className={`px-3 py-1 rounded-md font-semibold transition-colors cursor-pointer ${
+                    periodoImpressao === 'q2'
+                      ? 'bg-[#003064] text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  2ª Quinzena
+                </button>
+              </div>
+            </div>
+
+            {/* C1: Seletor de Colaborador (apenas no modo recibos) */}
+            {modoImpressao === 'recibos' && (
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-700">Colaborador:</span>
+                <select
+                  value={funcionarioFiltroId}
+                  onChange={(e) => setFuncionarioFiltroId(e.target.value)}
+                  className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-[#003064]"
+                >
+                  <option value="todos">Todos ({colaboradoresElegiveis.length})</option>
+                  {colaboradoresElegiveis.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.nome}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
-          {/* Tabela de Colaboradores e Assinaturas */}
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="bg-slate-100 border-y border-slate-300 text-slate-700 font-bold">
-                <th className="py-2 px-2">Colaborador</th>
-                <th className="py-2 px-2">Cargo</th>
-                <th className="py-2 px-2 text-right">Salário Base</th>
-                <th className="py-2 px-2 text-right">Líquido a Pagar</th>
-                <th className="py-2 px-2 text-center">Assinatura do Colaborador</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {funcionarios.map(f => {
-                const calcFolha = dbService.calcularFolhaFuncionario(f, competencia);
-                const sal = lancamentosFolha.find(l => l.funcionario_id === f.id && l.competencia === competencia && l.tipo === 'salario');
-                const liquido = sal ? sal.valor : calcFolha.liquido;
-
-                return (
-                  <tr key={f.id}>
-                    <td className="py-2.5 px-2 font-bold text-slate-800">{f.nome}</td>
-                    <td className="py-2.5 px-2 text-slate-600">{f.cargo}</td>
-                    <td className="py-2.5 px-2 text-right font-serif">{formatarMoeda(f.salario_base)}</td>
-                    <td className="py-2.5 px-2 text-right font-serif font-bold text-[#003064]">{formatarMoeda(liquido)}</td>
-                    <td className="py-2.5 px-2 text-center text-slate-400">
-                      ______________________________
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {/* Rodapé da Folha com Assinatura da Diretoria */}
-          <div className="pt-6 flex justify-between items-end text-[11px] text-slate-600">
-            <div>
-              <p>Emitido em: {formatarDataBR(obterHojeISO())}</p>
-              <p>Sistema MT Solar Gestão Financeira Empresarial</p>
-            </div>
-            <div className="text-center">
-              <div className="w-48 border-b border-slate-400 mb-1" />
-              <p className="font-bold text-slate-800">Diretoria Financeira MT Solar</p>
-            </div>
+          {/* Pré-visualização em tela */}
+          <div id="folha-impressao" className="border border-slate-300 rounded-xl overflow-x-auto shadow-xs max-h-[65vh] overflow-y-auto">
+            {modoImpressao === 'geral' ? (
+              <FolhaGeralImpressao
+                competencia={competencia}
+                periodo={periodoImpressao}
+                funcionarios={funcionarios}
+                lancamentosFolha={lancamentosFolha}
+              />
+            ) : (
+              <div className="space-y-6 bg-slate-100 p-4">
+                {colaboradoresParaRecibo.map((f) => (
+                  <div key={f.id} className="bg-white rounded-xl shadow-xs border border-slate-200 overflow-hidden">
+                    <ReciboIndividual
+                      funcionario={f}
+                      competencia={competencia}
+                      periodo={periodoImpressao}
+                      lancamentosFolha={lancamentosFolha}
+                    />
+                  </div>
+                ))}
+                {colaboradoresParaRecibo.length === 0 && (
+                  <div className="p-8 text-center text-slate-500 bg-white rounded-xl">
+                    Nenhum colaborador encontrado para o filtro e período selecionados.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
+          {/* Botão de Disparo da Impressão */}
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-slate-600 text-xs font-semibold">
+              Fechar
+            </button>
+            <button
+              type="button"
+              onClick={handleImprimir}
+              className="flex items-center gap-2 px-5 py-2 bg-[#003064] text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer"
+            >
+              <Printer className="w-4 h-4" />
+              <span>
+                {modoImpressao === 'geral'
+                  ? 'Imprimir Folha Geral'
+                  : `Imprimir Recibo${colaboradoresParaRecibo.length > 1 ? 's' : ''} (${colaboradoresParaRecibo.length})`}
+              </span>
+            </button>
+          </div>
         </div>
+      </Modal>
 
-        {/* Botão de Disparo da Impressão */}
-        <div className="flex justify-end gap-3 pt-2">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-slate-600 text-xs font-semibold">
-            Fechar
-          </button>
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="flex items-center gap-2 px-5 py-2 bg-[#003064] text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer"
-          >
-            <Printer className="w-4 h-4" />
-            <span>Imprimir Documento</span>
-          </button>
-        </div>
-
-      </div>
-    </Modal>
+      {/* C1 & B3: Conteúdo impresso via PrintPortal com isolamento por folha */}
+      <PrintPortal>
+        {modoImpressao === 'geral' ? (
+          <div className="print-folha">
+            <FolhaGeralImpressao
+              competencia={competencia}
+              periodo={periodoImpressao}
+              funcionarios={funcionarios}
+              lancamentosFolha={lancamentosFolha}
+            />
+          </div>
+        ) : (
+          colaboradoresParaRecibo.map((f) => (
+            <ReciboIndividual
+              key={f.id}
+              funcionario={f}
+              competencia={competencia}
+              periodo={periodoImpressao}
+              lancamentosFolha={lancamentosFolha}
+            />
+          ))
+        )}
+      </PrintPortal>
+    </>
   );
 };
