@@ -107,7 +107,9 @@ export const Configuracoes: React.FC = () => {
     e.preventDefault();
     if (!isAdmin) return;
 
-    dbService.saveConfiguracoes(config);
+    const resto = { ...config };
+    delete resto.balanco_manual;
+    dbService.saveConfiguracoes({ ...dbService.getConfiguracoes(), ...resto });
     dbService.registrarAlteracao('sistema', 'edicao', 'Parâmetros corporativos atualizados', `CNPJ: ${config.cnpj}, Empresa: ${config.razao_social}`);
     setSalvoComSucesso(true);
     setTimeout(() => setSalvoComSucesso(false), 3000);

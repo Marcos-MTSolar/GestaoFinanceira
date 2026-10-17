@@ -91,7 +91,7 @@ export const ConciliacaoModal: React.FC<ConciliacaoModalProps> = ({
         <div className="bg-[#F5F7FA] p-3.5 rounded-xl border border-slate-200 text-xs space-y-2">
           <div className="flex justify-between items-center text-slate-600">
             <span>Saldo Real atual no App (sem limite):</span>
-            <strong className={`font-serif text-sm ${
+            <strong className={`font-num text-sm ${
               saldoRealAtual >= 0 ? 'text-[#003064]' : 'text-red-600'
             }`}>
               {formatarMoeda(saldoRealAtual)}
@@ -191,12 +191,12 @@ export const ConciliacaoModal: React.FC<ConciliacaoModalProps> = ({
           }`}>
             <div className="flex justify-between items-center font-semibold">
               <span>Saldo Real Calculado que deve ficar:</span>
-              <span className="font-serif font-bold text-sm">{formatarMoeda(saldoRealEsperado)}</span>
+              <span className="font-num font-bold text-sm">{formatarMoeda(saldoRealEsperado)}</span>
             </div>
 
             <div className="flex justify-between items-center font-bold pt-1 border-t border-amber-200/60">
               <span>Diferença apurada:</span>
-              <span className={`font-serif text-sm ${diferenca >= 0 ? 'text-[#16A34A]' : 'text-red-600'}`}>
+              <span className={`font-num text-sm ${diferenca >= 0 ? 'text-[#16A34A]' : 'text-red-600'}`}>
                 {diferenca > 0 ? '+' : ''}{formatarMoeda(diferenca)}
               </span>
             </div>

@@ -165,7 +165,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
                 {lancamentosAlvo.map((l) => (
                   <div key={l.id} className="pt-1 flex justify-between text-[11px]">
                     <span className="truncate max-w-[260px] text-slate-700">{l.descricao}</span>
-                    <strong className="font-serif">{formatarMoeda(l.valor)}</strong>
+                    <strong className="font-num">{formatarMoeda(l.valor)}</strong>
                   </div>
                 ))}
               </div>
@@ -222,7 +222,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
               <label className="block text-[11px] font-semibold text-slate-600 mb-1">
                 Valor Original
               </label>
-              <div className="font-serif font-bold text-xs text-slate-700 py-1.5">
+              <div className="font-num font-bold text-xs text-slate-700 py-1.5">
                 {formatarMoeda(valorOriginalTotal)}
               </div>
             </div>
@@ -264,7 +264,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
             <label className="block text-[11px] font-semibold text-slate-600 mb-1">
               Valor Original
             </label>
-            <div className="font-serif font-bold text-xs text-slate-700 py-1.5">
+            <div className="font-num font-bold text-xs text-slate-700 py-1.5">
               {formatarMoeda(valorOriginalTotal)}
             </div>
           </div>
@@ -275,7 +275,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
           <span className="font-bold text-slate-700">
             {isPagar ? 'Valor Total a Ser Pago:' : 'Valor Total a Ser Recebido:'}
           </span>
-          <span className={`font-serif font-black text-lg ${
+          <span className={`font-num font-black text-lg ${
             isPagar ? 'text-red-600' : 'text-[#16A34A]'
           }`}>
             {formatarMoeda(valorFinalTotal)}
@@ -300,7 +300,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
               <span className="text-[10px] text-slate-500 uppercase block font-semibold">
                 Saldo Real Hoje
               </span>
-              <span className={`font-serif font-bold text-sm ${
+              <span className={`font-num font-bold text-sm ${
                 saldoRealHoje >= 0 ? 'text-[#003064]' : 'text-red-600'
               }`}>
                 {formatarMoeda(saldoRealHoje)}
@@ -313,7 +313,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
               <span className="text-[10px] text-slate-500 uppercase block font-semibold">
                 Depois {isPagar ? 'deste pagamento' : 'deste recebimento'}
               </span>
-              <span className={`font-serif font-black text-base ${
+              <span className={`font-num font-black text-base ${
                 saldoRealDepois >= 0 ? 'text-[#16A34A]' : 'text-red-600'
               }`}>
                 {formatarMoeda(saldoRealDepois)}

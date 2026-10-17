@@ -556,13 +556,13 @@ export const Cadastros: React.FC = () => {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs">
               <div>
                 <span className="text-[10px] uppercase text-slate-400 block font-semibold">Total Recebido</span>
-                <span className="font-serif font-bold text-emerald-700 text-sm">
+                <span className="font-num font-bold text-emerald-700 text-sm">
                   {formatarValor(historicoAtivo.totalRecebido)}
                 </span>
               </div>
               <div>
                 <span className="text-[10px] uppercase text-slate-400 block font-semibold">Total Pago</span>
-                <span className="font-serif font-bold text-red-600 text-sm">
+                <span className="font-num font-bold text-red-600 text-sm">
                   {formatarValor(historicoAtivo.totalPago)}
                 </span>
               </div>
@@ -629,7 +629,7 @@ export const Cadastros: React.FC = () => {
                             {l.status}
                           </span>
                         </td>
-                        <td className={`py-2 px-3 text-right font-serif font-bold ${
+                        <td className={`py-2 px-3 text-right font-num font-bold ${
                           l.tipo === 'receita' ? 'text-emerald-700' : 'text-red-600'
                         }`}>
                           {l.tipo === 'receita' ? '+' : '-'}{formatarValor(l.valor)}

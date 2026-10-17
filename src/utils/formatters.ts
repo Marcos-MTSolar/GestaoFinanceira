@@ -80,3 +80,7 @@ export function formatarTelefone(valor: string): string {
     .replace(/(\d{2})(\d)/, '($1) $2')
     .replace(/(\d{5})(\d{4})$/, '$1-$2');
 }
+
+export function formatarPercentual(valor: number, casas: number = 1): string {
+  return `${valor.toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas })}%`;
+}

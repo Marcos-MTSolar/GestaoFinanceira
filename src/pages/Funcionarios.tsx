@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { dbService, subscribe } from '../services/storage';
 import { useAuth } from '../context/AuthContext';
 import { usePrivacy } from '../context/PrivacyContext';
@@ -87,6 +87,7 @@ const SETORES: SetorFuncionario[] = [
   'Projetos',
   'Engenharia',
   'Operações',
+  'Diretoria',
   'Outro',
 ];
 
@@ -96,7 +97,13 @@ const TIPOS_CONTRATO: { id: TipoContratoFuncionario; label: string }[] = [
   { id: 'temporario', label: 'Temporário' },
   { id: 'estagiario', label: 'Estagiário' },
   { id: 'diarista', label: 'Diarista' },
+  { id: 'prolabore', label: 'Pró-labore (Sócio/CEO)' },
 ];
+
+const formatarTipoContratoLabel = (tipo: string): string => {
+  if (tipo === 'prolabore') return 'Pró-labore';
+  return tipo;
+};
 
 const TIPOS_LANCAMENTO_FOLHA: { id: TipoLancamentoFolha; label: string; tipoOperacao: 'provento' | 'desconto' }[] = [
   { id: 'salario', label: 'Salário Base', tipoOperacao: 'provento' },
@@ -166,6 +173,9 @@ export const Funcionarios: React.FC = () => {
 
   // F9: Pagamentos de folha sem despesa no caixa
   const [folhasPagasSemDespesaCount, setFolhasPagasSemDespesaCount] = useState<number>(0);
+  // A8: parcelas reconciliadas (volta para pendente)
+  const [folhasReconciliadasCount, setFolhasReconciliadasCount] = useState<number>(0);
+  const reconciliouRef = useRef(false);
 
   const carregarDados = () => {
     setFuncionarios(dbService.getFuncionarios());
@@ -194,6 +204,14 @@ export const Funcionarios: React.FC = () => {
 
     const executarVinculacaoEContagem = () => {
       if (dbService.isCarregado()) {
+        // A8 e A2: reconciliar apenas na primeira execução para evitar incoerência por atualizações parciais
+        if (!reconciliouRef.current) {
+          reconciliouRef.current = true;
+          const reconciliadas = dbService.reconciliarPagamentosDeFolha();
+          if (reconciliadas > 0) {
+            setFolhasReconciliadasCount((prev) => prev + reconciliadas);
+          }
+        }
         dbService.vincularFolhasPendentesSemDespesa();
         setFolhasPagasSemDespesaCount(dbService.contarFolhasPagasSemDespesa());
       }
@@ -603,6 +621,23 @@ export const Funcionarios: React.FC = () => {
         </div>
       )}
 
+      {/* A8: faixa de reconciliação (parcelas que voltaram para pendente) */}
+      {isAdmin && folhasReconciliadasCount > 0 && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-900 px-4 py-3 rounded-2xl text-xs flex items-center gap-2 shadow-2xs">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+          <span className="flex-1">
+            <strong>{folhasReconciliadasCount}</strong> parcela(s) de folha estavam marcadas como pagas, mas o pagamento não existe mais no caixa. Voltaram para Pendente.
+          </span>
+          <button
+            type="button"
+            onClick={() => setFolhasReconciliadasCount(0)}
+            className="ml-2 px-3 py-1 text-[11px] font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-lg cursor-pointer shrink-0"
+          >
+            Fechar
+          </button>
+        </div>
+      )}
+
       {/* MÉTRICAS NO TOPO */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
         
@@ -612,7 +647,7 @@ export const Funcionarios: React.FC = () => {
             <span className="text-[10px] font-bold uppercase tracking-wider">Colaboradores</span>
             <UserCheck className="w-4 h-4 text-[#003064]" />
           </div>
-          <p className="font-serif text-2xl font-bold text-[#003064] mt-0.5">
+          <p className="font-num text-2xl font-bold text-[#003064] mt-0.5">
             {metricasTopo.totalAtivos}
           </p>
           <span className="text-[10px] text-slate-400 block mt-0.5">Ativos na empresa</span>
@@ -624,7 +659,7 @@ export const Funcionarios: React.FC = () => {
             <span className="text-[10px] font-bold uppercase tracking-wider">Salários Base</span>
             <DollarSign className="w-4 h-4 text-emerald-600" />
           </div>
-          <p className="font-serif text-xl sm:text-2xl font-bold text-slate-800 mt-0.5">
+          <p className="font-num text-xl sm:text-2xl font-bold text-slate-800 mt-0.5">
             {formatarValor(metricasTopo.totalFolhaBase)}
           </p>
           <span className="text-[10px] text-slate-400 block mt-0.5">Competência {competenciaAtiva}</span>
@@ -636,7 +671,7 @@ export const Funcionarios: React.FC = () => {
             <span className="text-[10px] font-bold uppercase tracking-wider">Custo c/ Encargos</span>
             <ShieldCheck className="w-4 h-4 text-purple-600" />
           </div>
-          <p className="font-serif text-xl sm:text-2xl font-black text-[#003064] mt-0.5">
+          <p className="font-num text-xl sm:text-2xl font-black text-[#003064] mt-0.5">
             {formatarValor(metricasTopo.custoTotalEncargos)}
           </p>
           <span className="text-[10px] text-slate-400 block mt-0.5">INSS, FGTS, Férias, 13º</span>
@@ -648,7 +683,7 @@ export const Funcionarios: React.FC = () => {
             <span className="text-[10px] font-bold uppercase tracking-wider">Já Liquidado</span>
             <CheckCircle2 className="w-4 h-4 text-[#16A34A]" />
           </div>
-          <p className="font-serif text-xl sm:text-2xl font-bold text-[#16A34A] mt-0.5">
+          <p className="font-num text-xl sm:text-2xl font-bold text-[#16A34A] mt-0.5">
             {formatarValor(metricasTopo.totalPagoMes)}
           </p>
           <span className="text-[10px] text-slate-400 block mt-0.5">Pago no mês</span>
@@ -660,7 +695,7 @@ export const Funcionarios: React.FC = () => {
             <span className="text-[10px] font-bold uppercase tracking-wider">Pendente</span>
             <Clock className="w-4 h-4 text-[#DC2626]" />
           </div>
-          <p className="font-serif text-xl sm:text-2xl font-bold text-[#DC2626] mt-0.5">
+          <p className="font-num text-xl sm:text-2xl font-bold text-[#DC2626] mt-0.5">
             {formatarValor(metricasTopo.totalPendenteMes)}
           </p>
           <span className="text-[10px] text-slate-400 block mt-0.5">Em aberto na folha</span>
@@ -815,7 +850,9 @@ export const Funcionarios: React.FC = () => {
 
                           {/* Contrato & Status */}
                           <td className="py-3.5 px-4">
-                            <p className="text-slate-600 font-medium uppercase text-[11px]">{f.tipo_contrato}</p>
+                            <p className={`text-slate-600 font-medium text-[11px] ${f.tipo_contrato === 'prolabore' ? '' : 'uppercase'}`}>
+                              {formatarTipoContratoLabel(f.tipo_contrato)}
+                            </p>
                             <span className={`inline-block mt-0.5 text-[10px] font-bold px-2 py-0.2 rounded-full capitalize ${
                               f.status === 'ativo' ? 'bg-emerald-100 text-emerald-800' :
                               f.status === 'ferias' ? 'bg-blue-100 text-blue-800' :
@@ -828,7 +865,7 @@ export const Funcionarios: React.FC = () => {
 
                           {/* Salário Base */}
                           <td className="py-3.5 px-4 text-right">
-                            <span className="font-serif font-bold text-slate-800 text-xs">
+                            <span className="font-num font-bold text-slate-800 text-xs">
                               {formatarValor(f.salario_base)}
                             </span>
                             {f.adicional_tipo !== 'nenhum' && (
@@ -840,7 +877,7 @@ export const Funcionarios: React.FC = () => {
 
                           {/* Custo Mensal Total */}
                           <td className="py-3.5 px-4 text-right">
-                            <span className="font-serif font-black text-[#003064] text-xs">
+                            <span className="font-num font-black text-[#003064] text-xs">
                               {formatarValor(calc.custoTotalMensal)}
                             </span>
                             <span className="text-[10px] text-slate-400 block">
@@ -937,11 +974,11 @@ export const Funcionarios: React.FC = () => {
                       <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-2.5 rounded-xl border border-slate-200/80">
                         <div>
                           <span className="text-[10px] text-slate-400 block font-semibold">Salário Base</span>
-                          <strong className="font-serif text-slate-800">{formatarValor(f.salario_base)}</strong>
+                          <strong className="font-num text-slate-800">{formatarValor(f.salario_base)}</strong>
                         </div>
                         <div>
                           <span className="text-[10px] text-slate-400 block font-semibold">Custo Total Empresa</span>
-                          <strong className="font-serif text-[#003064]">{formatarValor(calc.custoTotalMensal)}</strong>
+                          <strong className="font-num text-[#003064]">{formatarValor(calc.custoTotalMensal)}</strong>
                         </div>
                       </div>
 
@@ -1127,20 +1164,27 @@ export const Funcionarios: React.FC = () => {
                         <td className="py-3.5 px-4">
                           <p className="font-bold text-slate-900">{f.nome}</p>
                           <p className="text-[11px] text-slate-500">{f.cargo} • {f.setor}</p>
-                          {isQuinzenal && (
-                            <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded-full">Quinzenal</span>
-                          )}
+                          <div className="flex items-center gap-1 mt-0.5">
+                            {isQuinzenal ? (
+                              <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded-full">Quinzenal</span>
+                            ) : (
+                              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Mensal</span>
+                            )}
+                            {f.tipo_contrato === 'prolabore' && (
+                              <span className="text-[10px] font-bold text-violet-800 bg-violet-100 px-1.5 py-0.5 rounded-full">Pró-labore</span>
+                            )}
+                          </div>
                         </td>
 
-                        <td className="py-3.5 px-4 text-right font-serif text-slate-700">
+                        <td className="py-3.5 px-4 text-right font-num text-slate-700">
                           {formatarValor(calcFolha.salarioBase)}
                         </td>
 
-                        <td className="py-3.5 px-4 text-right font-serif text-emerald-700">
+                        <td className="py-3.5 px-4 text-right font-num text-emerald-700">
                           {adicionaisTotais > 0 ? `+ ${formatarValor(adicionaisTotais)}` : '-'}
                         </td>
 
-                        <td className="py-3.5 px-4 text-right font-serif text-amber-700 relative group">
+                        <td className="py-3.5 px-4 text-right font-num text-amber-700 relative group">
                           {calcFolha.totalDescontos > 0 ? (
                             <span className="cursor-help underline decoration-dotted font-semibold">
                               - {formatarValor(calcFolha.totalDescontos)}
@@ -1154,19 +1198,19 @@ export const Funcionarios: React.FC = () => {
                               {calcFolha.descontos.map((d, i) => (
                                 <div key={i} className="flex justify-between gap-2 py-0.5">
                                   <span className="truncate text-slate-300">{d.descricao}:</span>
-                                  <span className="font-serif font-bold text-amber-300">{formatarValor(d.valor)}</span>
+                                  <span className="font-num font-bold text-amber-300">{formatarValor(d.valor)}</span>
                                 </div>
                               ))}
                             </div>
                           )}
                         </td>
 
-                        <td className="py-3.5 px-4 text-right font-serif text-red-600">
+                        <td className="py-3.5 px-4 text-right font-num text-red-600">
                           {calcFolha.adiantamentosAbatidos > 0 ? `- ${formatarValor(calcFolha.adiantamentosAbatidos)}` : '-'}
                         </td>
 
                         <td className="py-3.5 px-4 text-right">
-                          <strong className="font-serif font-black text-sm text-[#003064]">
+                          <strong className="font-num font-black text-sm text-[#003064]">
                             {formatarValor(valorLiquido)}
                           </strong>
                           {/* D2: Previsão por quinzena quando sem parcelas geradas */}
@@ -1210,6 +1254,19 @@ export const Funcionarios: React.FC = () => {
                                     {isParcPaga ? (
                                       <span className="text-emerald-700 font-semibold flex items-center gap-0.5">
                                         <CheckCircle2 className="w-3 h-3" /> Quitado
+                                        {p.lancamento_id && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              if (confirm('Estornar este pagamento? O valor volta ao saldo da conta e a parcela volta para Pendente.')) {
+                                                dbService.estornarLancamento(p.lancamento_id!);
+                                              }
+                                            }}
+                                            className="ml-1 px-2 py-0.5 text-[11px] font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-md cursor-pointer"
+                                          >
+                                            Estornar
+                                          </button>
+                                        )}
                                       </span>
                                     ) : (
                                       <button
@@ -1236,6 +1293,20 @@ export const Funcionarios: React.FC = () => {
                             <span className="text-[11px] font-semibold text-emerald-700 flex items-center justify-end gap-1">
                               <CheckCircle2 className="w-3.5 h-3.5" />
                               <span>Quitado</span>
+                              {/* A7: botão Estornar para colaborador mensal totalmente pago */}
+                              {parcelas.length > 0 && parcelas[0]?.lancamento_id && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (confirm('Estornar este pagamento? O valor volta ao saldo da conta e a parcela volta para Pendente.')) {
+                                      dbService.estornarLancamento(parcelas[0].lancamento_id!);
+                                    }
+                                  }}
+                                  className="ml-1 px-2 py-0.5 text-[11px] font-bold bg-amber-600 hover:bg-amber-700 text-white rounded-md cursor-pointer"
+                                >
+                                  Estornar
+                                </button>
+                              )}
                             </span>
                           )}
                         </td>
@@ -1274,8 +1345,8 @@ export const Funcionarios: React.FC = () => {
                     <h3 className="font-serif font-bold text-lg text-white">
                       {funcionarioSelecionado.nome}
                     </h3>
-                    <span className="text-[10px] uppercase font-bold bg-white/20 text-[#FCBC00] px-2 py-0.5 rounded-full">
-                      {funcionarioSelecionado.tipo_contrato}
+                    <span className={`text-[10px] font-bold bg-white/20 text-[#FCBC00] px-2 py-0.5 rounded-full ${funcionarioSelecionado.tipo_contrato === 'prolabore' ? '' : 'uppercase'}`}>
+                      {formatarTipoContratoLabel(funcionarioSelecionado.tipo_contrato)}
                     </span>
                   </div>
                   <p className="text-xs text-slate-300 mt-0.5">
@@ -1354,7 +1425,7 @@ export const Funcionarios: React.FC = () => {
                   {/* Salário Base */}
                   <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
                     <span className="text-[10px] uppercase font-bold text-slate-400 block">Salário Base</span>
-                    <strong className="font-serif text-sm text-slate-800 mt-0.5 block">
+                    <strong className="font-num text-sm text-slate-800 mt-0.5 block">
                       {formatarValor(funcionarioSelecionado.salario_base)}
                     </strong>
                   </div>
@@ -1362,7 +1433,7 @@ export const Funcionarios: React.FC = () => {
                   {/* Custo Total Empresa */}
                   <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
                     <span className="text-[10px] uppercase font-bold text-slate-400 block">Custo p/ Empresa</span>
-                    <strong className="font-serif text-sm text-[#003064] mt-0.5 block">
+                    <strong className="font-num text-sm text-[#003064] mt-0.5 block">
                       {formatarValor(calc.custoTotalMensal)}
                     </strong>
                   </div>
@@ -1370,7 +1441,7 @@ export const Funcionarios: React.FC = () => {
                   {/* Total Pago no Mês */}
                   <div className="p-2.5 bg-emerald-50/60 rounded-xl border border-emerald-200">
                     <span className="text-[10px] uppercase font-bold text-emerald-800 block">Pago no Mês</span>
-                    <strong className="font-serif text-sm text-emerald-700 mt-0.5 block">
+                    <strong className="font-num text-sm text-emerald-700 mt-0.5 block">
                       {formatarValor(ficha.totalPagoMes)}
                     </strong>
                   </div>
@@ -1378,7 +1449,7 @@ export const Funcionarios: React.FC = () => {
                   {/* Total Pago no Ano */}
                   <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
                     <span className="text-[10px] uppercase font-bold text-slate-400 block">Pago no Ano</span>
-                    <strong className="font-serif text-sm text-slate-800 mt-0.5 block">
+                    <strong className="font-num text-sm text-slate-800 mt-0.5 block">
                       {formatarValor(ficha.totalPagoAno)}
                     </strong>
                   </div>
@@ -1388,7 +1459,7 @@ export const Funcionarios: React.FC = () => {
                     ficha.saldoAdiantamentosAberto > 0 ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-slate-200'
                   }`}>
                     <span className="text-[10px] uppercase font-bold text-amber-900 block">Adiant. Aberto</span>
-                    <strong className="font-serif text-sm text-amber-800 mt-0.5 block">
+                    <strong className="font-num text-sm text-amber-800 mt-0.5 block">
                       {formatarValor(ficha.saldoAdiantamentosAberto)}
                     </strong>
                   </div>
@@ -1404,7 +1475,7 @@ export const Funcionarios: React.FC = () => {
                   {/* 13º Acumulado Estimado */}
                   <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200">
                     <span className="text-[10px] uppercase font-bold text-slate-400 block">13º Acumulado</span>
-                    <strong className="font-serif text-sm text-purple-700 mt-0.5 block">
+                    <strong className="font-num text-sm text-purple-700 mt-0.5 block">
                       {formatarValor((funcionarioSelecionado.salario_base / 12) * Math.min(12, hoje.getMonth() + 1))}
                     </strong>
                   </div>
@@ -1502,7 +1573,7 @@ export const Funcionarios: React.FC = () => {
                         {detalhamento.map((d, i) => (
                           <div key={i} className="flex justify-between items-center bg-white p-2 rounded-lg border border-amber-200/80">
                             <span className="font-medium text-slate-700">{d.descricao}</span>
-                            <span className="font-serif font-bold text-rose-700">{formatarMoeda(d.valor)}</span>
+                            <span className="font-num font-bold text-rose-700">{formatarMoeda(d.valor)}</span>
                           </div>
                         ))}
                       </div>
@@ -1541,7 +1612,7 @@ export const Funcionarios: React.FC = () => {
                               </td>
                               <td className="py-2.5 px-3 text-slate-600 font-medium">{l.competencia}</td>
                               <td className="py-2.5 px-3 text-slate-600">{formatarDataBR(l.data_pagamento || l.data_prevista)}</td>
-                              <td className={`py-2.5 px-3 text-right font-serif font-bold ${
+                              <td className={`py-2.5 px-3 text-right font-num font-bold ${
                                 l.tipo_operacao === 'desconto' ? 'text-red-600' : 'text-emerald-700'
                               }`}>
                                 {l.tipo_operacao === 'desconto' ? '-' : '+'} {formatarValor(l.valor)}
@@ -1680,11 +1751,11 @@ export const Funcionarios: React.FC = () => {
                             <td className="py-2 px-3 font-semibold text-slate-800">
                               {nomesMeses[idx]}/{anoAtualStr.slice(2)}
                             </td>
-                            <td className="py-2 px-3 text-right font-serif text-slate-700">{formatarValor(salario)}</td>
-                            <td className="py-2 px-3 text-right font-serif text-emerald-700">{formatarValor(comissoes)}</td>
-                            <td className="py-2 px-3 text-right font-serif text-amber-800">{formatarValor(adiant)}</td>
-                            <td className="py-2 px-3 text-right font-serif text-slate-600">{formatarValor(benef)}</td>
-                            <td className="py-2 px-3 text-right font-serif font-bold text-[#003064]">{formatarValor(totalPago)}</td>
+                            <td className="py-2 px-3 text-right font-num text-slate-700">{formatarValor(salario)}</td>
+                            <td className="py-2 px-3 text-right font-num text-emerald-700">{formatarValor(comissoes)}</td>
+                            <td className="py-2 px-3 text-right font-num text-amber-800">{formatarValor(adiant)}</td>
+                            <td className="py-2 px-3 text-right font-num text-slate-600">{formatarValor(benef)}</td>
+                            <td className="py-2 px-3 text-right font-num font-bold text-[#003064]">{formatarValor(totalPago)}</td>
                           </tr>
                         );
                       })}
@@ -1738,7 +1809,7 @@ export const Funcionarios: React.FC = () => {
                     </h5>
                     <p><strong>Cargo:</strong> {funcionarioSelecionado.cargo}</p>
                     <p><strong>Setor:</strong> {funcionarioSelecionado.setor}</p>
-                    <p><strong>Tipo de Contrato:</strong> {funcionarioSelecionado.tipo_contrato}</p>
+                    <p><strong>Tipo de Contrato:</strong> {formatarTipoContratoLabel(funcionarioSelecionado.tipo_contrato)}</p>
                     <p><strong>Data de Admissão:</strong> {formatarDataBR(funcionarioSelecionado.data_admissao)}</p>
                     <p><strong>Carga Horária:</strong> {funcionarioSelecionado.carga_horaria}</p>
                     <p><strong>CTPS / PIS:</strong> {funcionarioSelecionado.ctps_pis || '-'}</p>
@@ -2171,7 +2242,8 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
     const totalBen = beneficios.reduce((acc, b) => acc + (b.valor || 0), 0);
 
     const isCLT = tipoContrato === 'CLT';
-    const inss = isCLT ? bruta * ((Number(inssPatronal) || 0) / 100) : 0;
+    const isProlabore = tipoContrato === 'prolabore';
+    const inss = (isCLT || isProlabore) ? bruta * ((Number(inssPatronal) || 0) / 100) : 0;
     const fgtsVal = isCLT ? bruta * ((Number(fgts) || 0) / 100) : 0;
     const feriasVal = isCLT ? bruta * ((Number(provisaoFerias) || 0) / 100) : 0;
     const decimoVal = isCLT ? bruta * ((Number(provisao13) || 0) / 100) : 0;
@@ -2514,7 +2586,16 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
                 <label className="block text-slate-700 font-semibold mb-1">Tipo de Contrato *</label>
                 <select
                   value={tipoContrato}
-                  onChange={(e) => setTipoContrato(e.target.value as TipoContratoFuncionario)}
+                  onChange={(e) => {
+                    const novoTipo = e.target.value as TipoContratoFuncionario;
+                    setTipoContrato(novoTipo);
+                    if (novoTipo === 'prolabore') {
+                      setFormaRemuneracao('mensal');
+                      if (!funcionarioParaEditar) {
+                        setInssPatronal('0');
+                      }
+                    }
+                  }}
                   className="w-full px-3 py-2 border border-slate-300 rounded-xl bg-white"
                 >
                   {TIPOS_CONTRATO.map((c) => (
@@ -2596,7 +2677,7 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
                   value={salarioBase}
                   onChange={(e) => setSalarioBase(e.target.value)}
                   placeholder="0.00"
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-serif font-bold text-slate-900"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-num font-bold text-slate-900"
                   required
                 />
               </div>
@@ -2831,47 +2912,66 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
                   <h4 className="font-bold text-[#003064] text-xs">Descontos Recorrentes em Folha</h4>
                   <p className="text-[11px] text-slate-500">Configuração de descontos aplicados automaticamente no cálculo mensal</p>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-                      setDescontosRec(prev => [...prev, { id: newId, nome: 'Vale-transporte', tipo: 'percentual', valor: 6, base: 'salario_base', ativo: true }]);
-                    }}
-                    className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
-                  >
-                    + VT 6% (base)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-                      setDescontosRec(prev => [...prev, { id: newId, nome: 'Plano de saúde', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
-                    }}
-                    className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
-                  >
-                    + Plano saúde (R$)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-                      setDescontosRec(prev => [...prev, { id: newId, nome: 'Pensão alimentícia', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
-                    }}
-                    className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
-                  >
-                    + Pensão (R$)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-                      setDescontosRec(prev => [...prev, { id: newId, nome: 'Outro desconto', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
-                    }}
-                    className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
-                  >
-                    + Outro
-                  </button>
+                <div className="flex flex-col gap-1.5 sm:items-end">
+                  <div className="flex flex-wrap gap-1.5">
+                    {tipoContrato === 'prolabore' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                          setDescontosRec(prev => [...prev, { id: newId, nome: 'INSS do sócio', tipo: 'percentual', valor: 11, base: 'bruto', ativo: true }]);
+                        }}
+                        className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                      >
+                        + INSS do sócio 11% (base: bruto)
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                        setDescontosRec(prev => [...prev, { id: newId, nome: 'Vale-transporte', tipo: 'percentual', valor: 6, base: 'salario_base', ativo: true }]);
+                      }}
+                      className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                    >
+                      + VT 6% (base)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                        setDescontosRec(prev => [...prev, { id: newId, nome: 'Plano de saúde', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
+                      }}
+                      className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                    >
+                      + Plano saúde (R$)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                        setDescontosRec(prev => [...prev, { id: newId, nome: 'Pensão alimentícia', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
+                      }}
+                      className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                    >
+                      + Pensão (R$)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newId = `desc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                        setDescontosRec(prev => [...prev, { id: newId, nome: 'Outro desconto', tipo: 'fixo', valor: 0, base: 'salario_base', ativo: true }]);
+                      }}
+                      className="px-2 py-1 text-[10px] font-semibold bg-white text-[#003064] border border-[#003064]/30 rounded-lg hover:bg-blue-50 transition-colors"
+                    >
+                      + Outro
+                    </button>
+                  </div>
+                  {tipoContrato === 'prolabore' && (
+                    <p className="text-[10px] text-slate-500 italic">
+                      Retenção do sócio. O sistema não aplica o teto previdenciário nem calcula IRRF; confirme com o contador.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -3026,7 +3126,7 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
                 <div key={b.id || idx} className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-200">
                   <span className="font-medium text-slate-800">{b.nome}</span>
                   <div className="flex items-center gap-3">
-                    <span className="font-serif font-bold text-slate-700">{formatarMoeda(b.valor)}</span>
+                    <span className="font-num font-bold text-slate-700">{formatarMoeda(b.valor)}</span>
                     <button
                       type="button"
                       onClick={() => setBeneficios(beneficios.filter((_, i) => i !== idx))}
@@ -3044,9 +3144,11 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
         {/* SEÇÃO 5: ENCARGOS & PROVISÕES (COM CUSTO TOTAL CALCULADO EM TEMPO REAL) */}
         {secaoAtiva === 5 && (
           <div className="space-y-3 animate-in fade-in text-xs">
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">INSS Patronal (%)</label>
+            {tipoContrato === 'prolabore' ? (
+              <div className="max-w-xs">
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  INSS patronal sobre o pró-labore (%)
+                </label>
                 <input
                   type="number"
                   step="0.1"
@@ -3054,52 +3156,68 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
                   onChange={(e) => setInssPatronal(e.target.value)}
                   className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
                 />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Use 0 se a empresa é do Simples Nacional. Confirme com o contador.
+                </p>
               </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">INSS Patronal (%)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={inssPatronal}
+                    onChange={(e) => setInssPatronal(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">FGTS (%)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={fgts}
-                  onChange={(e) => setFgts(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
-                />
-              </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">FGTS (%)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={fgts}
+                    onChange={(e) => setFgts(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">Prov. Férias (%)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={provisaoFerias}
-                  onChange={(e) => setProvisaoFerias(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
-                />
-              </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">Prov. Férias (%)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={provisaoFerias}
+                    onChange={(e) => setProvisaoFerias(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">Prov. 13º (%)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={provisao13}
-                  onChange={(e) => setProvisao13(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
-                />
-              </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">Prov. 13º (%)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={provisao13}
+                    onChange={(e) => setProvisao13(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
+                  />
+                </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">Outros (%)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={outrosEncargos}
-                  onChange={(e) => setOutrosEncargos(e.target.value)}
-                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
-                />
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">Outros (%)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={outrosEncargos}
+                    onChange={(e) => setOutrosEncargos(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-slate-300 rounded-xl text-center font-bold"
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             {/* CARD DESTACADO: CUSTO TOTAL MENSAL PARA A EMPRESA */}
             <div className="p-4 rounded-xl bg-linear-to-r from-[#003064] to-[#00204A] text-white shadow-sm space-y-2">
@@ -3107,7 +3225,7 @@ const FormularioCadastroFuncionarioModal: React.FC<FormularioCadastroProps> = ({
                 <span className="text-[11px] uppercase tracking-wider text-[#FCBC00] font-bold">
                   Custo Total Mensal para a MT Solar
                 </span>
-                <span className="font-serif font-black text-xl text-white">
+                <span className="font-num font-black text-xl text-white">
                   {formatarMoeda(calculoCustoEmpresa.custoTotalMensal)}
                 </span>
               </div>
@@ -3386,7 +3504,7 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
               min="0"
               value={valor}
               onChange={(e) => setValor(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-xl font-serif font-bold"
+              className="w-full px-3 py-2 border border-slate-300 rounded-xl font-num font-bold"
               required
             />
           </div>
@@ -3412,7 +3530,7 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
             <div className="space-y-1 text-[11px]">
               <div className="flex justify-between">
                 <span>Bruto estimado:</span>
-                <strong className="font-serif">{formatarMoeda(calcFolha.bruto)}</strong>
+                <strong className="font-num">{formatarMoeda(calcFolha.bruto)}</strong>
               </div>
               {calcFolha.descontos.length > 0 && (
                 <div className="space-y-0.5 border-t border-amber-200/60 pt-1">
@@ -3420,14 +3538,14 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
                   {calcFolha.descontos.map((d, idx) => (
                     <div key={idx} className="flex justify-between pl-2 text-slate-700">
                       <span>• {d.descricao}:</span>
-                      <span className="font-serif font-semibold text-rose-700">- {formatarMoeda(d.valor)}</span>
+                      <span className="font-num font-semibold text-rose-700">- {formatarMoeda(d.valor)}</span>
                     </div>
                   ))}
                 </div>
               )}
               <div className="flex justify-between border-t border-amber-200/60 pt-1">
                 <span>Este desconto avulso:</span>
-                <strong className="font-serif text-rose-700">- {formatarMoeda(Number(valor) || 0)}</strong>
+                <strong className="font-num text-rose-700">- {formatarMoeda(Number(valor) || 0)}</strong>
               </div>
               {(() => {
                 const descAvulso = Number(valor) || 0;
@@ -3435,7 +3553,7 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
                 return (
                   <div className="flex justify-between border-t border-amber-300 pt-1.5 font-bold text-xs text-[#003064]">
                     <span>Líquido estimado pós-desconto:</span>
-                    <strong className="font-serif text-sm font-black">{formatarMoeda(liqEst)}</strong>
+                    <strong className="font-num text-sm font-black">{formatarMoeda(liqEst)}</strong>
                   </div>
                 );
               })()}
@@ -3448,7 +3566,7 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
           <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 space-y-2">
             <p className="font-bold flex items-center justify-between text-xs">
               <span>Adiantamentos disponíveis para abatimento:</span>
-              <span className="font-serif text-amber-800">{formatarMoeda(calcFolha.adiantamentosAbatidos)} abatido(s)</span>
+              <span className="font-num text-amber-800">{formatarMoeda(calcFolha.adiantamentosAbatidos)} abatido(s)</span>
             </p>
             <div className="space-y-1 max-h-32 overflow-y-auto">
               {adiantamentosDisponiveis.map(ad => (
@@ -3464,13 +3582,13 @@ const ModalNovoLancamentoFolhaModal: React.FC<NovoLancFolhaProps> = ({
                       {ad.descricao} ({formatarDataBR(ad.data_pagamento || ad.data_prevista)})
                     </span>
                   </div>
-                  <strong className="font-serif text-amber-900">{formatarMoeda(ad.valor)}</strong>
+                  <strong className="font-num text-amber-900">{formatarMoeda(ad.valor)}</strong>
                 </label>
               ))}
             </div>
             <p className="text-[11px] text-amber-800 pt-1 border-t border-amber-200/60 flex justify-between">
               <span>Líquido estimado a pagar:</span>
-              <strong className="font-serif text-sm font-black text-[#003064]">{formatarMoeda(calcFolha.liquido)}</strong>
+              <strong className="font-num text-sm font-black text-[#003064]">{formatarMoeda(calcFolha.liquido)}</strong>
             </p>
           </div>
         )}
@@ -3607,7 +3725,7 @@ export const FolhaGeralImpressao: React.FC<FolhaGeralProps> = ({
       return {
         id: f.id,
         nome: f.nome,
-        cargo: f.cargo,
+        cargo: f.tipo_contrato === 'prolabore' ? `${f.cargo} (pró-labore)` : f.cargo,
         salarioBase: f.salario_base,
         // B3: q1 — adicionais reais; descontos e adiantamentos = 0
         adicionais: calcFolha.adicionais,
@@ -3641,7 +3759,7 @@ export const FolhaGeralImpressao: React.FC<FolhaGeralProps> = ({
       return {
         id: f.id,
         nome: f.nome,
-        cargo: f.cargo,
+        cargo: f.tipo_contrato === 'prolabore' ? `${f.cargo} (pró-labore)` : f.cargo,
         salarioBase: f.salario_base,
         // B3: q2 — adicionais reais (SEM proventosAvulsos); descontos e adiantamentos reais
         adicionais: calcFolha.adicionais,
@@ -3700,7 +3818,7 @@ export const FolhaGeralImpressao: React.FC<FolhaGeralProps> = ({
     return {
       id: f.id,
       nome: f.nome,
-      cargo: f.cargo,
+      cargo: f.tipo_contrato === 'prolabore' ? `${f.cargo} (pró-labore)` : f.cargo,
       salarioBase: f.salario_base,
       // B3: 'mes' — adicionais reais (SEM proventosAvulsos, pagos à parte)
       adicionais: calcFolha.adicionais,
@@ -3771,19 +3889,19 @@ export const FolhaGeralImpressao: React.FC<FolhaGeralProps> = ({
               <td className="py-1.5 px-2 text-slate-600 border border-slate-300">
                 {l.cargo}
               </td>
-              <td className="py-1.5 px-2 text-right font-serif border border-slate-300">
+              <td className="py-1.5 px-2 text-right font-num border border-slate-300">
                 {formatarMoeda(l.salarioBase)}
               </td>
-              <td className="py-1.5 px-2 text-right font-serif text-emerald-700 border border-slate-300">
+              <td className="py-1.5 px-2 text-right font-num text-emerald-700 border border-slate-300">
                 {formatarMoeda(l.adicionais)}
               </td>
-              <td className="py-1.5 px-2 text-right font-serif text-red-600 border border-slate-300">
+              <td className="py-1.5 px-2 text-right font-num text-red-600 border border-slate-300">
                 {formatarMoeda(l.descontos)}
               </td>
-              <td className="py-1.5 px-2 text-right font-serif text-amber-700 border border-slate-300">
+              <td className="py-1.5 px-2 text-right font-num text-amber-700 border border-slate-300">
                 {formatarMoeda(l.adiantamentos)}
               </td>
-              <td className="py-1.5 px-2 text-right font-serif font-bold text-[#003064] border border-slate-300">
+              <td className="py-1.5 px-2 text-right font-num font-bold text-[#003064] border border-slate-300">
                 {formatarMoeda(l.liquido)}
               </td>
               <td className="py-1.5 px-2 text-[8.5pt] text-slate-600 border border-slate-300 whitespace-nowrap">
@@ -3807,19 +3925,19 @@ export const FolhaGeralImpressao: React.FC<FolhaGeralProps> = ({
             <td colSpan={2} className="py-2 px-2 border border-slate-300 text-right uppercase text-[9pt]">
               Totais Gerais:
             </td>
-            <td className="py-2 px-2 text-right font-serif border border-slate-300">
+            <td className="py-2 px-2 text-right font-num border border-slate-300">
               {formatarMoeda(totalBase)}
             </td>
-            <td className="py-2 px-2 text-right font-serif text-emerald-700 border border-slate-300">
+            <td className="py-2 px-2 text-right font-num text-emerald-700 border border-slate-300">
               {formatarMoeda(totalAdicionais)}
             </td>
-            <td className="py-2 px-2 text-right font-serif text-red-600 border border-slate-300">
+            <td className="py-2 px-2 text-right font-num text-red-600 border border-slate-300">
               {formatarMoeda(totalDescontos)}
             </td>
-            <td className="py-2 px-2 text-right font-serif text-amber-700 border border-slate-300">
+            <td className="py-2 px-2 text-right font-num text-amber-700 border border-slate-300">
               {formatarMoeda(totalAdiantamentos)}
             </td>
-            <td className="py-2 px-2 text-right font-serif font-bold text-[#003064] border border-slate-300">
+            <td className="py-2 px-2 text-right font-num font-bold text-[#003064] border border-slate-300">
               {formatarMoeda(totalLiquido)}
             </td>
             <td colSpan={2} className="py-2 px-2 border border-slate-300 text-right text-[8.5pt] text-slate-500">
@@ -3873,6 +3991,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
     .sort((a, b) => (a.data_prevista > b.data_prevista ? 1 : -1));
 
   const isQuinzenal = funcionario.forma_remuneracao === 'quinzenal';
+  const isProlabore = funcionario.tipo_contrato === 'prolabore';
   const prevQuinzena = isQuinzenal
     ? dbService.calcularParcelasQuinzena(funcionario, competencia)
     : null;
@@ -3952,7 +4071,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
 
     // Na 2ª quinzena, discrimina proventos integrais
     itensProventos.push({
-      descricao: 'Salário Base Mensal',
+      descricao: isProlabore ? 'Pró-labore' : 'Salário Base Mensal',
       referencia: '30 dias',
       valor: funcionario.salario_base,
     });
@@ -4017,7 +4136,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
     }
 
     itensProventos.push({
-      descricao: 'Salário Base',
+      descricao: isProlabore ? 'Pró-labore' : 'Salário Base',
       referencia: '30 dias',
       valor: funcionario.salario_base,
     });
@@ -4063,7 +4182,9 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
             </strong>
             <span>CNPJ: 34.892.105/0001-44 • Cuiabá - MT</span>
             <span className="block font-bold text-[#003064] text-[10.5pt] mt-0.5">
-              RECIBO DE PAGAMENTO — COMPETÊNCIA {competencia} ({tituloPeriodo})
+              {isProlabore
+                ? `RECIBO DE PRÓ-LABORE — COMPETÊNCIA ${competencia} (${tituloPeriodo})`
+                : `RECIBO DE PAGAMENTO — COMPETÊNCIA ${competencia} (${tituloPeriodo})`}
             </span>
           </div>
         </div>
@@ -4109,7 +4230,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
                         <span className="text-[8pt] text-slate-500 ml-1">({item.referencia})</span>
                       )}
                     </td>
-                    <td className="py-1.5 px-3 text-right font-serif text-emerald-700 font-semibold whitespace-nowrap">
+                    <td className="py-1.5 px-3 text-right font-num text-emerald-700 font-semibold whitespace-nowrap">
                       {formatarMoeda(item.valor)}
                     </td>
                   </tr>
@@ -4125,7 +4246,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
               <tfoot>
                 <tr className="bg-slate-50 border-t border-slate-300 font-bold text-slate-900">
                   <td className="py-1.5 px-3 text-[9pt]">Total Proventos:</td>
-                  <td className="py-1.5 px-3 text-right font-serif text-emerald-700 whitespace-nowrap">
+                  <td className="py-1.5 px-3 text-right font-num text-emerald-700 whitespace-nowrap">
                     {formatarMoeda(totalProventos)}
                   </td>
                 </tr>
@@ -4149,7 +4270,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
                         <span className="text-[8pt] text-slate-500 ml-1">({item.referencia})</span>
                       )}
                     </td>
-                    <td className="py-1.5 px-3 text-right font-serif text-red-600 font-semibold whitespace-nowrap">
+                    <td className="py-1.5 px-3 text-right font-num text-red-600 font-semibold whitespace-nowrap">
                       {formatarMoeda(item.valor)}
                     </td>
                   </tr>
@@ -4165,7 +4286,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
               <tfoot>
                 <tr className="bg-slate-50 border-t border-slate-300 font-bold text-slate-900">
                   <td className="py-1.5 px-3 text-[9pt]">Total Descontos:</td>
-                  <td className="py-1.5 px-3 text-right font-serif text-red-600 whitespace-nowrap">
+                  <td className="py-1.5 px-3 text-right font-num text-red-600 whitespace-nowrap">
                     {formatarMoeda(totalDescontos)}
                   </td>
                 </tr>
@@ -4187,7 +4308,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
             <span className="text-[9pt] text-slate-500 font-semibold uppercase tracking-wider block">
               Valor Líquido a Receber
             </span>
-            <span className="text-2xl font-black text-[#003064] font-serif">
+            <span className="text-2xl font-black text-[#003064] font-num">
               {formatarMoeda(valorLiquido)}
             </span>
           </div>
@@ -4207,7 +4328,7 @@ export const ReciboIndividual: React.FC<ReciboIndividualProps> = ({
         {/* Termo de Quitação */}
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-[8.5pt] text-slate-600 leading-relaxed text-justify">
           Declaro ter recebido da empresa <strong>MT SOLAR SOLUÇÕES EM ENERGIA RENOVÁVEL LTDA</strong> a importância líquida
-          acima discriminada de <strong>{formatarMoeda(valorLiquido)}</strong>, correspondente à quitação dos meus proventos
+          acima discriminada de <strong>{formatarMoeda(valorLiquido)}</strong>, correspondente à quitação {isProlabore ? 'do meu pró-labore' : 'dos meus proventos'}
           da competência de <strong>{competencia} ({tituloPeriodo})</strong>, nada tendo a reclamar quanto aos valores expressos neste recibo.
         </div>
       </div>

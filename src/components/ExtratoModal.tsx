@@ -69,7 +69,7 @@ export const ExtratoModal: React.FC<ExtratoModalProps> = ({
             <span className="text-[10px] uppercase font-bold text-slate-500 block">
               Saldo Inicial ({formatarDataBR(data_saldo_inicial)})
             </span>
-            <span className="font-serif font-bold text-sm text-slate-700">
+            <span className="font-num font-bold text-sm text-slate-700">
               {formatarValor(saldo_inicial)}
             </span>
           </div>
@@ -78,7 +78,7 @@ export const ExtratoModal: React.FC<ExtratoModalProps> = ({
             <span className="text-[10px] uppercase font-bold text-slate-500 block">
               Saldo Real Atual
             </span>
-            <span className={`font-serif font-black text-base ${
+            <span className={`font-num font-black text-base ${
               resumoAtual.saldo_real >= 0 ? 'text-[#16A34A]' : 'text-red-600'
             }`}>
               {formatarValor(resumoAtual.saldo_real)}
@@ -94,7 +94,7 @@ export const ExtratoModal: React.FC<ExtratoModalProps> = ({
             <span className="text-[10px] uppercase font-bold text-slate-500 block">
               Limite Cheque Especial
             </span>
-            <span className="font-serif font-bold text-sm text-slate-800">
+            <span className="font-num font-bold text-sm text-slate-800">
               {formatarValor(conta.limite_cheque_especial)}
             </span>
             <span className="text-[10px] text-slate-400 block">
@@ -156,7 +156,7 @@ export const ExtratoModal: React.FC<ExtratoModalProps> = ({
                 <td className="py-2 px-3 text-right text-slate-500 font-mono">
                   -
                 </td>
-                <td className="py-2 px-3 text-right font-serif font-bold text-slate-800">
+                <td className="py-2 px-3 text-right font-num font-bold text-slate-800">
                   {formatarValor(saldo_inicial)}
                 </td>
               </tr>
@@ -211,7 +211,7 @@ export const ExtratoModal: React.FC<ExtratoModalProps> = ({
                       </td>
 
                       {/* Valor do Lançamento */}
-                      <td className="py-2.5 px-3 text-right whitespace-nowrap font-serif font-bold">
+                      <td className="py-2.5 px-3 text-right whitespace-nowrap font-num font-bold">
                         <span className={eReceita ? 'text-[#16A34A]' : 'text-red-600'}>
                           {eReceita ? '+' : '-'} {formatarValor(lancamento.valor)}
                         </span>
@@ -219,7 +219,7 @@ export const ExtratoModal: React.FC<ExtratoModalProps> = ({
 
                       {/* Saldo Real Acumulado (Destaque se negativo) */}
                       <td className="py-2.5 px-3 text-right whitespace-nowrap">
-                        <div className={`font-serif font-extrabold text-sm ${
+                        <div className={`font-num font-extrabold text-sm ${
                           saldo_real_acumulado >= 0 ? 'text-[#003064]' : 'text-red-600'
                         }`}>
                           {formatarValor(saldo_real_acumulado)}

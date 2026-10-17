@@ -303,14 +303,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {resumoOperacional.aReceber7Dias.quantidade} títulos
                 </span>
               </div>
-              <p className="font-serif font-black text-lg text-emerald-700 mt-0.5">
+              <p className="font-num font-black text-lg text-emerald-700 mt-0.5">
                 {formatarValor(resumoOperacional.aReceber7Dias.valor)}
               </p>
             </div>
 
             <div className="flex justify-between items-center text-xs text-slate-600 px-1">
               <span>Próximos 30 dias:</span>
-              <strong className="font-serif text-[#003064]">
+              <strong className="font-num text-[#003064]">
                 {formatarValor(resumoOperacional.aReceber30Dias.valor)}
               </strong>
             </div>
@@ -339,14 +339,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   {resumoOperacional.aPagar7Dias.quantidade} títulos
                 </span>
               </div>
-              <p className="font-serif font-black text-lg text-red-600 mt-0.5">
+              <p className="font-num font-black text-lg text-red-600 mt-0.5">
                 {formatarValor(resumoOperacional.aPagar7Dias.valor)}
               </p>
             </div>
 
             <div className="flex justify-between items-center text-xs text-slate-600 px-1">
               <span>Próximos 30 dias:</span>
-              <strong className="font-serif text-[#003064]">
+              <strong className="font-num text-[#003064]">
                 {formatarValor(resumoOperacional.aPagar30Dias.valor)}
               </strong>
             </div>
@@ -373,7 +373,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </div>
             </div>
 
-            <div className={`font-serif text-2xl font-black mt-1 ${
+            <div className={`font-num text-2xl font-black mt-1 ${
               resumoOperacional.resultadoPeriodo.resultado >= 0 ? 'text-[#16A34A]' : 'text-[#DC2626]'
             }`}>
               {formatarValor(resumoOperacional.resultadoPeriodo.resultado)}
@@ -386,13 +386,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-1 text-[11px]">
             <div className="flex justify-between text-slate-600">
               <span>Receitas realizadas:</span>
-              <span className="font-semibold text-emerald-700 font-serif">
+              <span className="font-semibold text-emerald-700 font-num">
                 {formatarValor(resumoOperacional.resultadoPeriodo.receitasPagas)}
               </span>
             </div>
             <div className="flex justify-between text-slate-600">
               <span>Despesas quitadas:</span>
-              <span className="font-semibold text-red-600 font-serif">
+              <span className="font-semibold text-red-600 font-num">
                 {formatarValor(resumoOperacional.resultadoPeriodo.despesasPagas)}
               </span>
             </div>
@@ -421,7 +421,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </div>
           </div>
 
-          <div className="font-serif text-2xl font-black text-red-700 mt-1">
+          <div className="font-num text-2xl font-black text-red-700 mt-1">
             {formatarValor(resumoOperacional.contasAtrasadas.aPagar.valor)}
           </div>
           <span className="text-[11px] font-bold text-red-800 mt-0.5 block">
@@ -430,7 +430,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
           <div className="mt-3 pt-2.5 border-t border-red-200/60 flex items-center justify-between text-[11px] text-slate-600">
             <span>Inadimplência de Clientes:</span>
-            <span className="font-bold text-amber-800 font-serif">
+            <span className="font-bold text-amber-800 font-num">
               {formatarValor(resumoOperacional.contasAtrasadas.aReceber.valor)} ({resumoOperacional.contasAtrasadas.aReceber.quantidade})
             </span>
           </div>
@@ -521,25 +521,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-[#F5F7FA] p-3 rounded-xl border border-slate-200/80 text-xs">
           <div>
             <span className="text-[10px] text-slate-500 uppercase block font-semibold">Saldo Atual de Partida</span>
-            <strong className={`font-serif text-sm ${projecao.saldoInicial >= 0 ? 'text-[#003064]' : 'text-red-600'}`}>
+            <strong className={`font-num text-sm ${projecao.saldoInicial >= 0 ? 'text-[#003064]' : 'text-red-600'}`}>
               {formatarValor(projecao.saldoInicial)}
             </strong>
           </div>
           <div>
             <span className="text-[10px] text-slate-500 uppercase block font-semibold">Ponto Mais Crítico</span>
-            <strong className={`font-serif text-sm ${projecao.minimoSaldoProjetado >= 0 ? 'text-[#16A34A]' : 'text-red-600'}`}>
+            <strong className={`font-num text-sm ${projecao.minimoSaldoProjetado >= 0 ? 'text-[#16A34A]' : 'text-red-600'}`}>
               {formatarValor(projecao.minimoSaldoProjetado)}
             </strong>
           </div>
           <div>
             <span className="text-[10px] text-slate-500 uppercase block font-semibold">Maior Uso de Limite</span>
-            <strong className={`font-serif text-sm ${projecao.maiorUsoCheque > 0 ? 'text-amber-800' : 'text-slate-600'}`}>
+            <strong className={`font-num text-sm ${projecao.maiorUsoCheque > 0 ? 'text-amber-800' : 'text-slate-600'}`}>
               {formatarValor(projecao.maiorUsoCheque)}
             </strong>
           </div>
           <div>
             <span className="text-[10px] text-slate-500 uppercase block font-semibold">Saldo Projetado Final</span>
-            <strong className={`font-serif text-sm ${projecao.saldoFinalProjetado >= 0 ? 'text-[#16A34A]' : 'text-red-600'}`}>
+            <strong className={`font-num text-sm ${projecao.saldoFinalProjetado >= 0 ? 'text-[#16A34A]' : 'text-red-600'}`}>
               {formatarValor(projecao.saldoFinalProjetado)}
             </strong>
           </div>
@@ -693,7 +693,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </p>
             </div>
 
-            <span className="text-xs font-bold font-serif text-slate-700 bg-slate-100 px-2.5 py-1 rounded-xl">
+            <span className="text-xs font-bold font-num text-slate-700 bg-slate-100 px-2.5 py-1 rounded-xl">
               Total: {formatarValor(dadosDespesasCategoria.totalGeral)}
             </span>
           </div>
@@ -738,7 +738,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <span className="truncate text-slate-700">{cat.nome}</span>
                   </div>
                   <div className="text-right shrink-0">
-                    <strong className="text-slate-800 font-serif">{formatarValor(cat.valor)}</strong>
+                    <strong className="text-slate-800 font-num">{formatarValor(cat.valor)}</strong>
                     <span className="text-[10px] text-slate-400 block">{cat.percentual}%</span>
                   </div>
                 </div>
@@ -850,7 +850,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       </div>
 
                       <div className="flex items-center gap-3 shrink-0">
-                        <span className={`font-serif font-bold ${
+                        <span className={`font-num font-bold ${
                           isDespesa ? 'text-red-600' : 'text-emerald-700'
                         }`}>
                           {formatarValor(l.valor)}
@@ -909,7 +909,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     </div>
                   </div>
 
-                  <span className={`font-serif font-bold shrink-0 ${
+                  <span className={`font-num font-bold shrink-0 ${
                     l.tipo === 'receita' ? 'text-emerald-700' : 'text-slate-800'
                   }`}>
                     {l.tipo === 'receita' ? '+' : '-'} {formatarValor(l.valor)}
@@ -951,7 +951,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <span className="text-[10px] uppercase font-bold text-slate-300 block">
               Custo Mensal Total Estimado:
             </span>
-            <div className="font-serif font-black text-xl text-[#FCBC00]">
+            <div className="font-num font-black text-xl text-[#FCBC00]">
               {formatarValor(resumoFolha.custoTotalMensal)}
             </div>
           </div>

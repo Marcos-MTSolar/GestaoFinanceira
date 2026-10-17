@@ -279,7 +279,7 @@ export const Projetos: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-5">
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
                 <span className="text-[10px] font-bold uppercase text-slate-400 block">Valor Contratado</span>
-                <p className="font-serif text-xl font-bold text-[#003064] mt-0.5">
+                <p className="font-num text-xl font-bold text-[#003064] mt-0.5">
                   {formatarValor(fichaAtiva.valorContratado)}
                 </p>
                 <span className="text-[11px] text-emerald-700 font-medium">
@@ -289,7 +289,7 @@ export const Projetos: React.FC = () => {
 
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
                 <span className="text-[10px] font-bold uppercase text-slate-400 block">Custos da Obra</span>
-                <p className="font-serif text-xl font-bold text-red-600 mt-0.5">
+                <p className="font-num text-xl font-bold text-red-600 mt-0.5">
                   {formatarValor(fichaAtiva.custosRealizados)}
                 </p>
                 <span className="text-[11px] text-slate-500">
@@ -299,7 +299,7 @@ export const Projetos: React.FC = () => {
 
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
                 <span className="text-[10px] font-bold uppercase text-slate-400 block">Lucro Realizado (Caixa)</span>
-                <p className={`font-serif text-xl font-bold mt-0.5 ${fichaAtiva.lucroRealizado >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                <p className={`font-num text-xl font-bold mt-0.5 ${fichaAtiva.lucroRealizado >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                   {formatarValor(fichaAtiva.lucroRealizado)}
                 </p>
                 <span className="text-[11px] font-semibold text-emerald-700">
@@ -309,7 +309,7 @@ export const Projetos: React.FC = () => {
 
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
                 <span className="text-[10px] font-bold uppercase text-slate-400 block">Lucro Previsto Final</span>
-                <p className={`font-serif text-xl font-bold mt-0.5 ${fichaAtiva.lucroPrevisto >= 0 ? 'text-[#1A4A85]' : 'text-red-600'}`}>
+                <p className={`font-num text-xl font-bold mt-0.5 ${fichaAtiva.lucroPrevisto >= 0 ? 'text-[#1A4A85]' : 'text-red-600'}`}>
                   {formatarValor(fichaAtiva.lucroPrevisto)}
                 </p>
                 <span className="text-[11px] font-semibold text-[#1A4A85]">
@@ -387,7 +387,7 @@ export const Projetos: React.FC = () => {
                             {l.status}
                           </span>
                         </td>
-                        <td className={`py-3 px-4 text-right font-serif font-bold text-sm ${
+                        <td className={`py-3 px-4 text-right font-num font-bold text-sm ${
                           l.tipo === 'receita' ? 'text-emerald-700' : 'text-red-600'
                         }`}>
                           {l.tipo === 'receita' ? '+' : '-'}{formatarValor(l.valor)}
@@ -411,7 +411,7 @@ export const Projetos: React.FC = () => {
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                 Contratos Globais
               </span>
-              <p className="font-serif text-2xl font-extrabold text-[#003064] mt-1">
+              <p className="font-num text-2xl font-extrabold text-[#003064] mt-1">
                 {formatarValor(resumoGeralProjetos.totalContratado)}
               </p>
               <p className="text-[11px] text-slate-400 mt-0.5">
@@ -423,7 +423,7 @@ export const Projetos: React.FC = () => {
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                 Total Faturado / Recebido
               </span>
-              <p className="font-serif text-2xl font-extrabold text-[#16A34A] mt-1">
+              <p className="font-num text-2xl font-extrabold text-[#16A34A] mt-1">
                 {formatarValor(resumoGeralProjetos.totalRecebido)}
               </p>
               <p className="text-[11px] text-slate-500 mt-0.5">
@@ -435,7 +435,7 @@ export const Projetos: React.FC = () => {
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                 Custos Totais Realizados
               </span>
-              <p className="font-serif text-2xl font-extrabold text-red-600 mt-1">
+              <p className="font-num text-2xl font-extrabold text-red-600 mt-1">
                 {formatarValor(resumoGeralProjetos.totalCustosRealizados)}
               </p>
               <p className="text-[11px] text-slate-400 mt-0.5">
@@ -447,7 +447,7 @@ export const Projetos: React.FC = () => {
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                 Lucro Realizado & Margem
               </span>
-              <p className="font-serif text-2xl font-extrabold text-[#1A4A85] mt-1">
+              <p className="font-num text-2xl font-extrabold text-[#1A4A85] mt-1">
                 {formatarValor(resumoGeralProjetos.totalLucroRealizado)}
               </p>
               <p className="text-[11px] font-bold text-emerald-700 mt-0.5">
@@ -562,7 +562,7 @@ export const Projetos: React.FC = () => {
                     <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded-xl text-xs mb-3">
                       <div>
                         <span className="text-[10px] uppercase text-slate-400 block font-medium">Contrato</span>
-                        <span className="font-serif font-bold text-[#003064]">
+                        <span className="font-num font-bold text-[#003064]">
                           {formatarValor(proj.valor_contratado)}
                         </span>
                       </div>

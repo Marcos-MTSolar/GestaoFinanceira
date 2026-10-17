@@ -392,6 +392,9 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
         observacoes,
         origem: lancamentoEditando?.origem || 'manual',
         criado_em: lancamentoEditando?.criado_em || new Date().toISOString(),
+        // A5: preservar vínculos de folha ao editar
+        ...(lancamentoEditando?.folha_id ? { folha_id: lancamentoEditando.folha_id } : {}),
+        ...(lancamentoEditando?.funcionario_id ? { funcionario_id: lancamentoEditando.funcionario_id } : {}),
       };
       dbService.saveLancamento(registro);
     }
@@ -577,7 +580,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
             Total Entradas / Receitas
           </span>
-          <p className="font-serif text-2xl font-extrabold text-[#16A34A] mt-1">
+          <p className="font-num text-2xl font-extrabold text-[#16A34A] mt-1">
             +{formatarValor(totalEntradasFiltradas)}
           </p>
           <span className="text-[10px] text-slate-400">
@@ -589,7 +592,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
             Total Saídas / Despesas
           </span>
-          <p className="font-serif text-2xl font-extrabold text-[#DC2626] mt-1">
+          <p className="font-num text-2xl font-extrabold text-[#DC2626] mt-1">
             -{formatarValor(totalSaidasFiltradas)}
           </p>
           <span className="text-[10px] text-slate-400">
@@ -601,7 +604,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
             Resultado Líquido do Filtro
           </span>
-          <p className={`font-serif text-2xl font-extrabold mt-1 ${
+          <p className={`font-num text-2xl font-extrabold mt-1 ${
             resultadoFiltrado >= 0 ? 'text-[#003064]' : 'text-red-600'
           }`}>
             {formatarValor(resultadoFiltrado)}
@@ -884,7 +887,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
 
                       {/* Valor */}
                       <td className="py-3 px-4 text-right whitespace-nowrap">
-                        <span className={`font-serif font-bold text-sm ${
+                        <span className={`font-num font-bold text-sm ${
                           l.tipo === 'receita' ? 'text-[#16A34A]' : 'text-red-600'
                         }`}>
                           {l.tipo === 'receita' ? '+' : '-'} {formatarValor(l.valor)}
@@ -1041,14 +1044,21 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
               <label className="block text-xs font-semibold text-slate-700 mb-1">
                 Valor Total (R$) *
               </label>
+              {/* A6: aviso âmbar para lançamentos de folha */}
+              {lancamentoEditando?.origem === 'folha' && (
+                <div className="mb-2 px-3 py-2 text-[11px] bg-amber-50 border border-amber-300 text-amber-900 rounded-xl leading-relaxed">
+                  ⚠️ Lançamento gerado pela Folha de Pagamento. Status, conta e data refletem na folha; para alterar o valor, exclua a parcela na ficha do colaborador e gere novamente.
+                </div>
+              )}
               <input
                 type="number"
                 step="0.01"
                 value={valor}
                 onChange={(e) => setValor(e.target.value)}
                 placeholder="0.00"
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064]"
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064] disabled:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-400"
                 required
+                disabled={lancamentoEditando?.origem === 'folha'}
               />
             </div>
           </div>

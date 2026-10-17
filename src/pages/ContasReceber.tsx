@@ -215,7 +215,7 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
 
           <div className="text-right">
             <span className="text-[10px] text-slate-400 uppercase font-semibold block">Total do grupo</span>
-            <span className="font-serif font-extrabold text-base text-[#16A34A]">
+            <span className="font-num font-extrabold text-base text-[#16A34A]">
               {formatarValor(lista.reduce((acc, i) => acc + i.valor, 0))}
             </span>
           </div>
@@ -310,7 +310,7 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
                       )}
                     </td>
 
-                    <td className="py-3 px-4 text-right whitespace-nowrap font-serif font-bold text-[#16A34A] text-sm">
+                    <td className="py-3 px-4 text-right whitespace-nowrap font-num font-bold text-[#16A34A] text-sm">
                       {formatarValor(r.valor)}
                     </td>
 
@@ -411,7 +411,7 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
             <span>Inadimplentes</span>
             <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
           </span>
-          <p className="font-serif text-xl font-black text-amber-800 mt-1">
+          <p className="font-num text-xl font-black text-amber-800 mt-1">
             {formatarValor(totalAtrasadas)}
           </p>
           <span className="text-[10px] text-amber-900/80 font-semibold block mt-0.5">
@@ -425,7 +425,7 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
             <span>Previsto Hoje</span>
             <Clock className="w-3.5 h-3.5 text-[#FCBC00]" />
           </span>
-          <p className="font-serif text-xl font-black text-[#003064] mt-1">
+          <p className="font-num text-xl font-black text-[#003064] mt-1">
             {formatarValor(totalHoje)}
           </p>
           <span className="text-[10px] text-slate-500 block mt-0.5">
@@ -439,7 +439,7 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
             <span>Próximos 7 Dias</span>
             <Calendar className="w-3.5 h-3.5 text-emerald-500" />
           </span>
-          <p className="font-serif text-xl font-black text-[#16A34A] mt-1">
+          <p className="font-num text-xl font-black text-[#16A34A] mt-1">
             {formatarValor(total7Dias)}
           </p>
           <span className="text-[10px] text-slate-500 block mt-0.5">
@@ -453,7 +453,7 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
             <span>Próximos 30 Dias</span>
             <Calendar className="w-3.5 h-3.5 text-slate-400" />
           </span>
-          <p className="font-serif text-xl font-bold text-slate-800 mt-1">
+          <p className="font-num text-xl font-bold text-slate-800 mt-1">
             {formatarValor(total30Dias)}
           </p>
           <span className="text-[10px] text-slate-500 block mt-0.5">
@@ -467,7 +467,7 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
             <span>Futuras (&gt; 30 dias)</span>
             <Calendar className="w-3.5 h-3.5 text-slate-400" />
           </span>
-          <p className="font-serif text-xl font-bold text-slate-700 mt-1">
+          <p className="font-num text-xl font-bold text-slate-700 mt-1">
             {formatarValor(totalFuturas)}
           </p>
           <span className="text-[10px] text-slate-400 block mt-0.5">

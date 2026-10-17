@@ -202,7 +202,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
           </div>
 
           <div
-            className={`font-serif text-3xl sm:text-4xl font-black tracking-tight ${
+            className={`font-num text-3xl sm:text-4xl font-black tracking-tight ${
               saldo_real >= 0 ? 'text-[#16A34A]' : 'text-[#DC2626]'
             }`}
           >
@@ -237,7 +237,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
 
             <div className="flex items-center gap-1.5 pt-1 md:pt-0 border-t md:border-t-0 border-slate-200">
               <span className="font-bold text-slate-900">Disponível no banco:</span>
-              <strong className="font-serif font-black text-sm text-[#003064]">
+              <strong className="font-num font-black text-sm text-[#003064]">
                 {formatarValor(saldo_disponivel_total)}
               </strong>
             </div>
@@ -283,7 +283,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
             <span className="text-[10px] uppercase font-bold text-slate-500 block">
               2. Limite Total
             </span>
-            <p className="font-serif font-bold text-sm text-slate-800 mt-0.5">
+            <p className="font-num font-bold text-sm text-slate-800 mt-0.5">
               {formatarValor(limite_cheque_total)}
             </p>
             <span className="text-[10px] text-slate-400 block mt-0.5">
@@ -300,7 +300,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
             <span className="text-[10px] uppercase font-bold text-slate-500 block">
               3. Cheque Utilizado
             </span>
-            <p className={`font-serif font-bold text-sm mt-0.5 ${
+            <p className={`font-num font-bold text-sm mt-0.5 ${
               cheque_especial_utilizado > 0 ? 'text-red-600' : 'text-slate-700'
             }`}>
               {formatarValor(cheque_especial_utilizado)}
@@ -315,7 +315,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
             <span className="text-[10px] uppercase font-bold text-slate-500 block">
               4. Cheque Disponível
             </span>
-            <p className="font-serif font-bold text-sm text-amber-700 mt-0.5">
+            <p className="font-num font-bold text-sm text-amber-700 mt-0.5">
               {formatarValor(cheque_especial_disponivel)}
             </p>
             <span className="text-[10px] text-slate-400 block mt-0.5">
@@ -328,7 +328,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
             <span className="text-[10px] uppercase font-bold text-[#003064] block">
               5. Saldo no Banco
             </span>
-            <p className="font-serif font-black text-sm text-[#003064] mt-0.5">
+            <p className="font-num font-black text-sm text-[#003064] mt-0.5">
               {formatarValor(saldo_disponivel_total)}
             </p>
             <span className="text-[10px] text-slate-500 block mt-0.5">
@@ -353,7 +353,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs bg-white/70 p-2.5 rounded-lg border border-red-200">
               <div>
                 <span className="text-slate-600 block text-[11px]">Estimativa de custo diário:</span>
-                <strong className="text-red-700 font-serif">
+                <strong className="text-red-700 font-num">
                   {formatarValor(custo_juros_diario_estimado)} / dia
                 </strong>
               </div>
@@ -361,7 +361,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
                 <span className="text-slate-600 block text-[11px]">
                   Estimativa de custo mensal ({taxa_mensal ? `${taxa_mensal}% a.m.` : 'taxa mensal'}):
                 </span>
-                <strong className="text-red-700 font-serif">
+                <strong className="text-red-700 font-num">
                   {formatarValor(custo_juros_mensal_estimado)} / mês
                 </strong>
               </div>

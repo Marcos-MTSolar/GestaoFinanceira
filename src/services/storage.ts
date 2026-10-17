@@ -26,6 +26,7 @@ import {
 } from '../types';
 import { calcularDescontosRecorrentes } from '../utils/descontos';
 import { CONFIG_QUINZENAL_PADRAO, dataDoDiaNaCompetencia, dividirQuinzenas } from '../utils/quinzena';
+import { montarBalanco, ItemManualBalanco } from '../utils/balanco';
 
 // Nomes das coleções do Firestore
 const FIRESTORE_COLLECTIONS = {
@@ -55,6 +56,21 @@ const STORAGE_KEYS = {
   HISTORICO: 'mtsolar_historico_alteracoes',
   MODO_DEMO: 'mtsolar_modo_demonstracao',
 };
+
+// Controle de throttle para alertas de falha de gravação
+let ultimoAlertaFalhaGravacao = 0;
+
+// Exibe um alerta de falha de gravação (no máximo 1 vez a cada 5 segundos)
+function avisarFalhaGravacao(acao: string, erro: unknown): void {
+  console.error('Falha ao gravar', acao, erro);
+  const agora = Date.now();
+  if (agora - ultimoAlertaFalhaGravacao > 5000) {
+    ultimoAlertaFalhaGravacao = agora;
+    window.alert(
+      `Não foi possível salvar no servidor (${acao}). Verifique a conexão e as permissões e recarregue a página antes de continuar.`
+    );
+  }
+}
 
 // Subscrições reativas internas
 type Listener = () => void;
@@ -677,13 +693,20 @@ export const dbService = {
       criado_em: lancamento.criado_em || new Date().toISOString(),
     };
 
-    setDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, docId), item, { merge: true }).catch((e) =>
-      console.warn('Erro async saveLancamento:', e)
-    );
+    setDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, docId), item, { merge: true }).catch((e) => {
+      console.warn('Erro async saveLancamento:', e);
+      avisarFalhaGravacao('saveLancamento', e);
+    });
 
     const idx = cacheLancamentos.findIndex((l) => l.id === docId);
     if (idx >= 0) cacheLancamentos[idx] = item;
     else cacheLancamentos.unshift(item);
+
+    // A2: espelhar na folha sempre que o lançamento vier da folha ou tiver vínculo
+    if (item.origem === 'folha' || cacheLancamentosFolha.some((f) => f.lancamento_id === item.id)) {
+      this.espelharDespesaNaFolha(item);
+    }
+
     notify('lancamentos');
     return item;
   },
@@ -691,13 +714,22 @@ export const dbService = {
   deleteLancamento(id: string, _escopo: string = 'so_esta'): void {
     const target = cacheLancamentos.find((l) => l.id === id);
 
-    if (target?.origem === 'folha' && target.folha_id) {
-      this.removerFolhaOrfa(target.folha_id);
+    // A3: calcular folha vinculada por múltiplos caminhos
+    const folhaIdVinculada =
+      target?.folha_id ||
+      cacheLancamentosFolha.find((f) => f.lancamento_id === id)?.id ||
+      (id.startsWith('desp-') && cacheLancamentosFolha.some((f) => f.id === id.slice(5))
+        ? id.slice(5)
+        : undefined);
+
+    if (folhaIdVinculada) {
+      this.removerFolhaOrfa(folhaIdVinculada);
     }
 
-    deleteDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, id)).catch((e) =>
-      console.warn('Erro async deleteLancamento:', e)
-    );
+    deleteDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, id)).catch((e) => {
+      console.warn('Erro async deleteLancamento:', e);
+      avisarFalhaGravacao('deleteLancamento', e);
+    });
     cacheLancamentos = cacheLancamentos.filter((l) => l.id !== id);
     notify('lancamentos');
   },
@@ -797,16 +829,26 @@ export const dbService = {
   },
 
   espelharDespesaNaFolha(desp: Lancamento): void {
-    if (desp.origem !== 'folha' || !desp.folha_id) {
-      return;
-    }
-
-    const folha = cacheLancamentosFolha.find((l) => l.id === desp.folha_id);
+    // A1: localizar a folha por folha_id ou por lancamento_id (sem exigir origem === 'folha')
+    const folha =
+      cacheLancamentosFolha.find((l) => l.id === desp.folha_id) ||
+      cacheLancamentosFolha.find((l) => l.lancamento_id === desp.id);
     if (!folha) {
       return;
     }
 
     const novoStatus: 'pago' | 'pendente' = desp.status === 'pago' ? 'pago' : 'pendente';
+
+    // A1: saída rápida idempotente — evitar gravação e auditoria desnecessárias
+    if (
+      folha.status === novoStatus &&
+      folha.data_pagamento === desp.data_pagamento &&
+      folha.conta_id === desp.conta_id &&
+      folha.lancamento_id === desp.id
+    ) {
+      return;
+    }
+
     const func = this.getFuncionarioById(folha.funcionario_id);
     const nomeDoFuncionario = func ? func.nome : '';
 
@@ -820,18 +862,20 @@ export const dbService = {
 
     this.saveLancamentoFolha(folhaAtualizada);
 
-    if (novoStatus === 'pago') {
-      this.registrarAuditoria(
-        'folha',
-        'pagamento',
-        `Pagamento da folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia}) no valor de R$ ${folha.valor.toFixed(2)}`
-      );
-    } else {
-      this.registrarAuditoria(
-        'folha',
-        'estorno',
-        `Estorno da folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia}) no valor de R$ ${folha.valor.toFixed(2)}`
-      );
+    if (folha.status !== novoStatus) {
+      if (novoStatus === 'pago') {
+        this.registrarAuditoria(
+          'folha',
+          'pagamento',
+          `Pagamento da folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia}) no valor de R$ ${folha.valor.toFixed(2)}`
+        );
+      } else {
+        this.registrarAuditoria(
+          'folha',
+          'estorno',
+          `Estorno da folha: ${folha.descricao} – ${nomeDoFuncionario} (${folha.competencia}) no valor de R$ ${folha.valor.toFixed(2)}`
+        );
+      }
     }
   },
 
@@ -847,6 +891,14 @@ export const dbService = {
     cacheConfiguracoes = config;
     notify('configuracoes');
     return config;
+  },
+
+  getItensBalancoManual(): ItemManualBalanco[] {
+    return this.getConfiguracoes().balanco_manual || [];
+  },
+
+  saveItensBalancoManual(itens: ItemManualBalanco[]): void {
+    this.saveConfiguracoes({ ...this.getConfiguracoes(), balanco_manual: itens });
   },
 
   // Funcionários
@@ -906,9 +958,10 @@ export const dbService = {
       id: docId,
       criado_em: lancamento.criado_em || new Date().toISOString(),
     };
-    setDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS_FOLHA, docId), item, { merge: true }).catch((e) =>
-      console.warn('Erro async saveLancamentoFolha:', e)
-    );
+    setDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS_FOLHA, docId), item, { merge: true }).catch((e) => {
+      console.warn('Erro async saveLancamentoFolha:', e);
+      avisarFalhaGravacao('saveLancamentoFolha', e);
+    });
 
     const idx = cacheLancamentosFolha.findIndex((f) => f.id === docId);
     if (idx >= 0) cacheLancamentosFolha[idx] = item;
@@ -958,12 +1011,31 @@ export const dbService = {
       return null;
     }
 
-    const cats = this.getCategorias();
-    const catSalarios = cats.find((c) => c.nome.toLowerCase() === 'salários' || c.nome.toLowerCase() === 'salarios');
-    const categoriaId = catSalarios ? catSalarios.id : 'cat-des-4';
-
     const func = this.getFuncionarioById(folha.funcionario_id);
     const nomeDoFuncionario = func ? func.nome : '';
+
+    const cats = this.getCategorias();
+    let categoriaId = 'cat-des-4';
+
+    if (func?.tipo_contrato === 'prolabore') {
+      const catProlabore = cats.find((c) => {
+        const norm = c.nome
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z]/g, '');
+        return norm === 'prolabore';
+      });
+      if (catProlabore) {
+        categoriaId = catProlabore.id;
+      } else {
+        const catSalarios = cats.find((c) => c.nome.toLowerCase() === 'salários' || c.nome.toLowerCase() === 'salarios');
+        categoriaId = catSalarios ? catSalarios.id : 'cat-des-4';
+      }
+    } else {
+      const catSalarios = cats.find((c) => c.nome.toLowerCase() === 'salários' || c.nome.toLowerCase() === 'salarios');
+      categoriaId = catSalarios ? catSalarios.id : 'cat-des-4';
+    }
 
     const novaDespesa: Lancamento = {
       id,
@@ -1073,10 +1145,26 @@ export const dbService = {
     return contagem;
   },
 
+  // A8: reconciliar folhas pagas cujo pagamento não existe mais no caixa
+  reconciliarPagamentosDeFolha(): number {
+    if (!this.isCarregado()) return 0;
+    let corrigidas = 0;
+    for (const folha of [...cacheLancamentosFolha]) {
+      if (folha.tipo === 'desconto' || folha.status !== 'pago' || !folha.lancamento_id || folha.valor <= 0) continue;
+      const desp = cacheLancamentos.find((d) => d.id === folha.lancamento_id);
+      if (!desp || desp.status !== 'pago') {
+        this.saveLancamentoFolha({ ...folha, status: 'pendente', data_pagamento: null });
+        corrigidas++;
+      }
+    }
+    return corrigidas;
+  },
+
   removerRegistroFolhaBruto(id: string): void {
-    deleteDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS_FOLHA, id)).catch((e) =>
-      console.warn('Erro async removerRegistroFolhaBruto:', e)
-    );
+    deleteDoc(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS_FOLHA, id)).catch((e) => {
+      console.warn('Erro async removerRegistroFolhaBruto:', e);
+      avisarFalhaGravacao('removerRegistroFolhaBruto', e);
+    });
     cacheLancamentosFolha = cacheLancamentosFolha.filter((l) => l.id !== id);
     notify('folha');
   },
@@ -1452,7 +1540,7 @@ export const dbService = {
       id: `folha-${Date.now()}-${func.id}`,
       funcionario_id: func.id,
       tipo: 'salario',
-      descricao: `Salário Mensal ${func.cargo}`,
+      descricao: func.tipo_contrato === 'prolabore' ? `Pró-labore ${func.cargo}` : `Salário Mensal ${func.cargo}`,
       periodo: 'mensal',
       competencia,
       valor: calcFolha.liquido,
@@ -2201,12 +2289,14 @@ export const dbService = {
 
     filtrados.forEach((l) => {
       if (l.tipo === 'receita') {
-        const at = mapaReceitas.get(l.categoria_id) || 0;
-        mapaReceitas.set(l.categoria_id, at + l.valor);
+        const chave = categorias.some((c) => c.id === l.categoria_id) ? l.categoria_id : 'sem_categoria';
+        const at = mapaReceitas.get(chave) || 0;
+        mapaReceitas.set(chave, at + l.valor);
         receitaTotal += l.valor;
       } else {
-        const at = mapaDespesas.get(l.categoria_id) || 0;
-        mapaDespesas.set(l.categoria_id, at + l.valor);
+        const chave = categorias.some((c) => c.id === l.categoria_id) ? l.categoria_id : 'sem_categoria';
+        const at = mapaDespesas.get(chave) || 0;
+        mapaDespesas.set(chave, at + l.valor);
         despesaTotal += l.valor;
       }
     });
@@ -2216,7 +2306,7 @@ export const dbService = {
         const cat = categorias.find((c) => c.id === catId);
         return {
           categoriaId: catId,
-          nome: cat ? cat.nome : 'Outras Receitas',
+          nome: cat ? cat.nome : 'Sem categoria',
           cor: cat?.cor || '#16A34A',
           valor: +val.toFixed(2),
           percentualReceita: receitaTotal > 0 ? +((val / receitaTotal) * 100).toFixed(1) : 0,
@@ -2229,7 +2319,7 @@ export const dbService = {
         const cat = categorias.find((c) => c.id === catId);
         return {
           categoriaId: catId,
-          nome: cat ? cat.nome : 'Outras Despesas',
+          nome: cat ? cat.nome : 'Sem categoria',
           cor: cat?.cor || '#DC2626',
           valor: +val.toFixed(2),
           percentualReceita: receitaTotal > 0 ? +((val / receitaTotal) * 100).toFixed(1) : 0,
@@ -2582,6 +2672,43 @@ export const dbService = {
     return { ano: anoAlvo, meses };
   },
 
+  gerarRelatorioBalanco() {
+    const contas = this.getContas()
+      .filter((c) => c.ativa !== false)
+      .map((c) => ({ nome: c.nome, saldo: this.calcularResumoConta(c).saldo_real }));
+
+    const pendentes = this.getLancamentos().filter(
+      (l) => l.status === 'pendente' && l.origem !== 'transferencia' && l.origem !== 'ajuste'
+    );
+    const somar = (arr: Lancamento[]) => +arr.reduce((a, l) => a + l.valor, 0).toFixed(2);
+
+    const contasAReceber = somar(pendentes.filter((l) => l.tipo === 'receita' && l.origem !== 'folha'));
+    const contasAPagar = somar(pendentes.filter((l) => l.tipo === 'despesa' && l.origem !== 'folha'));
+    const folhaAPagar = somar(pendentes.filter((l) => l.tipo === 'despesa' && l.origem === 'folha'));
+
+    const adiantamentos = this.getLancamentosFolha().filter(
+      (l) => l.tipo === 'adiantamento' && l.status === 'pago'
+    );
+    const adiantamentosColaboradores = +adiantamentos
+      .reduce((total, l) => {
+        const somaAbat = (l.abatimentos || []).reduce((sum, a) => sum + a.valor, 0);
+        return total + Math.max(0, l.valor - somaAbat);
+      }, 0)
+      .toFixed(2);
+
+    return {
+      ...montarBalanco({
+        contas,
+        contasAReceber,
+        contasAPagar,
+        folhaAPagar,
+        adiantamentosColaboradores,
+        itensManuais: this.getItensBalancoManual(),
+      }),
+      dataBase: new Date().toISOString().split('T')[0],
+    };
+  },
+
   calcularCustoTotalFuncionario(f: Funcionario) {
     if (!f) {
       return {
@@ -2609,7 +2736,8 @@ export const dbService = {
     const totalBeneficios = +(f.beneficios || []).reduce((acc, b) => acc + (b.valor || 0), 0).toFixed(2);
 
     const isCLT = f.tipo_contrato === 'CLT';
-    const inssPatronal = isCLT ? +(remuneracaoBruta * ((f.inss_patronal_percentual || 0) / 100)).toFixed(2) : 0;
+    const isProlabore = f.tipo_contrato === 'prolabore';
+    const inssPatronal = (isCLT || isProlabore) ? +(remuneracaoBruta * ((f.inss_patronal_percentual || 0) / 100)).toFixed(2) : 0;
     const fgts = isCLT ? +(remuneracaoBruta * ((f.fgts_percentual || 0) / 100)).toFixed(2) : 0;
     const provisaoFerias = isCLT ? +(remuneracaoBruta * ((f.provisao_ferias_percentual || 0) / 100)).toFixed(2) : 0;
     const provisao13 = isCLT ? +(remuneracaoBruta * ((f.provisao_13_percentual || 0) / 100)).toFixed(2) : 0;

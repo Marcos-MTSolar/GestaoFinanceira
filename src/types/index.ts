@@ -1,3 +1,5 @@
+import type { ItemManualBalanco } from '../utils/balanco';
+
 export type TipoLancamento = 'receita' | 'despesa';
 
 export type StatusLancamento = 'pendente' | 'pago' | 'cancelado';
@@ -114,6 +116,7 @@ export interface ConfiguracoesEmpresa {
   aliquota_imposto_padrao: number; // % Ex: 6.5
   encargos_fgts: number; // % Ex: 8.0
   encargos_inss: number; // % Ex: 20.0
+  balanco_manual?: ItemManualBalanco[];
 }
 
 export interface ResumoSaldoConta {
@@ -135,7 +138,7 @@ export interface ResumoSaldoConta {
 
 export type StatusFuncionario = 'ativo' | 'ferias' | 'afastado' | 'desligado';
 
-export type TipoContratoFuncionario = 'CLT' | 'PJ' | 'temporario' | 'estagiario' | 'diarista';
+export type TipoContratoFuncionario = 'CLT' | 'PJ' | 'temporario' | 'estagiario' | 'diarista' | 'prolabore';
 
 export type SetorFuncionario =
   | 'Instalação'
@@ -144,6 +147,7 @@ export type SetorFuncionario =
   | 'Projetos'
   | 'Operações'
   | 'Engenharia'
+  | 'Diretoria'
   | 'Outro';
 
 export type FormaRemuneracao = 'mensal' | 'quinzenal' | 'diaria' | 'hora';
