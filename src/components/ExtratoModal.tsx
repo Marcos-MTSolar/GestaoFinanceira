@@ -207,6 +207,11 @@ export const ExtratoModal: React.FC<ExtratoModalProps> = ({
                               Ajuste / Conciliação
                             </span>
                           )}
+                          {lancamento.origem === 'importacao' && (
+                            <span className="bg-purple-100 text-purple-800 px-1.5 py-0.2 rounded-xs font-semibold">
+                              Importado ({lancamento.origem_importacao?.formato?.toUpperCase() || 'Extrato'})
+                            </span>
+                          )}
                         </div>
                       </td>
 

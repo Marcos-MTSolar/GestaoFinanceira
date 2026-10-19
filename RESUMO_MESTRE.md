@@ -1,7 +1,272 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 17/10/2026 07:05:00 (Parte 14D implementada)
+**Última Atualização:** 19/10/2026 16:15:00 (Módulo 15 Completo - Parte 15G Fechamento)
 **Histórico de Alterações Recentes:**
+- **O que foi feito:**
+  - **Parte 15G – Fechamento e Orquestração do Módulo de Importação de Extratos Bancários (15A a 15G)**:
+    - **15G.1 (Seção "Histórico de Importações" em `src/components/extrato/HistoricoImportacoes.tsx` e `ContasBancarias.tsx`)**:
+      - Sistema de navegação por abas em `ContasBancarias.tsx` ("Contas Bancárias & Saldos", "Histórico de Importações" e "Regras de Importação") com badges numéricos reativos via subscribers de eventos;
+      - Listagem analítica da coleção `importacoes`: Data/Hora, Usuário responsável, Banco emissor, Conta bancária, Arquivo e formato (OFX / XLSX), Período coberto, Totais financeiros (Créditos, Débitos, Saldo antes/depois), Contadores (Lançadas, Enriquecidas, Duplicadas, Ignoradas) e Status (badge colorido: `concluida`, `parcial`, `desfeita`);
+      - Ação "Desfazer Importação" com modal de confirmação de segurança exibindo o impacto exato do rollback, loading animado e recálculo automático de saldo;
+      - Atalho "Ver lançamentos deste lote" filtrando os lançamentos pelo `lote_id`.
+    - **15G.2 (Auditoria Obrigatória em `RegistroAuditoria`)**:
+      - Tipos expandidos em `src/types/index.ts`: `modulo` suporta `'importacoes' | 'regras_importacao'` e `acao` suporta `'desfazer'`;
+      - Registros de auditoria gerados em tempo real no `src/services/storage.ts`:
+        - `importarExtratoLote`: registra lote importado, quantidade de lançamentos, arquivo, conta e período;
+        - `desfazerImportacao`: registra lote revertido com totais de lançamentos excluídos e restaurados;
+        - `saveRegraImportacao`: registra criação (`criacao`) ou atualização (`edicao`) de regra com padrão e categoria;
+        - `deleteRegraImportacao`: registra exclusão (`exclusao`) de regra.
+    - **15G.3 (Tela de Gerenciamento de Regras de Importação em `src/components/extrato/GerenciadorRegras.tsx`)**:
+      - Listagem completa das regras cadastradas no Firestore (`regras_importacao`);
+      - Filtros multifacetados: busca por padrão de texto ou categoria, status (ativas / desativadas) e banco aplicável;
+      - Tabela analítica desktop e cards verticais mobile exibindo: padrão normalizado, campo (descrição / favorecido), operador (contém / começa com / igual), banco/conta, categoria sugerida, tipo (receita / despesa), contador de correspondências (`usos`) e status;
+      - Ações: alternar ativação em 1 clique (`ativa`), editar em modal com `ComboboxCategoria`, excluir com confirmação e botão "+ Nova Regra" para cadastro manual preventivo.
+    - **15G.4 (Conferência de Relatórios, Dashboard, Balanço e Saldos)**:
+      - Lançamentos criados por importação recebem `origem: 'importacao'` e `status: 'pago'`, integrando-se naturalmente aos cálculos de saldo real, fluxo de caixa, DRE gerencial, relatórios por centro de custo/categoria e balanço patrimonial;
+      - Transações de aplicação/resgate automático (ex: Contamax) recebem `natureza: 'movimentacao_interna'` e são marcadas como `acao: 'ignorar'` por padrão no `RevisaoExtrato`, impedindo que inflem receitas ou despesas;
+      - Lançamentos de transferência usam `origem: 'transferencia'`, sendo filtrados nos cálculos de resultado operacional.
+    - **15G.5 (Passo a Passo para Adicionar Suporte a um Novo Banco)**:
+      - Documentado o guia completo e extensível:
+        1. **Registro no catálogo**: Em `src/utils/extrato/bancos.ts`, adicionar o objeto em `BANCOS_REGISTRADOS` com `{ codigo, nome, aliases, suportaOfx: true, suportaXlsx: boolean, corPrimaria, regrasPadrao }`;
+        2. **Suporte OFX**: Imediato e nativo para qualquer instituição bancária que emita extratos OFX 1.x ou 2.x através de `parseOfx()`;
+        3. **Suporte XLSX/CSV proprietário**: Criar parser específico em `src/utils/extrato/parsers/[novobanco]Xlsx.ts` implementando a interface `ExtratoLido`, adicionando detecção de magic bytes/colunas no `detectarBanco.ts`;
+        4. **Regras de Classificação do Banco**: Criar `src/utils/extrato/regras/[novobanco].ts` com expressões regulares/termos para `NaturezaTransacao` e sugestões de categorias;
+        5. **Vinculação**: Importar as regras em `bancos.ts` e associar ao registro do banco;
+        6. **Testes Unitários**: Adicionar cenários com amostras reais em `scripts/test_extrato_parsers.ts`.
+    - **15G.6 (Suite de Testes Ponta a Ponta E2E em `scripts/test_extrato_e2e.ts`)**:
+      - **37 testes automatizados cobrindo os 6 cenários com arquivos reais de `src/exemplos_extratos/` (37 PASSOU / 0 FALHOU)**:
+        - (a) Importação de 1.682 transações do XLSX de 365 dias (`excel_export1792140356207.xlsx`) em 4 batches ≤ 490 com auditoria;
+        - (b) Importação do OFX de 90 dias (`extrato-pj-16_10_2026_19h22m20s.ofx`) com 400 transações e extração do LEDGERBAL de -7.377,22;
+        - (c) Deduplicação na janela 18/07 a 15/10 com **ZERO duplicatas** (395 enriquecimentos e apenas 5 novas do dia 16/10 não presentes no XLSX);
+        - (d) Conciliação bancária perfeita zera a diferença e iguala o saldo da conta ao LEDGERBAL -7.377,22;
+        - (e) Desfazer lote do OFX remove exclusivamente os 5 novos lançamentos e restaura snapshots dos 395 enriquecidos, mantendo os 1.682 do XLSX 100% íntegros;
+        - (f) Auditoria registrada em `RegistroAuditoria` para importação, desfazimento, criação, edição e exclusão de regras.
+    - **15G.7 (Revisão Final e Qualidade)**:
+      - UTF-8 estrito verificado em todos os arquivos de código e documentação (ausência total de caracteres corrompidos);
+      - Totalmente responsivo para mobile com visão de cartões (`lg:hidden`);
+      - Acessibilidade garantida com `aria-label`, foco por teclado e contraste;
+      - Impressão preservada com classes `print:hidden` em elementos de navegação e ações.
+  - **Arquivos criados:** `src/components/extrato/HistoricoImportacoes.tsx`, `src/components/extrato/GerenciadorRegras.tsx`, `src/components/extrato/index.ts`, `scripts/test_extrato_e2e.ts`.
+  - **Arquivos modificados:** `src/types/index.ts`, `src/services/storage.ts`, `src/pages/ContasBancarias.tsx`, `src/components/ExtratoModal.tsx`, `scripts/test_extrato_lote.ts`, `RESUMO_MESTRE.md`.
+
+---
+
+**Histórico de Alterações Anteriores:**
+- **O que foi feito:**
+  - **Parte 15F – Gravação Atômica, Rastreabilidade e Reversão de Lotes de Importação**:
+    - **15F.1 (Tipos em `src/types/index.ts`)**:
+      - Adicionado `'importacao'` ao union `origem` de `Lancamento` e tratado em todos os pontos do sistema (badges, filtros, relatórios, formulários e switches de exclusão/folha);
+      - Criadas interfaces `RegistroImportacao`, `ParamsImportacaoLote`, `ResultadoImportacaoLote` e `ResultadoDesfazerImportacao`.
+    - **15F.2 (`src/utils/extrato/inferirFormaPagamento.ts`)**:
+      - Função pura que infere deterministicamente `FormaPagamento` ('PIX', 'boleto', 'cartao', 'transferencia', 'dinheiro', 'cheque') a partir da `descricaoOriginal` e `NaturezaTransacao`. Corrigidos valores para casar exatamente com o union `FormaPagamento` do tipo TypeScript.
+    - **15F.3 (`src/services/storage.ts`)**:
+      - Adicionada coleção `FIRESTORE_COLLECTIONS.IMPORTOES = 'importacoes'`;
+      - Cache síncrono `cacheImportacoes` + listener `onSnapshot` + reset em `pararListeners()`;
+      - Métodos: `getImportacoes()`, `getImportacaoPorId()`, `saveImportacao()`;
+      - **`importarExtratoLote(params)`**: processamento de cada item revisado (incluir/vincular/ignorar), gravação em **batches atômicos de ≤ 490 operações** no Firestore (resguardando o limite de 500), snapshot de enriquecidos para rollback seguro, cálculo de diferença de conciliação e finalização do `RegistroImportacao` como `'concluida'`;
+      - **`desfazerImportacao(loteId)`**: exclusão de lançamentos do lote com `origem='importacao'` e restauração fiel dos enriquecidos via snapshot; marca o lote como `'desfeita'`.
+    - **15F.4 (`src/components/ImportarExtratoModal.tsx`)**:
+      - Fluxo de 3 passos: Seleção de arquivo → Revisão e categorização → Gravação e resumo;
+      - **Tela de Loading** durante gravação atômica com barra de progresso animada;
+      - **Tela Final de Resumo** (Passo 3):
+        - Cabeçalho verde com nome do arquivo, banco e conta, além de badge copiável do ID do lote;
+        - Grid de 4 contadores: Novas Lançadas, Enriquecidas, Vinculadas, Ignoradas/Duplicadas;
+        - Painel de Movimentação Financeira com créditos, débitos e resultado líquido em `font-num`;
+        - Painel de Evolução de Saldo (antes e depois da importação);
+        - **Painel de Conciliação Bancária**: compara o LEDGERBAL/saldo do extrato com o saldo do sistema; se há diferença, exibe botão "Conciliar Saldo Agora" que cria ajuste via `conciliarSaldoConta()`; se não há saldo no arquivo, oferece campo de digitação manual;
+        - **Botão "Desfazer Importação"** com modal de confirmação detalhado (lista quantos lançamentos serão excluídos e quantos serão restaurados);
+        - **Botão "Ver Lançamentos do Lote"** que aplica o `loteId` como filtro de busca em Lancamentos.tsx e fecha o modal;
+        - **Tela de sucesso** após reversão, mostrando contadores de removidos e restaurados.
+    - **15F.5 (`src/pages/Lancamentos.tsx`)**:
+      - Badge roxo `Importado` exibido na linha de cada lançamento com `origem='importacao'` (com tooltip do lote);
+      - Campo `lote_id` incluído no `filtroBusca` para localizar todos os lançamentos de um lote diretamente pela barra de pesquisa;
+      - Prop `onVerLote` passada ao `ImportarExtratoModal` para filtrar o lote após importação.
+    - **15F.6 (`scripts/test_extrato_lote.ts`)**:
+      - **24 testes automatizados** cobrindo 4 cenários:
+        1. Lote de 1.250 linhas: particionamento correto em 3 batches, campos `origem`, `status`, `recorrencia`, `forma_pagamento` corretos, categoria preservada no enriquecimento;
+        2. Falha no meio do lote: erro capturado, status `'parcial'` registrado;
+        3. Rollback completo: 49 lançamentos removidos, 1 restaurado, saldo e descrição voltam ao exato valor inicial, status `'desfeita'`;
+        4. Arquivo real Santander 1.682 linhas: batches corretos (4 × ≤ 490), rollback total (aviso quando arquivo não está presente).
+  - **Arquivos criados:** `src/utils/extrato/inferirFormaPagamento.ts`, `scripts/test_extrato_lote.ts`.
+  - **Arquivos modificados:** `src/types/index.ts`, `src/services/storage.ts`, `src/components/ImportarExtratoModal.tsx`, `src/pages/Lancamentos.tsx`, `RESUMO_MESTRE.md`.
+
+**Regras de Segurança Firestore para a coleção `importacoes`:**
+```
+match /importacoes/{loteId} {
+  allow read: if request.auth != null;
+  allow write: if request.auth != null && get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.papel == 'administrador';
+}
+```
+
+**Histórico de Alterações Recentes (anteriores):**
+- **O que foi feito:**
+  - **Parte 15E - Interface de Revisão, Categorização Obrigatória e Produtividade em Lote de Extratos**:
+    - **15E.1 (Modal Responsivo em Tela Cheia no Desktop e Cartões no Mobile)**:
+      - Atualizado [Modal.tsx](file:///c:/Users/aurel/Documents/mtsolargest%C3%A3ofinanceiraempresarial/GestaoFinanceira/src/components/Modal.tsx) com suporte a `maxWidth="full"` (`max-w-[97vw] w-[97vw]`), proporcionando visão analítica ampla em desktop e cartões verticais ergonômicos no mobile;
+      - Integração total com `usePrivacy()` (`formatarValor` / `ocultarValores`), tipografia tabular `font-num` para todos os valores monetários e proteção estrita de acesso exclusivo para administradores (`isAdmin`).
+    - **15E.2 (Combobox Digitável com Criação Instantânea em `src/components/extrato/ComboboxCategoria.tsx`)**:
+      - Filtragem dinâmica pelo tipo da transação (crédito → receitas; débito → despesas; suporte a transferência e ajuste);
+      - Busca em tempo real e navegação por teclado (ArrowUp, ArrowDown, Enter, Tab, Escape);
+      - Criação rápida no ato `+ Criar categoria “[nome]”` via `dbService.saveCategoria` no Firestore e cache síncrono, gerando cor automática e selecionando a categoria criada instantaneamente;
+      - Tag sutil `Sugerida` para categorias identificadas pelas regras inteligentes da Parte 15D;
+      - Validação de obrigatoriedade: linhas marcadas para inclusão sem categoria ganham destaque visual vermelho/âmbar e bloqueiam o botão de lançamento.
+    - **15E.3 (Componente Completo de Revisão em `src/components/extrato/RevisaoExtrato.tsx`)**:
+      - **Cabeçalho Analítico e Contadores Interativos**: Identificação da conta bancária, banco e período do extrato, com 6 contadores clicáveis em tempo real (*Novas*, *Duplicadas ignoradas*, *A enriquecer*, *Possíveis duplicatas manuais*, *Internas Contamax* e *Sem Categoria*);
+      - **Filtros Multifacetados**: Busca textual por descrição original, descrição normalizada, contraparte e categoria; filtro por status; filtro por créditos/débitos; atalho rápido `Apenas sem categoria`; faixa de datas e faixa de valores;
+      - **Tabela Paginada de Alto Desempenho**: Paginação seletiva (25, 50, 100 itens/pág) garantindo renderização suave mesmo com as ~1.700 transações do Santander;
+      - **Produtividade por Semelhança**: Detecção de transações idênticas na mesma descrição ou contraparte com oferta instantânea em banner: `Aplicar a todas as N transações semelhantes`;
+      - **Ações em Lote**: Seleção múltipla por checkboxes com barra de ações para aplicar categoria, projeto, contato ou status (incluir/ignorar) em massa;
+      - **Checkbox "Lembrar Regra"**: Criação automática de regras em `regras_importacao` para automatizar importações futuras;
+      - **Navegação Ágil**: Botão `"Faltam N sem categoria"` com salto direto para a primeira pendência e avanço automático de foco;
+      - **Resolução de Possíveis Duplicatas Manuais**: Card comparativo lado a lado confrontando a transação do extrato com o lançamento manual existente no sistema (com data, valor, descrição e diferença em dias) e 3 decisões claras (*Vincular ao existente*, *Criar novo* ou *Ignorar*);
+      - **Rascunho Persistente em `localStorage`**: Armazenamento automático sob chave `mtsolar_extrato_draft_${contaId}` protegido com `try/catch` para tolerar recarregamento ou fechamento acidental da tela.
+    - **15E.4 (Integração e Orquestração em `src/components/ImportarExtratoModal.tsx`)**:
+      - Fluxo contínuo entre Passo 1 (Upload de arquivos e resolução de contas) e Passo 2 (Revisão e categorização);
+      - Modal de confirmação da revisão pronta para gravação (Parte 15F).
+    - **15E.5 (Roteiro de Teste Manual 15E)**:
+      1. Acessar a tela de **Lançamentos** ou **Contas Bancárias** como Administrador e clicar no botão **"Importar Extrato"**;
+      2. No Passo 1, selecionar ou arrastar o arquivo `src/exemplos_extratos/extrato_exemplo_santander.ofx` ou `extrato_exemplo_santander.xlsx`;
+      3. Verificar a detecção correta da instituição e conta Santander e clicar em **"Avançar para Revisão e Categorização"**;
+      4. Observar a abertura em tela cheia (`full`) com o cabeçalho analítico e os 6 contadores;
+      5. Clicar no botão vermelho de pendências **"Faltam N sem categoria"** para filtrar automaticamente as linhas que exigem ação;
+      6. No Combobox de Categoria, digitar uma nova categoria (ex: *"Serviços Fotovoltaicos Especiais"*) e selecionar a opção `+ Criar categoria`; verificar que ela é criada e selecionada imediatamente;
+      7. Definir a categoria de uma linha com repetições (ex: boletos de 108,39) e clicar em **"Aplicar a todas as N transações semelhantes"** no banner de sugestão;
+      8. Marcar checkboxes de várias linhas e testar o modal de **Ação em Lote** (definindo projeto ou contato em massa);
+      9. Fechar o modal ou recarregar a página e reabrir o extrato para testar a recuperação transparente do rascunho via `localStorage`;
+      10. Tentar avançar com itens a incluir sem categoria (comprovar o bloqueio); após preencher as categorias obrigatórias, clicar em **"Concluir Revisão e Lançar"** e validar o sumário de transações prontas para a Parte 15F.
+  - **Arquivos criados:** `src/components/extrato/ComboboxCategoria.tsx`, `src/components/extrato/RevisaoExtrato.tsx`.
+  - **Arquivos modificados:** `src/components/Modal.tsx`, `src/components/ImportarExtratoModal.tsx`, `scripts/test_extrato_regras.ts`, `RESUMO_MESTRE.md`.
+
+**Histórico de Alterações Recentes (anteriores):**
+- **O que foi feito:**
+  - **Parte 15D - Classificação por Natureza, Sugestão de Categorias, Casamento de Contatos e Regras do Usuário**:
+    - **15D.1 (`src/utils/extrato/regras/santander.ts`)**: Mapeamento das regras de natureza para o Santander (033) casadas por `descricaoNormalizada`, cada qual retornando `{ natureza, tipoLancamentoSugerido, categoriaSugeridaNome? }`:
+      - `APLICACAO/RESGATE CONTAMAX` → `movimentacao_interna` (sugestão: transferencia);
+      - `DEBITO EMPRESTIMO`, `PREST EMPRESTIMOS/FINANCIAMENTOS` → `emprestimo` (sugestão: despesa, categoria: "Empréstimos e Financiamentos");
+      - `IOF*`, `TAR*`, `TARIFA*` → `tarifa_bancaria` (sugestão: despesa, categoria: "Taxas bancárias");
+      - `PAGAMENTO TRIBUTOS`, `PAGAMENTO DARF` → `imposto` (sugestão: despesa, categoria: "Impostos e Tributos");
+      - `PAGAMENTO CONTA LUZ/CELULAR`, `MENSALIDADE DE SEGURO` → `conta_consumo` (sugestão: despesa, categoria: "Despesas operacionais");
+      - `COMPRA CARTAO DEB` → `cartao_debito` (sugestão: despesa);
+      - `PIX RECEBIDO`, `CR COB BLOQ COMP CONF RECEBIMENTO`, `DEP DINHEIRO` → `recebimento` (sugestão: receita);
+      - `PIX ENVIADO`, `PIX AGENDADO`, `PAGAMENTO DE BOLETO` → `pagamento` (sugestão: despesa);
+      - `TITULO CAPITALIZACAO` → `capitalizacao` (sugestão: despesa);
+      - `ACORDO` → `acordo_divida` (sugestão: despesa);
+      - Demais transações sem padrão → `indefinido`.
+    - **15D.2 (`src/utils/extrato/classificarTransacao.ts`)**: Módulo de classificação pura contendo:
+      - Função `classificarTransacao(transacao, regrasUsuario, contatosCadastrados, bancoCodigo)` respeitando rigorosamente a hierarquia: `regra_usuario` (prevalece e define tipo/categoria/contato/descrição) > `regra_banco` (sugere natureza e tipo/categoria base) > `nenhuma`.
+      - Operadores de casamento de regras do usuário: `contem`, `igual` e `comeca_com`.
+      - Casamento inteligente de contatos por nome normalizado (`normalizarNome` - caixa alta, sem acentos, sem pontuações) usando `contraparte` (extraída pelo parser OFX). Se casado com contato existente, preenche `contatoId`. Se contraparte presente mas sem contato cadastrado, preenche `nomeContatoSugerido` para oferta de criação rápida no fluxo.
+      - Função pura `resolverMovimentacaoInterna(transacao, contas)` que analisa aplicações automáticas (Contamax): sugere ação `ignorar` (evitando inflar receitas/despesas) ou `transferencia` caso exista conta destino de investimento/aplicações.
+    - **15D.3 (`src/types/index.ts`)**: Interface `RegraImportacao` contendo `id`, `padrao_texto`, `operador` ('contem'|'igual'|'comeca_com'), `tipo_lancamento`, `categoria_id`, `contato_id?`, `descricao_padrao?`, `ativa`, `vezes_usada`, `criado_em` e `atualizado_em`.
+    - **15D.4 (`src/services/storage.ts`)**: Integrada a coleção `regras_importacao` no padrão do projeto:
+      - Listener reativo com `onSnapshot` (`ouvirRegrasImportacao`), cache síncrono em memória (`cacheRegrasImportacao`), limpeza em `pararListeners`;
+      - Métodos no `dbService`: `getRegrasImportacao`, `saveRegraImportacao`, `deleteRegraImportacao` e `incrementarUsoRegraImportacao`.
+    - **15D.5 (`src/utils/extrato/index.ts`)**: Exportação dos novos tipos (`NaturezaTransacao`, `SugestaoClassificacao`, `ResultadoClassificacao`), funções puras e regras Santander.
+    - **15D.6 (`scripts/test_extrato_regras.ts`)**: Suite automatizada de 56 testes com 100% de aprovação (56 PASSOU / 0 FALHOU):
+      - Validação de todas as regras do banco Santander;
+      - Validação do casamento e sugestão de contatos;
+      - Validação da prevalência de regras do usuário sobre regras do banco;
+      - Testes com o arquivo OFX real de 400 transações: 394 classificadas por regras e taxa de sucesso demonstrada;
+      - Validação de `resolverMovimentacaoInterna` e `normalizarNome`.
+  - **Arquivos criados:** `src/utils/extrato/regras/santander.ts`, `src/utils/extrato/classificarTransacao.ts`, `scripts/test_extrato_regras.ts`.
+  - **Arquivos modificados:** `src/types/index.ts`, `src/services/storage.ts`, `src/utils/extrato/index.ts`, `RESUMO_MESTRE.md`.
+
+**Histórico de Alterações Recentes (anteriores):**
+- **O que foi feito:**
+  - **Parte 15C - Deduplicação Pura e Cruzamento OFX × XLSX (sem UI)**:
+    - **15C.1 (`src/types/index.ts`)**: Adicionada interface `OrigemImportacao` com campos `lote_id`, `banco_codigo`, `conta_id`, `fitid?`, `assinatura_fraca` e `formato` ('ofx'|'xlsx'). Campo `origem_importacao?: OrigemImportacao` adicionado opcionalmente na interface `Lancamento`, mantendo compatibilidade total com lançamentos manuais legados.
+    - **15C.2 (`src/utils/extrato/assinatura.ts`)**: Criadas três funções puras sem dependências externas:
+      - `gerarAssinaturaForte(bancoCodigo, conta, fitid)` → `banco_conta_FITID` (retorna `null` se FITID ausente).
+      - `gerarAssinaturaFraca(params)` → `conta_data_tipo_valorCentavos_prefixo_ordemNoDia` (determinística: mesma entrada sempre gera mesma saída).
+      - `extrairPrefixoDescricao(descricaoNormalizada)` → até 2 palavras iniciais da operação (ex: "PIX ENVIADO"), permitindo pareamento XLSX × OFX.
+    - **15C.3 (`src/utils/extrato/classificarDuplicatas.ts`)**: Função principal `classificarDuplicatas(transacoes, lancamentosExistentes, contexto)` implementando as 5 regras:
+      - **(a) Mesmo FITID já importado** → `duplicada_exata`.
+      - **(b) Sem FITID + assinatura fraca já existente** → `duplicada_exata` (XLSX reimportado).
+      - **(c) Cruzamento OFX × XLSX (em qualquer ordem)**:
+        - OFX importado depois do XLSX: busca lançamento sem FITID que bate por data + tipo + valor + prefixo da descrição + ordemNoDia → `enriquecer_existente` (preserva a categoria escolhida pelo usuário, completa FITID/descrição/contraparte).
+        - XLSX importado depois do OFX: busca lançamento do OFX já salvo com FITID que bate pelos mesmos critérios → `duplicada_exata` (não cria duplicata).
+      - **(d) Transações idênticas no mesmo dia** → separadas por `ordemNoDia` determinístico; assinaturas fracas distintas garantem dois lançamentos distintos.
+      - **(e) Lançamento manual (sem `origem_importacao`) na mesma conta, mesmo valor, data ±2 dias** → `possivel_duplicata_manual`.
+      - Função auxiliar `enriquecerLancamento(lancExistente, transacaoOfx, ...)` que complementa descrição/contraparte/FITID preservando rigorosamente `categoria_id`.
+    - **15C.4 (`scripts/test_extrato_dedupe.ts`)**: Suite de 32 asserções automatizadas cobrindo:
+      - **Ordem 1 (XLSX → OFX)**: 1682 novas do XLSX; 395 `enriquecer_existente` + 5 novas do OFX; union final = **1687 sem duplicatas**.
+      - **Ordem 2 (OFX → XLSX)**: 400 novas do OFX; 395 `duplicada_exata` + 1287 novas do XLSX; union final = **1687 sem duplicatas**. Independência de ordem comprovada.
+      - **Mesmo arquivo 2×**: ZERO novas (XLSX: 1682 duplicadas; OFX: 400 duplicadas).
+      - **Dois boletos de 108,39 no mesmo dia**: 2 lançamentos distintos (ordemNoDia 0 e 1; assinaturas fracas diferentes). Reimportação: cada boleto casado com seu respectivo lançamento (pareamento 1:1).
+      - **Lançamento manual ±2 dias**: `possivel_duplicata_manual`; com mais de 2 dias: classificado `nova` (sem falso positivo).
+    - **Correção de tipo**: `TipoTransacaoExtrato` ('credito'|'debito') ≠ `TipoLancamento` ('receita'|'despesa'); adicionada função interna `tipoExtrato()` para mapeamento nas comparações, eliminando erros TS2367.
+    - **tsc --noEmit**: 0 erros. **build**: código 0. **Testes**: 32 PASSOU / 0 FALHOU.
+  - **Arquivos criados:** `src/utils/extrato/assinatura.ts`, `src/utils/extrato/classificarDuplicatas.ts`, `scripts/test_extrato_dedupe.ts`.
+  - **Arquivos modificados:** `src/types/index.ts`, `src/utils/extrato/index.ts`, `RESUMO_MESTRE.md`.
+
+**Histórico de Alterações Recentes (anteriores):**
+- **O que foi feito:**
+  - **Parte 15B - Identificação e Resolução Segura de Contas Bancárias para Importação de Extratos**:
+    - **15B.1 (Campos Opcionais em `src/types/index.ts`)**:
+      - Adicionados campos opcionais `banco_codigo?: string`, `agencia?: string` e `numero_conta?: string` na interface `ContaBancaria`, mantendo o campo legado `banco: string` preenchido com o nome de exibição.
+    - **15B.2 (Resolução Pura de Contas em `src/utils/extrato/resolverConta.ts`)**:
+      - Criada a função pura `resolverConta(extrato, contas)` com os critérios estritos de desambiguação em ordem:
+        1. `banco_codigo` + número da conta (comparando apenas dígitos);
+        2. `nome do banco` + número da conta (compatibilidade com contas legadas);
+        3. `banco` (código ou nome);
+        4. Só o número da conta.
+      - Suporte especial para o padrão Santander em que o `ACCTID` traz a agência colada (`3749130046964` ≡ agência `3749` + conta `13004696-4`).
+      - Retorno estruturado em `{ tipo: 'unica', conta }`, `{ tipo: 'ambigua', candidatas }` ou `{ tipo: 'nenhuma', sugestao }`.
+    - **15B.3 (Gestão de Contas Bancárias em `src/pages/ContasBancarias.tsx`)**:
+      - Seletor de instituição bancária com opções de `bancos.ts` (`BANCOS_REGISTRADOS`) + opção "Outro Banco / Instituição" com input de texto dedicado.
+      - Novos campos "Agência (sem dígito)" e "Número da Conta (com DV)" no modal de cadastro e edição.
+      - Compatibilidade com contas antigas e aviso discreto nos cards de conta: `"Complete os dados bancários para importar extratos"` com botão "Completar dados".
+      - Detalhamento de agência e conta adicionado ao subtítulo do card quando presentes.
+    - **15B.4 (Modal de Importação de Extrato - Passo 1 em `src/components/ImportarExtratoModal.tsx`)**:
+      - Dropzone para arquivos `.ofx`, `.qfx`, `.xlsx` com suporte a múltiplos arquivos simultâneos.
+      - Para cada arquivo: detecção em tempo real de formato, banco emissor, período, quantidade de transações (`font-num`) e resolução automática de conta.
+      - Resolução `'nenhuma'`: botão "Cadastrar esta conta agora" com pré-preenchimento automático dos dados do extrato, ou dropdown de seleção manual.
+      - Resolução `'ambigua'`: solicitação explícita de escolha entre as contas candidatas.
+      - Bloqueio de avanço se o banco do arquivo for divergente do banco da conta selecionada, exigindo checkbox explícito de confirmação consciente.
+    - **15B.5 (Botão "Importar Extrato" com Proteção de Permissão)**:
+      - Botão "Importar Extrato" integrado nos cabeçalhos de `ContasBancarias.tsx` e `Lancamentos.tsx`, condicionado estritamente a `isAdmin` (visualizador não visualiza).
+    - **15B.6 (Testes Automatizados em `scripts/test_resolver_conta.ts`)**:
+      - 19 asserções cobrindo: resolução do OFX e XLSX reais para a mesma conta Santander (`conta-santander-pj`), contas legadas sem `banco_codigo`, contas únicas por banco, detecção de ambiguidade e sugestões de pré-preenchimento. 100% de aprovação (19 PASSOU / 0 FALHOU).
+  - **Arquivos criados:** `src/utils/extrato/resolverConta.ts`, `src/components/ImportarExtratoModal.tsx`, `scripts/test_resolver_conta.ts`.
+  - **Arquivos modificados:** `src/types/index.ts`, `src/utils/extrato/index.ts`, `src/pages/ContasBancarias.tsx`, `src/pages/Lancamentos.tsx`, `RESUMO_MESTRE.md`.
+
+**Histórico de Alterações Recentes (anteriores):**
+- **O que foi feito:**
+  - **Parte 15A - Camada Pura de Leitura, Detecção e Parsers de Extratos Bancários (OFX e Santander XLSX)**:
+    - **15A.1 (Contratos e Tipos em `src/utils/extrato/tipos.ts`)**:
+      - Criada a interface `TransacaoExtrato` contendo: `idTemporario`, `fitid?`, `data` (YYYY-MM-DD), `valor` (sempre positivo, 2 casas), `tipo` ('credito' | 'debito'), `descricaoOriginal`, `descricaoNormalizada` (maiúscula, sem acento, espaços colapsados, sem números variáveis), `contraparte?`, `documento?`, `ordemNoDia` e `linhaOrigem`.
+      - Criada a interface `ExtratoLido` contendo: `formato` ('ofx' | 'xlsx'), `bancoCodigo`, `bancoNome`, `agencia?`, `conta?` (apenas dígitos), `acctIdBruto?`, `titular?`, `periodo` ({ inicio, fim }), `saldoFinal?` ({ valor, data }), `transacoes` e `avisos`.
+      - Criada a classe `ErroBancoNaoSuportado` (extends Error) com mensagens amigáveis em português.
+      - Criadas as funções utilitárias puras `normalizarDescricao` e `arredondar2Casas`.
+    - **15A.2 (Parser OFX em `src/utils/extrato/parsers/ofx.ts`)**:
+      - Suporte robusto a OFX 1.x SGML (tags folha sem fechamento) e OFX 2.x XML, aceitando extensões `.ofx` e `.qfx`.
+      - Decodificação de `ArrayBuffer` respeitando o `CHARSET` declarado no cabeçalho (1252 -> `windows-1252`, senão `utf-8`).
+      - Tratamento da vírgula decimal em `TRNAMT` e `BALAMT`.
+      - Extração de datas `DTPOSTED`, `DTSTART`, `DTEND`, `DTASOF` usando os 8 primeiros dígitos sem converter fuso horário.
+      - O sinal do valor define crédito/débito, mantendo `valor` estritamente positivo com 2 casas decimais.
+      - Extração de `contraparte` a partir de `MEMO` removendo prefixos de operação ("Pix Enviado ", "Pix Recebido ", etc.).
+      - Regra determinística de `ordemNoDia` para transações idênticas do mesmo dia.
+      - Extração fiel de `LEDGERBAL` com valor e data do saldo final.
+    - **15A.3 (Parser XLSX Santander em `src/utils/extrato/parsers/santanderXlsx.ts`)**:
+      - Processamento via SheetJS (`xlsx`) para planilhas exportadas pelo Santander.
+      - Conversor de datas por extenso em português com suporte a meses com e sem acento (`março`/`marco`, etc.) e dia da semana.
+      - Identificação dinâmica de metadados no cabeçalho: Titular, Conta (`13004696-4` -> `130046964`) e Período (`Extrato de 01/01/2026 a 16/10/2026`).
+      - Descarte da linha de rodapé `"TOTAL"`, registrando-a nos `avisos`.
+      - Tratamento de ausência de FITID, saldo e favorecido (propriedades `undefined`).
+      - Ordem preservada do mais recente ao mais antigo.
+      - Atribuição determinística de `ordemNoDia` (ex: boletos de 108,39 no mesmo dia com ordemNoDia 0 e 1).
+    - **15A.4 (Registro e Detecção por Conteúdo em `bancos.ts` e `detectarBanco.ts`)**:
+      - Detecção de formato exclusivamente pelo conteúdo binário/assinatura (magic bytes ZIP para XLSX e tags para OFX), nunca pelo nome do arquivo.
+      - Arquitetura de registro extensível `BANCOS_REGISTRADOS` com definição `{ codigo, nome, formatosSuportados, detectar, parser }`, inicializado com Santander (033).
+      - Lançamento de `ErroBancoNaoSuportado` com mensagens claras em português para arquivos ou bancos desconhecidos.
+    - **15A.5 (Ponto de Entrada em `src/utils/extrato/index.ts`)**:
+      - Função `lerExtrato(arquivo: ArrayBuffer, nomeArquivo: string): Promise<ExtratoLido>`.
+    - **15A.6 (Suite de Testes Automatizados em `scripts/test_extrato_parsers.ts`)**:
+      - 51 casos de teste automatizados cobrindo os arquivos reais (400 transações do OFX, 400 FITIDs únicos, LEDGERBAL -7377,22, 1.682 transações do XLSX, linha TOTAL desconsiderada, meses com/sem acento, boletos idênticos com ordemNoDia 0 e 1, e erro em arquivos desconhecidos) com 100% de aprovação (51 PASSOU / 0 FALHOU).
+  - **Arquivos criados:** `src/utils/extrato/tipos.ts`, `src/utils/extrato/parsers/ofx.ts`, `src/utils/extrato/parsers/santanderXlsx.ts`, `src/utils/extrato/bancos.ts`, `src/utils/extrato/detectarBanco.ts`, `src/utils/extrato/index.ts`, `scripts/test_extrato_parsers.ts`.
+  - **Arquivos modificados:** `package.json`, `package-lock.json`, `RESUMO_MESTRE.md`.
+
+**Histórico de Alterações Recentes (anteriores):**
 - **O que foi feito:**
   - **Parte 14D - Padronização da tipografia de números com Inter tabular/alinhada (`font-num`) nas demais telas e componentes do sistema**:
     - **D1 (Auditoria e Classificação de `font-serif`)**: Mapeadas todas as ocorrências de `font-serif` em 15 arquivos do sistema (`Projetos.tsx`, `ContasPagar.tsx`, `ContasReceber.tsx`, `Cadastros.tsx`, `Configuracoes.tsx`, `Lancamentos.tsx`, `ContasBancarias.tsx`, `Login.tsx`, `ExtratoModal.tsx`, `ModalPagarReceber.tsx`, `ConciliacaoModal.tsx`, `Header.tsx`, `Modal.tsx`, `ErrorBoundary.tsx`, `InConstruction.tsx`).

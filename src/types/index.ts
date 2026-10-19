@@ -24,6 +24,9 @@ export interface ContaBancaria {
   id: string;
   nome: string;
   banco: string;
+  banco_codigo?: string;
+  agencia?: string;
+  numero_conta?: string;
   tipo: TipoConta;
   saldo_inicial: number;
   data_saldo_inicial: string; // YYYY-MM-DD
@@ -63,6 +66,47 @@ export interface Projeto {
   data_previsao_fim: string;
 }
 
+export interface OrigemImportacao {
+  lote_id: string;
+  banco_codigo: string;
+  conta_id: string;
+  fitid?: string;
+  assinatura_fraca: string;
+  formato: 'ofx' | 'xlsx';
+}
+
+/**
+ * Regra de importação cadastrada pelo usuário no Firestore (coleção: regras_importacao).
+ * Permite que o sistema aprenda padrões recorrentes e evite reclassificações manuais repetitivas.
+ * Apenas administradores podem criar/editar/excluir regras.
+ */
+export interface RegraImportacao {
+  id: string;
+  /** Código Febraban do banco ('033' = Santander) ou '*' para qualquer banco */
+  banco_codigo: string;
+  /** ID da conta no sistema ou '*' para qualquer conta */
+  conta_id: string;
+  /** Campo da transação a casar: descrição ou contraparte (favorecido) */
+  campo: 'descricao' | 'contraparte';
+  /** Operador de comparação */
+  operador: 'contem' | 'igual' | 'comeca_com';
+  /** Valor a casar (comparado após normalização: maiúsculo, sem acento) */
+  valor: string;
+  /** ID da categoria a sugerir automaticamente */
+  categoria_id: string;
+  /** Projeto a vincular automaticamente (opcional) */
+  projeto_id?: string;
+  /** Contato a vincular automaticamente (opcional) */
+  contato_id?: string;
+  /** Tipo de lançamento sugerido */
+  tipoLancamento?: 'receita' | 'despesa' | 'transferencia';
+  /** Se false, a regra está desabilitada sem precisar ser deletada */
+  ativa: boolean;
+  criadoEm: string;
+  /** Contador de vezes que esta regra gerou uma sugestão aceita pelo usuário */
+  usos: number;
+}
+
 export interface Lancamento {
   id: string;
   tipo: TipoLancamento;
@@ -87,10 +131,110 @@ export interface Lancamento {
   transferencia_vinculada_id?: string;
   conta_destino_id?: string;
   observacoes?: string;
-  origem: 'manual' | 'folha' | 'transferencia' | 'ajuste';
+  origem: 'manual' | 'folha' | 'transferencia' | 'ajuste' | 'extrato' | 'importacao';
   funcionario_id?: string;
   folha_id?: string;
+  origem_importacao?: OrigemImportacao;
   criado_em: string;
+}
+
+/**
+ * Registro de lote de importação de extrato bancário na coleção 'importacoes'.
+ * Garante rastreabilidade, conciliação e capacidade de desfazer importações de forma reversível.
+ */
+export interface RegistroImportacao {
+  id: string; // lote_id (ex: "lote-1729350000000-abcde")
+  data: string; // data da execução (YYYY-MM-DD)
+  usuario: string; // email do usuário que executou a importação
+  banco_codigo: string;
+  conta_id: string;
+  nome_arquivo: string;
+  formato: 'ofx' | 'xlsx';
+  periodo: { inicio: string; fim: string };
+  totais: {
+    lancadas: number;
+    ignoradas: number;
+    duplicadas: number;
+    enriquecidas: number;
+    vinculadas: number;
+    total_creditos: number;
+    total_debitos: number;
+  };
+  saldo_banco?: { valor: number; data: string };
+  saldo_sistema_antes?: number;
+  saldo_sistema_depois?: number;
+  status: 'concluida' | 'desfeita' | 'parcial';
+  criado_em: string;
+  atualizado_em?: string;
+  snapshot_enriquecidos?: Array<{
+    lancamentoId: string;
+    descricaoAnterior: string;
+    origemImportacaoAnterior?: OrigemImportacao;
+  }>;
+}
+
+export interface ParamsImportacaoLote {
+  loteId: string;
+  usuario: string;
+  contaId: string;
+  bancoCodigo: string;
+  formato: 'ofx' | 'xlsx';
+  nomeArquivo: string;
+  periodo: { inicio: string; fim: string };
+  itens: Array<{
+    id: string;
+    transacao: {
+      idTemporario: string;
+      fitid?: string;
+      data: string;
+      valor: number;
+      tipo: 'credito' | 'debito';
+      descricaoOriginal: string;
+      descricaoNormalizada: string;
+      contraparte?: string;
+      ordemNoDia: number;
+    };
+    acao: 'incluir' | 'ignorar' | 'vincular';
+    decisaoManual?: 'vincular' | 'novo' | 'ignorar';
+    statusDeduplicacao?: string;
+    tipoLancamento: 'receita' | 'despesa' | 'transferencia' | 'ajuste';
+    categoriaId: string;
+    projetoId?: string;
+    contatoId?: string;
+    natureza?: string;
+    lancamentoExistenteId?: string;
+    lembrarRegra?: boolean;
+  }>;
+  regrasACriar?: Array<Omit<RegraImportacao, 'id'>>;
+  saldoBanco?: { valor: number; data: string };
+  ajustarDataSaldoInicial?: boolean;
+  novaDataSaldoInicial?: string;
+}
+
+export interface ResultadoImportacaoLote {
+  sucesso: boolean;
+  loteId: string;
+  totais: {
+    lancadas: number;
+    ignoradas: number;
+    duplicadas: number;
+    enriquecidas: number;
+    vinculadas: number;
+    total_creditos: number;
+    total_debitos: number;
+  };
+  saldoAntes: number;
+  saldoDepois: number;
+  diferencaConciliacao?: number;
+  mensagem?: string;
+}
+
+export interface ResultadoDesfazerImportacao {
+  sucesso: boolean;
+  loteId: string;
+  lancamentosRemovidos: number;
+  lancamentosRestaurados: number;
+  mensagem?: string;
 }
 
 export interface UsuarioAutorizado {
@@ -285,8 +429,8 @@ export interface RegistroAuditoria {
   data_hora: string; // ISO string
   usuario_nome: string;
   usuario_email: string;
-  modulo: 'lancamentos' | 'funcionarios' | 'projetos' | 'contas' | 'contatos' | 'categorias' | 'folha' | 'sistema';
-  acao: 'criacao' | 'edicao' | 'exclusao' | 'pagamento' | 'estorno' | 'importacao' | 'reset';
+  modulo: 'lancamentos' | 'funcionarios' | 'projetos' | 'contas' | 'contatos' | 'categorias' | 'folha' | 'sistema' | 'importacoes' | 'regras_importacao';
+  acao: 'criacao' | 'edicao' | 'exclusao' | 'pagamento' | 'estorno' | 'importacao' | 'desfazer' | 'reset';
   descricao: string;
   detalhes?: string;
 }

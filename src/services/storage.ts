@@ -5,6 +5,7 @@ import {
   deleteDoc,
   onSnapshot,
   Unsubscribe,
+  writeBatch,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import {
@@ -23,10 +24,17 @@ import {
   AlertaItem,
   ResultadoCalculoFolha,
   ItemDescontoFolha,
+  RegraImportacao,
+  RegistroImportacao,
+  ParamsImportacaoLote,
+  ResultadoImportacaoLote,
+  ResultadoDesfazerImportacao,
 } from '../types';
 import { calcularDescontosRecorrentes } from '../utils/descontos';
 import { CONFIG_QUINZENAL_PADRAO, dataDoDiaNaCompetencia, dividirQuinzenas } from '../utils/quinzena';
 import { montarBalanco, ItemManualBalanco } from '../utils/balanco';
+import { gerarAssinaturaFraca } from '../utils/extrato/assinatura';
+import { inferirFormaPagamento } from '../utils/extrato/inferirFormaPagamento';
 
 // Nomes das coleções do Firestore
 const FIRESTORE_COLLECTIONS = {
@@ -40,6 +48,8 @@ const FIRESTORE_COLLECTIONS = {
   FUNCIONARIOS: 'funcionarios',
   LANCAMENTOS_FOLHA: 'lancamentos_folha',
   HISTORICO: 'historico_auditoria',
+  REGRAS_IMPORTACAO: 'regras_importacao',
+  IMPORTOES: 'importacoes',
 };
 
 const STORAGE_KEYS = {
@@ -103,6 +113,8 @@ let cacheFuncionarios: Funcionario[] = [];
 let cacheLancamentosFolha: LancamentoFolha[] = [];
 let cacheHistorico: RegistroAuditoria[] = [];
 let cacheConfiguracoes: ConfiguracoesEmpresa | null = null;
+let cacheRegrasImportacao: RegraImportacao[] = [];
+let cacheImportacoes: RegistroImportacao[] = [];
 let usuarioAtualCache: UsuarioAutorizado | null = null;
 
 let isCarregadoState = false;
@@ -154,7 +166,7 @@ export const dbService = {
   iniciarListeners(): void {
     if (unsubscribers.length > 0) return;
 
-    let colecoesRestantes = 10;
+    let colecoesRestantes = 12; // incrementado para incluir regras_importacao e importacoes
     const marcarCarregado = () => {
       colecoesRestantes--;
       if (colecoesRestantes <= 0) {
@@ -286,6 +298,32 @@ export const dbService = {
           () => marcarCarregado()
         )
       );
+
+      // Regras de importação cadastradas pelo usuário
+      unsubscribers.push(
+        onSnapshot(
+          collection(db, FIRESTORE_COLLECTIONS.REGRAS_IMPORTACAO),
+          (snap) => {
+            cacheRegrasImportacao = snap.docs.map((d) => d.data() as RegraImportacao);
+            notify('regras_importacao');
+            marcarCarregado();
+          },
+          () => marcarCarregado()
+        )
+      );
+
+      // Lotes de importação de extratos bancários
+      unsubscribers.push(
+        onSnapshot(
+          collection(db, FIRESTORE_COLLECTIONS.IMPORTOES),
+          (snap) => {
+            cacheImportacoes = snap.docs.map((d) => d.data() as RegistroImportacao);
+            notify('importacoes');
+            marcarCarregado();
+          },
+          () => marcarCarregado()
+        )
+      );
     } catch (e) {
       isCarregadoState = true;
       notify('carregando');
@@ -311,6 +349,8 @@ export const dbService = {
     cacheLancamentosFolha = [];
     cacheHistorico = [];
     cacheConfiguracoes = null;
+    cacheRegrasImportacao = [];
+    cacheImportacoes = [];
     usuarioAtualCache = null;
     localStorage.removeItem(STORAGE_KEYS.USUARIO_ATUAL);
 
@@ -3057,6 +3097,522 @@ export const dbService = {
         itensImportados: 0,
       };
     }
+  },
+
+  // -------------------------------------------------------------------------
+  // Regras de Importação (aprendizado de classificação de extratos)
+  // Apenas administradores devem escrever nesta coleção.
+  // -------------------------------------------------------------------------
+
+  getRegrasImportacao(): RegraImportacao[] {
+    return cacheRegrasImportacao;
+  },
+
+  getRegrasImportacaoAtivas(): RegraImportacao[] {
+    return cacheRegrasImportacao.filter((r) => r.ativa);
+  },
+
+  saveRegraImportacao(regra: Omit<RegraImportacao, 'id' | 'criadoEm' | 'usos'> & Partial<Pick<RegraImportacao, 'id' | 'criadoEm' | 'usos'>>): RegraImportacao {
+    const docId = regra.id || `regra-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const isNova = !regra.id || !cacheRegrasImportacao.some((r) => r.id === docId);
+    const item: RegraImportacao = {
+      ...regra,
+      id: docId,
+      criadoEm: regra.criadoEm || new Date().toISOString(),
+      usos: regra.usos ?? 0,
+    };
+
+    setDoc(doc(db, FIRESTORE_COLLECTIONS.REGRAS_IMPORTACAO, docId), item, { merge: true }).catch((e) =>
+      console.warn('Erro async saveRegraImportacao:', e)
+    );
+
+    const idx = cacheRegrasImportacao.findIndex((r) => r.id === docId);
+    if (idx >= 0) cacheRegrasImportacao[idx] = item;
+    else cacheRegrasImportacao.push(item);
+
+    this.registrarAuditoria(
+      'regras_importacao',
+      isNova ? 'criacao' : 'edicao',
+      isNova ? `Nova regra de importação criada: "${item.valor}"` : `Regra de importação atualizada: "${item.valor}"`,
+      `Campo: ${item.campo}, Banco: ${item.banco_codigo}, Categoria: ${item.categoria_id}, Ativa: ${item.ativa}`
+    );
+
+    notify('regras_importacao');
+    return item;
+  },
+
+  deleteRegraImportacao(id: string): void {
+    const regraExistente = cacheRegrasImportacao.find((r) => r.id === id);
+    deleteDoc(doc(db, FIRESTORE_COLLECTIONS.REGRAS_IMPORTACAO, id)).catch((e) =>
+      console.warn('Erro async deleteRegraImportacao:', e)
+    );
+    cacheRegrasImportacao = cacheRegrasImportacao.filter((r) => r.id !== id);
+
+    this.registrarAuditoria(
+      'regras_importacao',
+      'exclusao',
+      `Regra de importação excluída: "${regraExistente?.valor || id}"`,
+      `Regra ID: ${id}`
+    );
+
+    notify('regras_importacao');
+  },
+
+  /**
+   * Incrementa o contador `usos` de uma regra quando o usuário aceita a sugestão.
+   * Permite ordenar as regras por popularidade futuramente.
+   */
+  incrementarUsosRegra(id: string): void {
+    const regra = cacheRegrasImportacao.find((r) => r.id === id);
+    if (!regra) return;
+    const atualizada: RegraImportacao = { ...regra, usos: regra.usos + 1 };
+    setDoc(doc(db, FIRESTORE_COLLECTIONS.REGRAS_IMPORTACAO, id), atualizada, { merge: true }).catch((e) =>
+      console.warn('Erro async incrementarUsosRegra:', e)
+    );
+    const idx = cacheRegrasImportacao.findIndex((r) => r.id === id);
+    if (idx >= 0) cacheRegrasImportacao[idx] = atualizada;
+    notify('regras_importacao');
+  },
+
+  // ============================================================
+  // IMPORTAÇÕES DE EXTRATOS BANCÁRIOS (PARTE 15F)
+  // ============================================================
+  getImportacoes(): RegistroImportacao[] {
+    return [...cacheImportacoes].sort((a, b) => b.data.localeCompare(a.data) || b.id.localeCompare(a.id));
+  },
+
+  getImportacaoPorId(id: string): RegistroImportacao | undefined {
+    return cacheImportacoes.find((i) => i.id === id);
+  },
+
+  async saveImportacao(importacao: RegistroImportacao): Promise<RegistroImportacao> {
+    const docId = importacao.id;
+    await setDoc(doc(db, FIRESTORE_COLLECTIONS.IMPORTOES, docId), importacao, { merge: true }).catch((e) =>
+      console.warn('Erro async saveImportacao:', e)
+    );
+    const idx = cacheImportacoes.findIndex((i) => i.id === docId);
+    if (idx >= 0) cacheImportacoes[idx] = importacao;
+    else cacheImportacoes.push(importacao);
+    notify('importacoes');
+    return importacao;
+  },
+
+  /**
+   * Gravação atômica, rastreável e reversível de lote de importação revisado na Parte 15E.
+   * - Divide operações em batches de no máximo 500 documentos (limite do Firestore)
+   * - Cria lançamentos com origem 'importacao' e origem_importacao vinculada ao lote_id
+   * - Atualiza enriquecimentos preservando categorias e guardando snapshot para reversão
+   * - Registra o lote na coleção 'importacoes' com status 'concluida' (ou 'parcial' se houver falha)
+   * - NÃO dispara espelhamento de folha nem recorrências
+   */
+  async importarExtratoLote(params: ParamsImportacaoLote): Promise<ResultadoImportacaoLote> {
+    const conta = this.getContaById(params.contaId);
+    if (!conta) {
+      throw new Error(`Conta bancária ${params.contaId} não encontrada no sistema.`);
+    }
+
+    const resumoAntes = this.calcularResumoConta(conta);
+    const saldoAntes = resumoAntes.saldo_real;
+
+    // Se o usuário optou por ajustar a data do saldo inicial da conta
+    if (params.ajustarDataSaldoInicial && params.novaDataSaldoInicial) {
+      const contaAtualizada: ContaBancaria = {
+        ...conta,
+        data_saldo_inicial: params.novaDataSaldoInicial,
+      };
+      this.saveContaBancaria(contaAtualizada);
+    }
+
+    const totais = {
+      lancadas: 0,
+      ignoradas: 0,
+      duplicadas: 0,
+      enriquecidas: 0,
+      vinculadas: 0,
+      total_creditos: 0,
+      total_debitos: 0,
+    };
+
+    const novosLancamentos: Lancamento[] = [];
+    const snapshotsEnriquecidos: Array<{
+      lancamentoId: string;
+      descricaoAnterior: string;
+      origemImportacaoAnterior?: any;
+    }> = [];
+    const lancamentosAtualizados: Lancamento[] = [];
+    const regrasSalvas: RegraImportacao[] = [];
+
+    // 1. Registro inicial como 'parcial' no Firestore para rastreabilidade
+    const registroLote: RegistroImportacao = {
+      id: params.loteId,
+      data: new Date().toISOString().split('T')[0],
+      usuario: params.usuario,
+      banco_codigo: params.bancoCodigo,
+      conta_id: params.contaId,
+      nome_arquivo: params.nomeArquivo,
+      formato: params.formato,
+      periodo: params.periodo,
+      totais,
+      saldo_banco: params.saldoBanco,
+      saldo_sistema_antes: saldoAntes,
+      status: 'parcial',
+      criado_em: new Date().toISOString(),
+      snapshot_enriquecidos: [],
+    };
+
+    try {
+      await setDoc(doc(db, FIRESTORE_COLLECTIONS.IMPORTOES, params.loteId), registroLote, { merge: true });
+    } catch (e) {
+      console.warn('Erro ao salvar registro preliminar de importacao:', e);
+    }
+
+    // 2. Processa cada item revisado
+    for (const item of params.itens) {
+      if (item.acao === 'ignorar') {
+        if (item.statusDeduplicacao === 'duplicada_exata') {
+          totais.duplicadas++;
+        } else {
+          totais.ignoradas++;
+        }
+        continue;
+      }
+
+      if (item.acao === 'vincular' && item.lancamentoExistenteId) {
+        const lancExistente = this.getLancamentos().find((l) => l.id === item.lancamentoExistenteId);
+        if (lancExistente) {
+          snapshotsEnriquecidos.push({
+            lancamentoId: lancExistente.id,
+            descricaoAnterior: lancExistente.descricao,
+            origemImportacaoAnterior: lancExistente.origem_importacao,
+          });
+
+          // Enriquecimento OFX x XLSX (ou vinculação manual)
+          const descEnriquecida = item.transacao.contraparte
+            ? `${item.transacao.descricaoOriginal} - ${item.transacao.contraparte}`
+            : item.transacao.descricaoOriginal;
+
+          const lancAtualizado: Lancamento = {
+            ...lancExistente,
+            descricao: lancExistente.origem === 'manual' ? lancExistente.descricao : descEnriquecida,
+            origem_importacao: {
+              lote_id: params.loteId,
+              banco_codigo: params.bancoCodigo,
+              conta_id: params.contaId,
+              fitid: item.transacao.fitid || lancExistente.origem_importacao?.fitid,
+              assinatura_fraca:
+                lancExistente.origem_importacao?.assinatura_fraca ||
+                gerarAssinaturaFraca({
+                  conta: params.contaId,
+                  data: item.transacao.data,
+                  tipo: item.transacao.tipo,
+                  valor: item.transacao.valor,
+                  descricaoNormalizada: item.transacao.descricaoNormalizada,
+                  ordemNoDia: item.transacao.ordemNoDia,
+                }),
+              formato: params.formato,
+            },
+          };
+
+          lancamentosAtualizados.push(lancAtualizado);
+          if (item.statusDeduplicacao === 'enriquecer_existente') {
+            totais.enriquecidas++;
+          } else {
+            totais.vinculadas++;
+          }
+        }
+        continue;
+      }
+
+      if (item.acao === 'incluir') {
+        const formaPagamento = inferirFormaPagamento(
+          item.transacao.descricaoOriginal,
+          item.natureza as any
+        );
+
+        const assinaturaFraca = gerarAssinaturaFraca({
+          conta: params.contaId,
+          data: item.transacao.data,
+          tipo: item.transacao.tipo,
+          valor: item.transacao.valor,
+          descricaoNormalizada: item.transacao.descricaoNormalizada,
+          ordemNoDia: item.transacao.ordemNoDia,
+        });
+
+        const novoLancamento: Lancamento = {
+          id: `lanc-imp-${Date.now()}-${Math.random().toString(36).substr(2, 7)}`,
+          tipo: item.tipoLancamento === 'receita' ? 'receita' : 'despesa',
+          descricao: item.transacao.contraparte
+            ? `${item.transacao.descricaoOriginal} - ${item.transacao.contraparte}`
+            : item.transacao.descricaoOriginal,
+          valor: item.transacao.valor,
+          data_vencimento: item.transacao.data,
+          data_pagamento: item.transacao.data,
+          status: 'pago',
+          conta_id: params.contaId,
+          categoria_id: item.categoriaId,
+          contato_id: item.contatoId || undefined,
+          projeto_id: item.projetoId || undefined,
+          forma_pagamento: formaPagamento,
+          recorrencia: 'nenhuma',
+          origem: 'importacao',
+          origem_importacao: {
+            lote_id: params.loteId,
+            banco_codigo: params.bancoCodigo,
+            conta_id: params.contaId,
+            fitid: item.transacao.fitid,
+            assinatura_fraca: assinaturaFraca,
+            formato: params.formato,
+          },
+          criado_em: new Date().toISOString(),
+        };
+
+        novosLancamentos.push(novoLancamento);
+        totais.lancadas++;
+        if (novoLancamento.tipo === 'receita') {
+          totais.total_creditos = +(totais.total_creditos + item.transacao.valor).toFixed(2);
+        } else {
+          totais.total_debitos = +(totais.total_debitos + item.transacao.valor).toFixed(2);
+        }
+      }
+    }
+
+    // 3. Regras de importação a salvar
+    if (params.regrasACriar && params.regrasACriar.length > 0) {
+      for (const r of params.regrasACriar) {
+        const novaRegra: RegraImportacao = {
+          ...r,
+          id: `regra-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+          criadoEm: new Date().toISOString(),
+          usos: 1,
+        };
+        regrasSalvas.push(novaRegra);
+      }
+    }
+
+    // 4. Execução atômica em batches de no máximo 500 operações no Firestore
+    const todasOperacoes: Array<{
+      tipo: 'set' | 'update';
+      colecao: string;
+      id: string;
+      dado: any;
+    }> = [];
+
+    for (const lanc of novosLancamentos) {
+      todasOperacoes.push({
+        tipo: 'set',
+        colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS,
+        id: lanc.id,
+        dado: lanc,
+      });
+    }
+
+    for (const lanc of lancamentosAtualizados) {
+      todasOperacoes.push({
+        tipo: 'update',
+        colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS,
+        id: lanc.id,
+        dado: {
+          descricao: lanc.descricao,
+          origem_importacao: lanc.origem_importacao,
+        },
+      });
+    }
+
+    for (const reg of regrasSalvas) {
+      todasOperacoes.push({
+        tipo: 'set',
+        colecao: FIRESTORE_COLLECTIONS.REGRAS_IMPORTACAO,
+        id: reg.id,
+        dado: reg,
+      });
+    }
+
+    // Lotes de até 490 operações para respeitar folga do Firestore
+    const TAMANHO_MAX_BATCH = 490;
+    try {
+      for (let i = 0; i < todasOperacoes.length; i += TAMANHO_MAX_BATCH) {
+        const batch = writeBatch(db);
+        const fatia = todasOperacoes.slice(i, i + TAMANHO_MAX_BATCH);
+
+        for (const op of fatia) {
+          const docRef = doc(db, op.colecao, op.id);
+          if (op.tipo === 'set') {
+            batch.set(docRef, op.dado);
+          } else {
+            batch.update(docRef, op.dado);
+          }
+        }
+
+        await batch.commit();
+      }
+    } catch (err) {
+      console.error('Falha ao persistir batch no Firestore:', err);
+      registroLote.totais = totais;
+      registroLote.status = 'parcial';
+      registroLote.atualizado_em = new Date().toISOString();
+      await setDoc(doc(db, FIRESTORE_COLLECTIONS.IMPORTOES, params.loteId), registroLote, { merge: true }).catch(() => {});
+      throw new Error(`Falha na gravação do lote no Firestore. O lote foi registrado como 'parcial'. Detalhes: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // 5. Atualização atômica do cache síncrono em memória
+    for (const novo of novosLancamentos) {
+      cacheLancamentos.push(novo);
+    }
+    for (const atualizado of lancamentosAtualizados) {
+      const idx = cacheLancamentos.findIndex((l) => l.id === atualizado.id);
+      if (idx >= 0) cacheLancamentos[idx] = atualizado;
+    }
+    for (const reg of regrasSalvas) {
+      cacheRegrasImportacao.push(reg);
+    }
+
+    // 6. Recalcula saldos finais
+    const resumoDepois = this.calcularResumoConta(conta);
+    const saldoDepois = resumoDepois.saldo_real;
+
+    let diferencaConciliacao: number | undefined = undefined;
+    if (params.saldoBanco?.valor !== undefined) {
+      diferencaConciliacao = +(params.saldoBanco.valor - saldoDepois).toFixed(2);
+    }
+
+    // 7. Finaliza o registro de importação como 'concluida'
+    registroLote.totais = totais;
+    registroLote.saldo_sistema_depois = saldoDepois;
+    registroLote.status = 'concluida';
+    registroLote.snapshot_enriquecidos = snapshotsEnriquecidos;
+    registroLote.atualizado_em = new Date().toISOString();
+
+    await this.saveImportacao(registroLote);
+
+    this.registrarAuditoria(
+      'importacoes',
+      'importacao',
+      `Importação de extrato bancário lote ${params.loteId} (${totais.lancadas} lançamentos)`,
+      `Arquivo: ${params.nomeArquivo}, Conta: ${conta.nome}, Banco: ${params.bancoCodigo}, Período: ${params.periodo.inicio} a ${params.periodo.fim}`
+    );
+
+    notify('lancamentos');
+    notify('regras_importacao');
+    notify('contas');
+
+    return {
+      sucesso: true,
+      loteId: params.loteId,
+      totais,
+      saldoAntes,
+      saldoDepois,
+      diferencaConciliacao,
+      mensagem: `Importação de ${totais.lancadas} lançamento(s) concluída com sucesso.`,
+    };
+  },
+
+  /**
+   * Desfaz com segurança um lote de importação executado anteriormente:
+   * - Deleta exclusivamente os lançamentos criados pelo lote (com origem 'importacao')
+   * - Restaura o estado anterior dos lançamentos enriquecidos/vinculados usando snapshot
+   * - Marca o status do lote como 'desfeita'
+   */
+  async desfazerImportacao(loteId: string): Promise<ResultadoDesfazerImportacao> {
+    const lote = cacheImportacoes.find((i) => i.id === loteId);
+    if (!lote) {
+      throw new Error(`Lote de importação ${loteId} não encontrado.`);
+    }
+
+    if (lote.status === 'desfeita') {
+      throw new Error(`Este lote de importação já foi desfeito anteriormente.`);
+    }
+
+    const snapshots = lote.snapshot_enriquecidos || [];
+    const idsEnriquecidosSet = new Set(snapshots.map((s) => s.lancamentoId));
+
+    // Localiza os lançamentos criados por este lote (excluindo os que foram apenas enriquecidos)
+    const lancamentosARemover = cacheLancamentos.filter(
+      (l) => l.origem_importacao?.lote_id === loteId && l.origem === 'importacao' && !idsEnriquecidosSet.has(l.id)
+    );
+    const TAMANHO_MAX_BATCH = 490;
+
+    // Batches de exclusão e restauração
+    const todasOperacoes: Array<{
+      tipo: 'delete' | 'update';
+      id: string;
+      dado?: any;
+    }> = [];
+
+    for (const lanc of lancamentosARemover) {
+      todasOperacoes.push({
+        tipo: 'delete',
+        id: lanc.id,
+      });
+    }
+
+    for (const snap of snapshots) {
+      todasOperacoes.push({
+        tipo: 'update',
+        id: snap.lancamentoId,
+        dado: {
+          descricao: snap.descricaoAnterior,
+          origem_importacao: snap.origemImportacaoAnterior || null,
+        },
+      });
+    }
+
+    for (let i = 0; i < todasOperacoes.length; i += TAMANHO_MAX_BATCH) {
+      const batch = writeBatch(db);
+      const fatia = todasOperacoes.slice(i, i + TAMANHO_MAX_BATCH);
+
+      for (const op of fatia) {
+        const docRef = doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, op.id);
+        if (op.tipo === 'delete') {
+          batch.delete(docRef);
+        } else {
+          batch.update(docRef, op.dado);
+        }
+      }
+
+      await batch.commit();
+    }
+
+    // Atualiza status do lote para 'desfeita'
+    const loteAtualizado: RegistroImportacao = {
+      ...lote,
+      status: 'desfeita',
+      atualizado_em: new Date().toISOString(),
+    };
+    await this.saveImportacao(loteAtualizado);
+
+    // Atualiza caches síncronos
+    const idsRemovidosSet = new Set(lancamentosARemover.map((l) => l.id));
+    cacheLancamentos = cacheLancamentos.filter((l) => !idsRemovidosSet.has(l.id));
+
+    for (const snap of snapshots) {
+      const idx = cacheLancamentos.findIndex((l) => l.id === snap.lancamentoId);
+      if (idx >= 0) {
+        cacheLancamentos[idx] = {
+          ...cacheLancamentos[idx],
+          descricao: snap.descricaoAnterior,
+          origem_importacao: snap.origemImportacaoAnterior,
+        };
+      }
+    }
+
+    this.registrarAuditoria(
+      'importacoes',
+      'desfazer',
+      `Lote de importação ${loteId} desfeito`,
+      `${lancamentosARemover.length} lançamento(s) excluído(s) e ${snapshots.length} restaurado(s)`
+    );
+
+    notify('lancamentos');
+    notify('contas');
+    notify('importacoes');
+
+    return {
+      sucesso: true,
+      loteId,
+      lancamentosRemovidos: lancamentosARemover.length,
+      lancamentosRestaurados: snapshots.length,
+      mensagem: `Importação desfeita com sucesso. ${lancamentosARemover.length} lançamento(s) removido(s) e ${snapshots.length} restaurado(s).`,
+    };
   },
 };
 

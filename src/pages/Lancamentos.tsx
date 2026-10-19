@@ -17,6 +17,7 @@ import {
 import { Modal } from '../components/Modal';
 import { ModalPagarReceber } from '../components/ModalPagarReceber';
 import { ModalConfirmarExclusao } from '../components/ModalConfirmarExclusao';
+import { ImportarExtratoModal } from '../components/ImportarExtratoModal';
 import {
   ReceiptText,
   Plus,
@@ -42,7 +43,8 @@ import {
   SunMedium,
   CheckSquare,
   Square,
-  History
+  History,
+  UploadCloud
 } from 'lucide-react';
 
 interface LancamentosProps {
@@ -95,6 +97,9 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
 
   // Modal de Histórico de Auditoria
   const [modalHistoricoAberto, setModalHistoricoAberto] = useState(false);
+
+  // Modal de Importação de Extratos
+  const [importarExtratoAberto, setImportarExtratoAberto] = useState(false);
 
   // FORMULÁRIO DE LANÇAMENTO
   const [tipo, setTipo] = useState<TipoLancamento>(tipoFixo || 'receita');
@@ -470,14 +475,15 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
 
       // Busca por texto
       if (filtroBusca) {
-        const q = filtroBusca.toLowerCase();
+        const q = filtroBusca.toLowerCase().trim();
         const descOk = l.descricao.toLowerCase().includes(q);
         const obsOk = l.observacoes?.toLowerCase().includes(q);
         const contatoObj = contatos.find(c => c.id === l.contato_id);
         const contatoOk = contatoObj?.nome.toLowerCase().includes(q);
         const projetoObj = projetos.find(p => p.id === l.projeto_id);
         const projOk = projetoObj?.nome.toLowerCase().includes(q);
-        if (!descOk && !obsOk && !contatoOk && !projOk) return false;
+        const loteOk = l.origem_importacao?.lote_id?.toLowerCase().includes(q);
+        if (!descOk && !obsOk && !contatoOk && !projOk && !loteOk) return false;
       }
 
       return true;
@@ -562,14 +568,26 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
           </button>
 
           {isAdmin && (
-            <button
-              onClick={abrirModalNovo}
-              type="button"
-              className="flex items-center gap-2 bg-[#003064] hover:bg-[#00204A] text-white px-4 py-2 rounded-xl font-semibold text-xs shadow-xs border-b-2 border-[#FCBC00] transition-all cursor-pointer"
-            >
-              <Plus className="w-4 h-4 text-[#FCBC00]" />
-              <span>Novo Lançamento</span>
-            </button>
+            <>
+              <button
+                onClick={() => setImportarExtratoAberto(true)}
+                type="button"
+                className="flex items-center gap-1.5 px-3 py-2 bg-[#003064]/10 hover:bg-[#003064]/15 text-[#003064] text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                title="Importar extratos bancários (OFX, QFX ou XLSX)"
+              >
+                <UploadCloud className="w-4 h-4 text-[#1A4A85]" />
+                <span>Importar Extrato</span>
+              </button>
+
+              <button
+                onClick={abrirModalNovo}
+                type="button"
+                className="flex items-center gap-2 bg-[#003064] hover:bg-[#00204A] text-white px-4 py-2 rounded-xl font-semibold text-xs shadow-xs border-b-2 border-[#FCBC00] transition-all cursor-pointer"
+              >
+                <Plus className="w-4 h-4 text-[#FCBC00]" />
+                <span>Novo Lançamento</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -841,6 +859,14 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
                         </div>
                         <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5 flex-wrap">
                           <span className="capitalize">{l.forma_pagamento}</span>
+                          {l.origem === 'importacao' && (
+                            <span
+                              className="bg-purple-50 text-purple-700 border border-purple-200/70 px-1.5 py-0.2 rounded-sm font-semibold"
+                              title={`Lote de importação: ${l.origem_importacao?.lote_id || 'manual'}`}
+                            >
+                              Importado
+                            </span>
+                          )}
                           {contato && <span>• {contato.nome}</span>}
                           {l.recorrencia === 'parcelado' && l.total_parcelas && (
                             <span className="bg-slate-100 px-1.5 py-0.2 rounded-sm text-slate-600 font-semibold">
@@ -1499,6 +1525,17 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
           </div>
         </div>
       </Modal>
+
+      {/* MODAL DE IMPORTAÇÃO DE EXTRATOS BANCÁRIOS */}
+      <ImportarExtratoModal
+        isOpen={importarExtratoAberto}
+        onClose={() => setImportarExtratoAberto(false)}
+        contas={contas}
+        onVerLote={(loteId) => {
+          setFiltroBusca(loteId);
+          setImportarExtratoAberto(false);
+        }}
+      />
 
     </div>
   );

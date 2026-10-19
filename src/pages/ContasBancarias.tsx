@@ -8,6 +8,9 @@ import { ExtratoModal } from '../components/ExtratoModal';
 import { TransferenciaModal } from '../components/TransferenciaModal';
 import { ConciliacaoModal } from '../components/ConciliacaoModal';
 import { Modal } from '../components/Modal';
+import { ImportarExtratoModal } from '../components/ImportarExtratoModal';
+import { BANCOS_REGISTRADOS, SugestaoCadastroConta } from '../utils/extrato';
+import { HistoricoImportacoes, GerenciadorRegras } from '../components/extrato';
 import {
   Landmark,
   Plus,
@@ -21,12 +24,19 @@ import {
   CheckCircle2,
   Trash2,
   Layers,
-  Sparkles
+  Sparkles,
+  UploadCloud,
+  FileText
 } from 'lucide-react';
 
 export const ContasBancarias: React.FC = () => {
   const { isAdmin } = useAuth();
   const { ocultarValores, toggleOcultarValores } = usePrivacy();
+
+  // Navegação por Abas
+  const [abaAtiva, setAbaAtiva] = useState<'contas' | 'importacoes' | 'regras'>('contas');
+  const [qtdImportacoes, setQtdImportacoes] = useState(0);
+  const [qtdRegrasAtivas, setQtdRegrasAtivas] = useState(0);
 
   const [contas, setContas] = useState<ContaBancaria[]>([]);
   const [resumos, setResumos] = useState<ResumoSaldoConta[]>([]);
@@ -45,12 +55,20 @@ export const ContasBancarias: React.FC = () => {
   const [conciliacaoAberta, setConciliacaoAberta] = useState(false);
   const [contaConciliacao, setContaConciliacao] = useState<ContaBancaria | null>(null);
 
+  // Modal Importar Extrato
+  const [importarExtratoAberto, setImportarExtratoAberto] = useState(false);
+  const [contaImportarExtratoId, setContaImportarExtratoId] = useState<string | undefined>();
+
   // Mensagens
   const [mensagemAlerta, setMensagemAlerta] = useState<string | null>(null);
 
   // Formulário de Conta
   const [nome, setNome] = useState('');
   const [banco, setBanco] = useState('');
+  const [bancoCodigo, setBancoCodigo] = useState<string>('033');
+  const [bancoNomeOutro, setBancoNomeOutro] = useState<string>('');
+  const [agencia, setAgencia] = useState<string>('');
+  const [numeroConta, setNumeroConta] = useState<string>('');
   const [tipo, setTipo] = useState<TipoConta>('corrente');
   const [saldoInicial, setSaldoInicial] = useState('0');
   const [dataSaldoInicial, setDataSaldoInicial] = useState(
@@ -67,23 +85,50 @@ export const ContasBancarias: React.FC = () => {
     const r = lista.map((c) => dbService.calcularResumoConta(c));
     setResumos(r);
     setResumoGeral(dbService.calcularResumoGeral());
+    setQtdImportacoes(dbService.getImportacoes().length);
+    setQtdRegrasAtivas(dbService.getRegrasImportacaoAtivas().length);
   };
 
   useEffect(() => {
     carregarDados();
     const unsubC = subscribe('contas', carregarDados);
     const unsubL = subscribe('lancamentos', carregarDados);
+    const unsubImp = subscribe('importacoes', () => {
+      setQtdImportacoes(dbService.getImportacoes().length);
+    });
+    const unsubReg = subscribe('regras_importacao', () => {
+      setQtdRegrasAtivas(dbService.getRegrasImportacaoAtivas().length);
+    });
     return () => {
       unsubC();
       unsubL();
+      unsubImp();
+      unsubReg();
     };
   }, []);
 
   // Handlers Conta
-  const abrirModalNova = () => {
+  const abrirModalNova = (sugestao?: SugestaoCadastroConta) => {
     setContaEditando(null);
-    setNome('');
-    setBanco('Sicoob');
+    setNome(sugestao?.titular || (sugestao?.banco_nome ? `${sugestao.banco_nome} MT Solar` : ''));
+    
+    if (sugestao?.banco_codigo && BANCOS_REGISTRADOS.some(b => b.codigo === sugestao.banco_codigo)) {
+      setBancoCodigo(sugestao.banco_codigo);
+      const bFound = BANCOS_REGISTRADOS.find(b => b.codigo === sugestao.banco_codigo);
+      setBanco(bFound ? bFound.nome : 'Santander');
+      setBancoNomeOutro('');
+    } else if (sugestao?.banco_nome) {
+      setBancoCodigo('outro');
+      setBanco(sugestao.banco_nome);
+      setBancoNomeOutro(sugestao.banco_nome);
+    } else {
+      setBancoCodigo('033');
+      setBanco('Santander');
+      setBancoNomeOutro('');
+    }
+
+    setAgencia(sugestao?.agencia || '');
+    setNumeroConta(sugestao?.numero_conta || '');
     setTipo('corrente');
     setSaldoInicial('0');
     setDataSaldoInicial(new Date().toISOString().split('T')[0]);
@@ -97,7 +142,27 @@ export const ContasBancarias: React.FC = () => {
   const abrirModalEditar = (c: ContaBancaria) => {
     setContaEditando(c);
     setNome(c.nome);
-    setBanco(c.banco);
+    
+    // Identifica banco pelo código ou nome
+    if (c.banco_codigo && BANCOS_REGISTRADOS.some(b => b.codigo === c.banco_codigo)) {
+      setBancoCodigo(c.banco_codigo);
+      setBanco(c.banco);
+      setBancoNomeOutro('');
+    } else {
+      const bPorNome = BANCOS_REGISTRADOS.find(b => b.nome.toLowerCase() === c.banco.toLowerCase());
+      if (bPorNome) {
+        setBancoCodigo(bPorNome.codigo);
+        setBanco(bPorNome.nome);
+        setBancoNomeOutro('');
+      } else {
+        setBancoCodigo('outro');
+        setBanco(c.banco);
+        setBancoNomeOutro(c.banco);
+      }
+    }
+
+    setAgencia(c.agencia || '');
+    setNumeroConta(c.numero_conta || '');
     setTipo(c.tipo);
     setSaldoInicial(String(c.saldo_inicial));
     setDataSaldoInicial(c.data_saldo_inicial);
@@ -112,10 +177,19 @@ export const ContasBancarias: React.FC = () => {
     e.preventDefault();
     if (!isAdmin) return;
 
+    const bancoFinal = bancoCodigo === 'outro'
+      ? (bancoNomeOutro.trim() || 'Outro')
+      : (BANCOS_REGISTRADOS.find(b => b.codigo === bancoCodigo)?.nome || banco.trim() || 'Banco');
+
+    const bancoCodigoFinal = bancoCodigo === 'outro' ? undefined : bancoCodigo;
+
     const novaOuEditada: ContaBancaria = {
       id: contaEditando ? contaEditando.id : 'conta-' + Date.now(),
       nome: nome.trim(),
-      banco: banco.trim(),
+      banco: bancoFinal,
+      banco_codigo: bancoCodigoFinal,
+      agencia: agencia.trim() || undefined,
+      numero_conta: numeroConta.trim() || undefined,
       tipo,
       saldo_inicial: Number(saldoInicial) || 0,
       data_saldo_inicial: dataSaldoInicial,
@@ -217,6 +291,16 @@ export const ContasBancarias: React.FC = () => {
           {isAdmin && (
             <>
               <button
+                onClick={() => setImportarExtratoAberto(true)}
+                type="button"
+                className="flex items-center gap-1.5 px-3 py-2 bg-[#003064]/10 hover:bg-[#003064]/15 text-[#003064] text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                title="Importar extratos bancários (OFX, QFX ou XLSX)"
+              >
+                <UploadCloud className="w-4 h-4 text-[#1A4A85]" />
+                <span>Importar Extrato</span>
+              </button>
+
+              <button
                 onClick={() => abrirTransferencia()}
                 type="button"
                 className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-[#003064] text-xs font-semibold rounded-xl transition-colors cursor-pointer"
@@ -226,7 +310,7 @@ export const ContasBancarias: React.FC = () => {
               </button>
 
               <button
-                onClick={abrirModalNova}
+                onClick={() => abrirModalNova()}
                 type="button"
                 className="flex items-center gap-2 bg-[#003064] hover:bg-[#00204A] text-white px-4 py-2 rounded-xl font-semibold text-xs shadow-xs border-b-2 border-[#FCBC00] transition-all cursor-pointer"
               >
@@ -237,6 +321,65 @@ export const ContasBancarias: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* SELETOR DE ABAS DA PÁGINA */}
+      <div className="flex items-center gap-2 border-b border-slate-200/80 pb-2 print:hidden overflow-x-auto">
+        <button
+          type="button"
+          onClick={() => setAbaAtiva('contas')}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+            abaAtiva === 'contas'
+              ? 'bg-[#003064] text-white shadow-xs border-b-2 border-[#FCBC00]'
+              : 'bg-white hover:bg-slate-100 text-slate-600 border border-slate-200/60'
+          }`}
+        >
+          <Landmark className="w-4 h-4 text-[#FCBC00]" />
+          <span>Contas Bancárias & Saldos</span>
+          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-num ${abaAtiva === 'contas' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+            {contas.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setAbaAtiva('importacoes')}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+            abaAtiva === 'importacoes'
+              ? 'bg-[#003064] text-white shadow-xs border-b-2 border-[#FCBC00]'
+              : 'bg-white hover:bg-slate-100 text-slate-600 border border-slate-200/60'
+          }`}
+        >
+          <UploadCloud className="w-4 h-4 text-[#FCBC00]" />
+          <span>Histórico de Importações</span>
+          {qtdImportacoes > 0 && (
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-num ${abaAtiva === 'importacoes' ? 'bg-white/20 text-white' : 'bg-blue-100 text-[#003064]'}`}>
+              {qtdImportacoes}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setAbaAtiva('regras')}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer whitespace-nowrap ${
+            abaAtiva === 'regras'
+              ? 'bg-[#003064] text-white shadow-xs border-b-2 border-[#FCBC00]'
+              : 'bg-white hover:bg-slate-100 text-slate-600 border border-slate-200/60'
+          }`}
+        >
+          <Sparkles className="w-4 h-4 text-[#FCBC00]" />
+          <span>Regras de Importação</span>
+          {qtdRegrasAtivas > 0 && (
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-num ${abaAtiva === 'regras' ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-800'}`}>
+              {qtdRegrasAtivas}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* ABA 1: CONTAS BANCÁRIAS E CAIXA */}
+      {abaAtiva === 'contas' && (
+        <div className="space-y-6">
 
       {/* Alerta de erro/bloqueio se tentar excluir conta com lançamentos */}
       {mensagemAlerta && (
@@ -313,38 +456,78 @@ export const ContasBancarias: React.FC = () => {
         <div className="space-y-6">
           {resumos.map((res) => {
             const c = res.conta;
+            const dadosCompletos = Boolean(c.banco_codigo && c.numero_conta);
+            const detalheBanco = `${c.banco}${c.banco_codigo ? ` (${c.banco_codigo})` : ''}${
+              c.agencia ? ` • Ag. ${c.agencia}` : ''
+            }${c.numero_conta ? ` • CC ${c.numero_conta}` : ''}`;
+
             return (
-              <CaixaCard
-                key={c.id}
-                titulo={c.nome}
-                subtitulo={`${c.banco} • Tipo: ${c.tipo.replace('_', ' ')} • Criada em: ${c.data_saldo_inicial}`}
-                resumo={{
-                  saldo_real: res.saldo_real,
-                  limite_cheque_total: res.limite_cheque_total,
-                  cheque_especial_utilizado: res.cheque_especial_utilizado,
-                  cheque_especial_disponivel: res.cheque_especial_disponivel,
-                  saldo_disponivel_total: res.saldo_disponivel_total,
-                  usando_cheque_especial: res.usando_cheque_especial,
-                  percentual_cheque_usado: res.percentual_cheque_usado,
-                  alerta_critico_cheque: res.alerta_critico_cheque,
-                  custo_juros_mensal_estimado: res.custo_juros_mensal_estimado,
-                  custo_juros_diario_estimado: res.custo_juros_diario_estimado,
-                  taxa_mensal: c.taxa_juros_cheque_especial_mensal,
-                }}
-                conta={c}
-                isConsolidado={false}
-                podeEditar={isAdmin}
-                onClickExtrato={() => abrirExtrato(c)}
-                onTransferir={() => abrirTransferencia(c.id)}
-                onConciliar={() => abrirConciliacao(c)}
-                onEditar={() => abrirModalEditar(c)}
-                onToggleAtiva={() => handleToggleAtiva(c)}
-                onExcluir={() => handleExcluirConta(c)}
-              />
+              <div key={c.id} className="space-y-0">
+                <CaixaCard
+                  titulo={c.nome}
+                  subtitulo={`${detalheBanco} • Tipo: ${c.tipo.replace('_', ' ')} • Criada em: ${c.data_saldo_inicial}`}
+                  resumo={{
+                    saldo_real: res.saldo_real,
+                    limite_cheque_total: res.limite_cheque_total,
+                    cheque_especial_utilizado: res.cheque_especial_utilizado,
+                    cheque_especial_disponivel: res.cheque_especial_disponivel,
+                    saldo_disponivel_total: res.saldo_disponivel_total,
+                    usando_cheque_especial: res.usando_cheque_especial,
+                    percentual_cheque_usado: res.percentual_cheque_usado,
+                    alerta_critico_cheque: res.alerta_critico_cheque,
+                    custo_juros_mensal_estimado: res.custo_juros_mensal_estimado,
+                    custo_juros_diario_estimado: res.custo_juros_diario_estimado,
+                    taxa_mensal: c.taxa_juros_cheque_especial_mensal,
+                  }}
+                  conta={c}
+                  isConsolidado={false}
+                  podeEditar={isAdmin}
+                  onClickExtrato={() => abrirExtrato(c)}
+                  onTransferir={() => abrirTransferencia(c.id)}
+                  onConciliar={() => abrirConciliacao(c)}
+                  onEditar={() => abrirModalEditar(c)}
+                  onToggleAtiva={() => handleToggleAtiva(c)}
+                  onExcluir={() => handleExcluirConta(c)}
+                />
+
+                {/* Aviso discreto se faltar código ou número da conta */}
+                {!dadosCompletos && (
+                  <div className="flex items-center justify-between gap-2 px-4 py-2 bg-amber-50/70 border border-t-0 border-amber-200/80 rounded-b-2xl text-[11px] text-amber-800 -mt-2 shadow-2xs">
+                    <div className="flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <span>Complete os dados bancários para importar extratos.</span>
+                    </div>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => abrirModalEditar(c)}
+                        className="text-[11px] font-bold text-[#003064] hover:underline cursor-pointer shrink-0"
+                      >
+                        Completar dados
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
       </div>
+      </div>
+      )}
+
+      {/* ABA 2: HISTÓRICO DE IMPORTAÇÕES */}
+      {abaAtiva === 'importacoes' && (
+        <HistoricoImportacoes
+          contas={contas}
+          onNovaImportacao={() => setImportarExtratoAberto(true)}
+        />
+      )}
+
+      {/* ABA 3: REGRAS DE IMPORTAÇÃO */}
+      {abaAtiva === 'regras' && (
+        <GerenciadorRegras contas={contas} />
+      )}
 
       {/* MODAL 1: EXTRATO DA CONTA */}
       <ExtratoModal
@@ -396,14 +579,70 @@ export const ContasBancarias: React.FC = () => {
               <label className="block text-xs font-semibold text-slate-700 mb-1">
                 Instituição / Banco *
               </label>
+              <select
+                value={bancoCodigo}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setBancoCodigo(val);
+                  if (val !== 'outro') {
+                    const b = BANCOS_REGISTRADOS.find(item => item.codigo === val);
+                    if (b) setBanco(b.nome);
+                  }
+                }}
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
+              >
+                {BANCOS_REGISTRADOS.map(b => (
+                  <option key={b.codigo} value={b.codigo}>
+                    {b.nome} ({b.codigo})
+                  </option>
+                ))}
+                <option value="outro">Outro Banco / Instituição</option>
+              </select>
+
+              {bancoCodigo === 'outro' && (
+                <input
+                  type="text"
+                  value={bancoNomeOutro}
+                  onChange={(e) => {
+                    setBancoNomeOutro(e.target.value);
+                    setBanco(e.target.value);
+                  }}
+                  placeholder="Ex: Sicoob, Bradesco, BB, Nubank"
+                  className="mt-2 w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
+                  required
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Dados Bancários para Extratos: Agência e Conta */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Agência (sem dígito)
+              </label>
               <input
                 type="text"
-                value={banco}
-                onChange={(e) => setBanco(e.target.value)}
-                placeholder="Ex: Sicoob, Bradesco, BB, Caixa"
+                value={agencia}
+                onChange={(e) => setAgencia(e.target.value)}
+                placeholder="Ex: 3749"
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
-                required
               />
+              <span className="text-[10px] text-slate-400">Usado para associar extratos OFX</span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Número da Conta (com DV)
+              </label>
+              <input
+                type="text"
+                value={numeroConta}
+                onChange={(e) => setNumeroConta(e.target.value)}
+                placeholder="Ex: 13004696-4"
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
+              />
+              <span className="text-[10px] text-slate-400">Necessário para identificar o extrato</span>
             </div>
           </div>
 
@@ -538,6 +777,21 @@ export const ContasBancarias: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      {/* MODAL 5: IMPORTAÇÃO DE EXTRATOS BANCÁRIOS */}
+      <ImportarExtratoModal
+        isOpen={importarExtratoAberto}
+        onClose={() => {
+          setImportarExtratoAberto(false);
+          setContaImportarExtratoId(undefined);
+        }}
+        contas={contas}
+        contaPreSelecionadaId={contaImportarExtratoId}
+        onCadastrarNovaConta={(sugestao) => {
+          setImportarExtratoAberto(false);
+          abrirModalNova(sugestao);
+        }}
+      />
 
     </div>
   );
