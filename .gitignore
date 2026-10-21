@@ -6,3 +6,14 @@ coverage/
 *.log
 .env*
 !.env.example
+.env.local
+
+# Extratos bancários confidenciais
+src/exemplos_extratos/
+*.ofx
+*.qfx
+
+# Backups e temporários
+*.bak
+*.backup
+*.tmp

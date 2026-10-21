@@ -1,8 +1,171 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 19/10/2026 16:15:00 (Módulo 15 Completo - Parte 15G Fechamento)
+**Última Atualização:** 21/10/2026 04:05:00 (Consolidação do Módulo de Importação de Extratos 15A–15J e Limpeza de Scripts CLI)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
+  - **Consolidação do Módulo de Importação de Extratos (Partes 15A a 15J) e Limpeza**:
+    - Removido script temporário `scripts/auditoria_reparo_importacoes.ts` e comandos `auditar:importacao` / `reparar:importacao` do `package.json`, uma vez que a auditoria e reparo com isolamento foram incorporados diretamente na interface visual de produção através do módulo de Reinício Seguro de Conta (Parte 15I);
+    - Confirmada ausência de referências a esses scripts em todo o projeto via verificação estrita (`grep`);
+    - Validadas todas as suítes de testes (`test:isolamento`, `test:15h`, `test:15i`, `test:15j`), tipagem TypeScript (`npx tsc --noEmit`) e compilação de produção (`npm run build`).
+  - **Arquivos removidos:** `scripts/auditoria_reparo_importacoes.ts`.
+  - **Arquivos modificados:** `package.json`, `RESUMO_MESTRE.md`.
+
+---
+
+- **Alterações Anteriores:**
+  - **Parte 15I – Reinício Seguro de Conta para Reimportação de Extratos**:
+    - **15I.1 (Simulação Dry-Run em `src/services/storage.ts`)**:
+      - Função `simularReinicioConta({ contaId, zerarSaldoInicial, novaDataSaldoInicial })`:
+        - Localiza com precisão todos os lançamentos com `origem === 'importacao'` ou com vínculo a lotes da conta;
+        - Identifica contrapartidas de transferências de importação na conta e nas contas secundárias afetadas;
+        - Identifica lançamentos de ajuste de conciliação associados a lotes de importação;
+        - Identifica todos os lotes de importação ativos da conta na coleção `importacoes`;
+        - Computa saldos antes e depois da conta principal e calcula o impacto exato nas contas secundárias envolvidas em transferências;
+        - Discrimina com exatidão a contagem de lançamentos que serão **PRESERVADOS** (manuais, folha de pagamento, contas a pagar/receber e transferências manuais).
+    - **15I.2 (Backup Obrigatório e Execução em Lote em `src/services/storage.ts`)**:
+      - Função `executarReinicioConta({ contaId, zerarSaldoInicial, novaDataSaldoInicial })`:
+        - Gera e dispara o download automático do backup completo em JSON (`backup_antes_reinicio_[CONTA]_[TIMESTAMP].json`) via `exportarBackupCompletoJSON()` antes de qualquer operação de gravação;
+        - Remove em lotes seguros do Firestore (`writeBatch` de até 490 documentos) apenas os lançamentos de importação identificados;
+        - Marca os lotes de importação da conta como `'desfeita'`;
+        - Aplica opcionalmente a limpeza do `saldo_inicial` (zerando para R$ 0,00 e atualizando `data_saldo_inicial`) quando selecionado pelo usuário;
+        - Atualiza caches locais na memória e notifica reatividade (`notify('lancamentos')`, `notify('contas')`, `notify('importacoes')`);
+        - Registra a ação na coleção de auditoria (`RegistroAuditoria`).
+    - **15I.3 (Interface Visual em `src/components/ModalReinicioConta.tsx`)**:
+      - Modal de 2 passos claros: Simulação (Dry-Run detalhado) + Confirmação Crítica;
+      - Exige digitação exata do nome da conta bancária como trava contra acionamentos acidentais;
+      - Apresenta métricas visuais claras: total de lançamentos a remover, transferências geradas, lotes e ajustes;
+      - Apresenta tabela com resumo dos itens estritamente preservados (manuais, folha e transferências manuais);
+      - Exibe tabela de impacto financeiro (Saldo Antes, Saldo Depois, Diferença) para a conta e para contas secundárias afetadas;
+      - Exibe opção configurável com checkbox para zerar também o saldo inicial da conta (com seletor de nova data);
+      - Apresenta tela de conclusão com balanço final e resumo dos saldos recalculados.
+    - **15I.4 (Controle de Acesso e Integração em `src/pages/ContasBancarias.tsx` e `src/components/CaixaCard.tsx`)**:
+      - Ação "Preparar para reimportar extrato" disponibilizada no `CaixaCard` individual de cada conta bancária;
+      - Restrição estrita de visibilidade e execução exclusiva para administradores (`admin`), oculta para outros papéis;
+      - Estado `contaParaReiniciar` gerenciado transparentemente na página `ContasBancarias`.
+    - **15I.5 (Tipagem e Padronização em `src/types/index.ts`)**:
+      - Interfaces `DryRunReinicioConta`, `ResultadoReinicioConta`, `ImpactoContaReinicio`, `PreservadosReinicioConta` e `ResumoSaldoContaPosReinicio` padronizadas em snake_case;
+      - Resolução de conflitos de definições prévias e harmonização com o modelo do Firestore.
+    - **15I.6 (Suíte de Testes Automatizados em `scripts/test_parte_15I.ts`)**:
+      - Criada suíte hermética `scripts/test_parte_15I.ts` (`npm run test:15i`) com **35 testes automatizados cobrindo todos os cenários (35 PASSOU / 0 FALHOU)**:
+        - *Cenário 1*: Dry-run com discriminação precisa de remoção vs preservação, impacto em conta secundária e projeção de saldo;
+        - *Cenário 2*: Dry-run com flag de zerar saldo inicial ativada;
+        - *Cenário 3*: Execução real com remoção seletiva, desfazimento de lote, preservação intocada de manuais/folha/transferências manuais, recálculo de saldo da conta principal e da conta secundária, e isolamento de contas não envolvidas;
+        - *Cenário 4*: Validações de segurança (rejeição de conta inexistente) e integridade do backup gerado.
+    - **15I.7 (Qualidade e Validação)**:
+      - Script `npm run test:15i` configurado no `package.json`;
+      - Checagem de tipagem estrita com TypeScript aprovada (`npx tsc --noEmit` código 0);
+      - Todos os testes de isolamento e etapas anteriores executados com sucesso: `test:isolamento` (17/17), `test:15h` (33/33), `test:15j` (37/37) e `test:15i` (35/35);
+      - Build de produção compilado com sucesso via `npm run build` (`vite build` verde).
+  - **Arquivos criados:** `src/components/ModalReinicioConta.tsx`, `scripts/test_parte_15I.ts`.
+  - **Arquivos modificados:** `src/services/storage.ts`, `src/types/index.ts`, `src/pages/ContasBancarias.tsx`, `src/components/CaixaCard.tsx`, `package.json`, `RESUMO_MESTRE.md`.
+
+---
+
+- **Alterações Anteriores:**
+  - **Parte 15J – Prevenção de Dupla Contagem do Saldo Inicial na Importação de Extratos**:
+    - **15J.1 (Assistente de "Primeira Importação" em `src/components/ImportarExtratoModal.tsx`)**:
+      - Quando a conta selecionada não possui lançamentos importados prévios no sistema, exibe bloco explicativo de 2 linhas destacando que o saldo inicial **NÃO** precisa ser informado manualmente e será calculado automaticamente pelo sistema com base no saldo final do banco;
+      - Se a conta já tiver `saldo_inicial ≠ 0` cadastrado, pergunta expressamente: *"Este valor é o saldo de hoje/final? Se sim, ele será substituído pelo saldo calculado"*, com confirmação via checkbox, garantindo que nada seja alterado sem autorização do usuário.
+    - **15J.2 (Detecção de Dupla Contagem Pré-Gravação em `src/components/extrato/RevisaoExtrato.tsx`)**:
+      - Verifica se o saldo projetado da conta (saldo inicial atual + lançamentos existentes + novas movimentações do lote) difere do saldo final informado pelo banco (`LEDGERBAL`) em mais de R$ 0,01;
+      - Exibe alerta visual âmbar detalhado: *"Pelo saldo do banco, o saldo inicial da conta provavelmente está errado. Saldo projetado: X; saldo do banco: Y; saldo inicial sugerido: Z"*;
+      - Botão *"Corrigir saldo inicial agora"*: abre modal de confirmação transparente exibindo antes $\rightarrow$ depois do saldo inicial e data inicial (dia anterior à primeira transação), alterando **exclusivamente** os campos `saldo_inicial` e `data_saldo_inicial` da conta;
+      - Botão *"Continuar sem corrigir"*: permite ao usuário ignorar o alerta sem impedimentos;
+      - **Garantia estrita:** NUNCA cria lançamento de ajuste contábil fictício.
+    - **15J.3 (Importação Múltipla XLSX de 365 dias + OFX de 90 dias)**:
+      - O cálculo de movimentações consolida a união deduplicada dos lançamentos (Parte 15C), de modo que transações vinculadas/enriquecidas não sejam somadas em dobro;
+      - O saldo final de referência é selecionado automaticamente do arquivo OFX mais recente entre os extratos carregados;
+      - Para arquivos que não trazem saldo (como XLSX), exibe aviso explícito: *"Este formato não traz saldo (LEDGERBAL); use o saldo do OFX mais recente ou informe o saldo do banco numa data"*.
+    - **15J.4 (Opção Alternativa para Extratos sem OFX)**:
+      - Disponibilizados os campos *"Saldo do banco (R$)"* e *"Data do saldo no banco"* no modal para cálculo de saldo inicial retroativo por diferença.
+    - **15J.5 (Ajuda no Formulário de Edição da Conta em `src/pages/ContasBancarias.tsx`)**:
+      - Texto de instrução atualizado para: *"Saldo inicial = saldo ANTES do primeiro lançamento. Se for importar extrato, deixe 0: o app calcula sozinho"*.
+    - **15J.6 (Reversibilidade Segura no Rollback em `src/services/storage.ts`)**:
+      - `importarExtratoLote` armazena `saldoInicialAnteriorConta` e `dataSaldoInicialAnteriorConta` no `RegistroImportacao`;
+      - `desfazerImportacao` restaura com exatidão o `saldo_inicial` e a `data_saldo_inicial` prévios da conta bancária caso tenham sido ajustados pelo assistente nesse lote.
+    - **15J.7 (Módulo Auxiliar e Suíte de Testes Automatizados)**:
+      - Criado `src/utils/extrato/saldoInicialHelper.ts` com funções utilitárias puras: `subtrairUmDia`, `calcularMovimentacoesConta`, `analisarDuplaContagemSaldoInicial` e `contaTemLancamentosImportados`;
+      - Criada suíte `scripts/test_parte_15J.ts` (`npm run test:15j`) com **37 testes automatizados cobrindo todos os cenários (a)-(f) (37 PASSOU / 0 FALHOU)**:
+        - *(a)* Conta com saldo de hoje digitado (-8.475,22) + OFX real: alerta exibido e sugestão exata de -6.803,58 em 2026-08-02;
+        - *(b)* Saldo final após correção confere exatamente com LEDGERBAL (-7.377,22) sem lançamento de ajuste e conta secundária (Sicoob) 100% isolada;
+        - *(c)* Importação sequencial de XLSX de 365 dias e OFX de 90 dias com união deduplicada e sem contagem dupla;
+        - *(d)* Conta nova com saldo inicial 0: assistente de 1ª importação ativo e sem alerta indevido;
+        - *(e)* Rollback da importação restaura fielmente o saldo inicial e data anteriores;
+        - *(f)* Função de cálculo de dia anterior (`subtrairUmDia`) testada com virada de mês, ano e anos bissextos.
+    - **15J.8 (Qualidade e Validação)**:
+      - Script `npm run test:15j` adicionado no `package.json`;
+      - Verificação estrita de TypeScript aprovada com `npm run lint` (`tsc --noEmit` código 0);
+      - Build de produção validado com `npm run build` (`vite build` verde).
+  - **Arquivos criados:** `src/utils/extrato/saldoInicialHelper.ts`, `scripts/test_parte_15J.ts`.
+  - **Arquivos modificados:** `src/components/ImportarExtratoModal.tsx`, `src/components/extrato/RevisaoExtrato.tsx`, `src/services/storage.ts`, `src/pages/ContasBancarias.tsx`, `src/types/index.ts`, `src/utils/extrato/index.ts`, `package.json`, `RESUMO_MESTRE.md`.
+
+---
+
+- **Alterações Anteriores:**
+  - **Parte 15H – Tratamento Seguro de Contamax, Ajuste de Saldo Inicial por LEDGERBAL e Conciliação Bancária de Extratos**:
+    - **15H.1 (Seletor de Tratamento do Contamax em `src/components/extrato/RevisaoExtrato.tsx`)**:
+      - Adicionado seletor visual destacado "Tratamento de Aplicações/Resgates (Contamax)" com duas opções explícitas:
+        1. **Ignorar (padrão seguro)**: todas as transações com `natureza === 'movimentacao_interna'` são marcadas como `acao = 'ignorar'`, garantindo que nenhuma movimentação interna altere o saldo ou crie lançamentos espúrios sem autorização;
+        2. **Transferência entre contas**: permite ao usuário escolher explicitamente a conta de aplicação/investimento de destino. Se não houver conta de investimento cadastrada, exibe aviso com instrução e atalho para cadastro.
+      - **Direção correta das transferências**:
+        - Aplicação (débito no extrato da CC): registra despesa de transferência na CC e receita de transferência na conta de aplicação;
+        - Resgate (crédito no extrato da CC): registra receita de transferência na CC e despesa de transferência na conta de aplicação.
+      - **Regras estritas de segurança invioláveis**: nenhuma conta destino é escolhida automaticamente; nenhuma transferência é gerada sem escolha explícita; nenhuma conta de terceiros é alterada.
+    - **15H.2 (Ajuste do Saldo Inicial por LEDGERBAL em `src/services/storage.ts`)**:
+      - Implementado `ajustarSaldoInicialPorLedgerbal(contaId, saldoDesejado, dataCorte)`:
+        - Calcula o novo saldo inicial necessário para que a soma histórica dos lançamentos até a data do LEDGERBAL resulte exatamente no saldo real do banco (`novoSaldoInicial = saldoDesejado - somaLancamentosAteData`);
+        - Atualiza diretamente `saldo_inicial` e `data_saldo_inicial` no registro da conta bancária no Firestore, **sem criar lançamentos contábeis espúrios** de ajuste;
+        - Registra ação na trilha de auditoria (`RegistroAuditoria`).
+    - **15H.3 (UI de Conciliação e Ajuste de Saldo Inicial em `src/components/ImportarExtratoModal.tsx`)**:
+      - No resumo pós-importação (Passo 3), compara o saldo acumulado no App com o saldo final informado no extrato (`LEDGERBAL`).
+      - Caso haja divergência, exibe banner explicativo com a diferença apurada e o botão "Ajustar Saldo Inicial da Conta".
+      - Modal de confirmação seguro exibindo os valores transparentes: Saldo no App, Saldo no Banco, Diferença, e a projeção do saldo inicial (Antes -> Depois), solicitando confirmação do usuário antes de persistir o ajuste.
+      - Ao concluir o ajuste, exibe confirmação visual de conciliação perfeita (diferença zerada).
+    - **15H.4 (Suíte de Testes Automatizados da Parte 15H em `scripts/test_parte_15H.ts`)**:
+      - 33 testes automatizados cobrindo todos os cenários (33 PASSOU / 0 FALHOU):
+        - Teste 1A: Contamax ignorado por padrão — saldo correto da CC sem vazamentos;
+        - Teste 1B: Contamax como transferência — direções corretas de resgate/aplicação em ambas as contas e isolamento estrito;
+        - Teste 2: Ajuste de saldo inicial por LEDGERBAL — cálculo exato sem criação de lançamentos fictícios;
+        - Teste 3: Comparação pós-importação e cálculo de diferença de conciliação;
+        - Teste 4: Rollback seguro de lote com transferências e contas afetadas;
+        - Teste 5: Deduplicação e reimportação sem impacto no saldo;
+        - Teste 6: Segurança e bloqueio de Contamax sem conta destino informada.
+    - **15H.5 (Compatibilidade e Tipagem)**:
+      - Script `npm run test:15h` adicionado em `package.json`;
+      - Checagem TypeScript 100% limpa com `npm run lint` (`tsc --noEmit`).
+  - **Arquivos criados:** `scripts/test_parte_15H.ts`.
+  - **Arquivos modificados:** `src/components/extrato/RevisaoExtrato.tsx`, `src/services/storage.ts`, `src/components/ImportarExtratoModal.tsx`, `package.json`, `RESUMO_MESTRE.md`.
+
+---
+
+- **Alterações Anteriores:**
+  - **Correção Crítica do Bug de Importação de Extratos Bancários (Isolamento de Contas e Anti-Vazamento)**:
+    - **Diagnóstico Completo**:
+      - Identificadas as 3 causas-raiz que faziam lançamentos de extrato do Santander vazarem para outras contas ou inflacionarem o saldo da conta para R$ 92k: (1) auto-seleção de contas de poupança/investimento como destino de transações Contamax na revisão; (2) fallback de conversão de transferências sem contraparte em despesas avulsas; (3) ausência de trava pré-gravação validando o isolamento de `conta_id`.
+    - **Revisão e Correção do Fluxo Contamax / Movimentação Interna (`src/components/extrato/RevisaoExtrato.tsx`)**:
+      - Removida a seleção automática de conta destino para movimentações internas. Toda movimentação interna (Contamax, resgates e aplicações automáticas) inicia **obrigatoriamente como 'ignorar'** por padrão seguro.
+      - Nenhuma conta cadastrada no sistema é selecionada ou afetada sem intervenção humana explícita.
+    - **Trava de Segurança Estrita Anti-Vazamento (`src/services/storage.ts`)**:
+      - Adicionada validação de segurança pré-persistência no `importarExtratoLote`: valida que 100% dos lançamentos pertencem à `contaId` do lote, abortando imediatamente e logando erro explícito caso qualquer item tente afetar outra conta (exceto transferência autorizada com `contaDestinoId`).
+      - Tratamento seguro de `tipoLancamento === 'transferencia'`: se não houver `contaDestinoId` configurado, a transação é ignorada em vez de gerar despesa espúria. Se houver `contaDestinoId`, cria o par atômico de transferência (saída na origem e entrada no destino).
+    - **Transparência e Confirmação em Destaque Âmbar na UI**:
+      - `RevisaoExtrato.tsx`: adicionado bloco "Contas afetadas por esta importação" no modal de confirmação pré-gravação. Se mais de uma conta for afetada, exibe destaque âmbar e exige confirmação com checkbox obrigatório, bloqueando a gravação até aprovação.
+      - `ImportarExtratoModal.tsx`: painel analítico pós-importação no Passo 3 exibindo a lista de contas afetadas com saldos antes/depois e badges de auditoria.
+    - **Ferramenta de Auditoria e Reparo Seguro (`storage.auditarERepararImportacoes`)**:
+      - Método no `dbService` com suporte a `dryRun: true` (padrão) para detectar lançamentos órfãos/vazados, duplicidades de fitid e despesas espúrias de Contamax, projetando o saldo recalculado de cada conta antes de aplicar qualquer alteração real.
+      - Criado script CLI `scripts/auditoria_reparo_importacoes.ts` acessível via `npm run auditar:importacao` (simulação) e `npm run reparar:importacao` (aplicação).
+    - **Testes Automatizados de Isolamento (`scripts/test_isolamento_importacao.ts`)**:
+      - Suíte automatizada com 17 testes cobrindo os 4 cenários obrigatórios (17 PASSOU / 0 FALHOU):
+        1. Importação OFX não altera saldo de outras contas cadastradas;
+        2. Contamax sem conta destino não vaza para outras contas nem inflaciona saldo;
+        3. Trava de segurança aborta importação com erro ao detectar `conta_id` inválido;
+        4. Resumo lista corretamente as contas afetadas (tanto para 1 conta quanto para transferências legítimas de 2 contas).
+  - **Arquivos criados:** `scripts/test_isolamento_importacao.ts`, `scripts/auditoria_reparo_importacoes.ts`.
+  - **Arquivos modificados:** `src/components/extrato/RevisaoExtrato.tsx`, `src/components/ImportarExtratoModal.tsx`, `src/services/storage.ts`, `src/types/index.ts`, `src/lib/firebase.ts`, `package.json`, `RESUMO_MESTRE.md`.
+
+---
+
+- **Alterações Anteriores:**
   - **Parte 15G – Fechamento e Orquestração do Módulo de Importação de Extratos Bancários (15A a 15G)**:
     - **15G.1 (Seção "Histórico de Importações" em `src/components/extrato/HistoricoImportacoes.tsx` e `ContasBancarias.tsx`)**:
       - Sistema de navegação por abas em `ContasBancarias.tsx` ("Contas Bancárias & Saldos", "Histórico de Importações" e "Regras de Importação") com badges numéricos reativos via subscribers de eventos;

@@ -9,6 +9,7 @@ import { TransferenciaModal } from '../components/TransferenciaModal';
 import { ConciliacaoModal } from '../components/ConciliacaoModal';
 import { Modal } from '../components/Modal';
 import { ImportarExtratoModal } from '../components/ImportarExtratoModal';
+import { ModalReinicioConta } from '../components/ModalReinicioConta';
 import { BANCOS_REGISTRADOS, SugestaoCadastroConta } from '../utils/extrato';
 import { HistoricoImportacoes, GerenciadorRegras } from '../components/extrato';
 import {
@@ -26,7 +27,8 @@ import {
   Layers,
   Sparkles,
   UploadCloud,
-  FileText
+  FileText,
+  RotateCcw,
 } from 'lucide-react';
 
 export const ContasBancarias: React.FC = () => {
@@ -58,6 +60,9 @@ export const ContasBancarias: React.FC = () => {
   // Modal Importar Extrato
   const [importarExtratoAberto, setImportarExtratoAberto] = useState(false);
   const [contaImportarExtratoId, setContaImportarExtratoId] = useState<string | undefined>();
+
+  // Modal Reinício de conta (Parte 15I)
+  const [contaParaReiniciar, setContaParaReiniciar] = useState<ContaBancaria | null>(null);
 
   // Mensagens
   const [mensagemAlerta, setMensagemAlerta] = useState<string | null>(null);
@@ -488,6 +493,7 @@ export const ContasBancarias: React.FC = () => {
                   onEditar={() => abrirModalEditar(c)}
                   onToggleAtiva={() => handleToggleAtiva(c)}
                   onExcluir={() => handleExcluirConta(c)}
+                  onReiniciarConta={isAdmin ? () => setContaParaReiniciar(c) : undefined}
                 />
 
                 {/* Aviso discreto se faltar código ou número da conta */}
@@ -693,7 +699,9 @@ export const ContasBancarias: React.FC = () => {
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
                 required
               />
-              <span className="text-[10px] text-slate-400">Saldo no dia do início do controle</span>
+              <p className="text-[11px] text-amber-700 mt-1 bg-amber-50 p-1.5 rounded-lg border border-amber-200">
+                <strong>Importante:</strong> Saldo inicial = saldo ANTES do primeiro lançamento. Se for importar extrato, deixe 0: o app calcula sozinho.
+              </p>
             </div>
 
             <div>
@@ -793,6 +801,15 @@ export const ContasBancarias: React.FC = () => {
         }}
       />
 
+      {/* MODAL 6: REINÍCIO SEGURO DE CONTA PARA REIMPORTAÇÃO (Parte 15I) */}
+      {contaParaReiniciar && isAdmin && (
+        <ModalReinicioConta
+          conta={contaParaReiniciar}
+          onFechar={() => setContaParaReiniciar(null)}
+        />
+      )}
+
     </div>
   );
 };
+

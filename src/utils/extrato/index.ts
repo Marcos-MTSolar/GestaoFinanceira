@@ -15,6 +15,7 @@ export * from './classificarDuplicatas';
 export * from './classificarTransacao';
 export * from './regras/santander';
 export * from './inferirFormaPagamento';
+export * from './saldoInicialHelper';
 
 /**
  * Lê e processa um extrato bancário (OFX ou XLSX) a partir de seu ArrayBuffer.

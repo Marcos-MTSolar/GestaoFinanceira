@@ -171,6 +171,10 @@ export interface RegistroImportacao {
     descricaoAnterior: string;
     origemImportacaoAnterior?: OrigemImportacao;
   }>;
+  /** Armazena os valores anteriores caso o saldo inicial da conta tenha sido ajustado neste lote (para restauração em desfazer) */
+  saldoInicialAnteriorConta?: number;
+  dataSaldoInicialAnteriorConta?: string;
+  saldoInicialAjustadoNesteLote?: boolean;
 }
 
 export interface ParamsImportacaoLote {
@@ -181,8 +185,18 @@ export interface ParamsImportacaoLote {
   formato: 'ofx' | 'xlsx';
   nomeArquivo: string;
   periodo: { inicio: string; fim: string };
+  /** Conta de aplicação explicitamente escolhida pelo usuário para transferências Contamax */
+  contaDestinoId?: string;
+  /** Se o assistente ou usuário confirmou o ajuste do saldo inicial para conciliação */
+  saldoInicialAjustado?: {
+    novoSaldoInicial: number;
+    novaDataSaldoInicial: string;
+    saldoInicialAnterior: number;
+    dataSaldoInicialAnterior: string;
+  };
   itens: Array<{
     id: string;
+    contaId?: string;
     transacao: {
       idTemporario: string;
       fitid?: string;
@@ -214,6 +228,7 @@ export interface ParamsImportacaoLote {
 export interface ResultadoImportacaoLote {
   sucesso: boolean;
   loteId: string;
+  contaId?: string;
   totais: {
     lancadas: number;
     ignoradas: number;
@@ -227,6 +242,49 @@ export interface ResultadoImportacaoLote {
   saldoDepois: number;
   diferencaConciliacao?: number;
   mensagem?: string;
+  /** Contas afetadas pela importação com saldo antes e depois — para exibição de transparência */
+  contasAfetadas?: Array<{
+    contaId: string;
+    contaNome: string;
+    saldoAntes: number;
+    saldoDepois: number;
+  }>;
+}
+
+export interface LancamentoAnomaloAuditoria {
+  id: string;
+  descricao: string;
+  valor: number;
+  tipo: string;
+  contaId: string;
+  contaNome: string;
+  motivo: string;
+  loteId?: string;
+}
+
+export interface ResultadoAuditoriaReparo {
+  dryRun: boolean;
+  totalAnomalias: number;
+  lancamentosIndevidos: LancamentoAnomaloAuditoria[];
+  saldosPorConta: Array<{
+    contaId: string;
+    contaNome: string;
+    saldoAtual: number;
+    saldoProjetado: number;
+    diferenca: number;
+  }>;
+  mensagem: string;
+}
+
+export interface ResultadoAjusteSaldoInicialLedgerbal {
+  sucesso: boolean;
+  saldoInicialAnterior: number;
+  saldoInicialNovo: number;
+  dataSaldoInicialAnterior: string;
+  dataSaldoInicialNova: string;
+  saldoFinalAposAjuste: number;
+  diferenca: number;
+  mensagem: string;
 }
 
 export interface ResultadoDesfazerImportacao {
@@ -236,6 +294,9 @@ export interface ResultadoDesfazerImportacao {
   lancamentosRestaurados: number;
   mensagem?: string;
 }
+
+
+
 
 export interface UsuarioAutorizado {
   id: string;
@@ -445,3 +506,53 @@ export interface AlertaItem {
   linkPagina?: 'painel' | 'contas' | 'lancamentos' | 'pagar' | 'receber' | 'projetos' | 'funcionarios' | 'relatorios' | 'cadastros' | 'configuracoes';
   lido?: boolean;
 }
+
+export interface ImpactoContaReinicio {
+  conta_id: string;
+  conta_nome: string;
+  saldo_antes: number;
+  saldo_depois: number;
+  transferencias_removidas: number;
+  diferenca: number;
+}
+
+export interface DryRunReinicioConta {
+  conta_id: string;
+  conta_nome: string;
+  saldo_antes: number;
+  saldo_depois: number;
+  saldo_inicial_atual: number;
+  novo_saldo_inicial: number;
+  nova_data_saldo_inicial?: string;
+  zerar_saldo_inicial: boolean;
+  total_lancamentos_removidos: number;
+  total_transferencias_removidas: number;
+  total_lotes_afetados: number;
+  total_ajustes_removidos: number;
+  contas_afetadas: ImpactoContaReinicio[];
+  preservados: {
+    manuais: number;
+    folha: number;
+    contas_pagar_receber: number;
+    transferencias_manuais: number;
+    total: number;
+  };
+}
+
+export interface ResumoSaldoContaPosReinicio {
+  conta_id: string;
+  conta_nome: string;
+  saldo_real: number;
+  limite_credito: number;
+  cheque_utilizado: number;
+}
+
+export interface ResultadoReinicioConta {
+  sucesso: boolean;
+  mensagem: string;
+  removidos: number;
+  lotes_desfeitos: number;
+  backup_timestamp: string;
+  saldos_finais: ResumoSaldoContaPosReinicio[];
+}
+

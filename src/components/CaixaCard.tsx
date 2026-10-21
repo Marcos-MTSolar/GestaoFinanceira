@@ -38,6 +38,8 @@ interface CaixaCardProps {
   onEditar?: () => void;
   onToggleAtiva?: () => void;
   onExcluir?: () => void;
+  /** Disparado quando admin clica em “Preparar para reimportar extrato” */
+  onReiniciarConta?: () => void;
   podeEditar?: boolean;
 }
 
@@ -53,6 +55,7 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
   onEditar,
   onToggleAtiva,
   onExcluir,
+  onReiniciarConta,
   podeEditar = true,
 }) => {
   const { formatarValor } = usePrivacy();
@@ -427,6 +430,16 @@ export const CaixaCard: React.FC<CaixaCardProps> = ({
                 className="text-red-600 hover:text-red-800 font-medium text-xs cursor-pointer"
               >
                 Excluir
+              </button>
+            )}
+            {onReiniciarConta && (
+              <button
+                onClick={onReiniciarConta}
+                type="button"
+                className="text-orange-600 hover:text-orange-800 font-medium text-xs cursor-pointer flex items-center gap-1"
+                title="Preparar para reimportar extrato (remove somente lançamentos de importação)"
+              >
+                ↺ Reimportar
               </button>
             )}
           </div>

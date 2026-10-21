@@ -8,7 +8,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:isolamento": "tsx scripts/test_isolamento_importacao.ts",
+    "test:15h": "tsx scripts/test_parte_15H.ts",
+    "test:15i": "tsx scripts/test_parte_15I.ts",
+    "test:15j": "tsx scripts/test_parte_15J.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

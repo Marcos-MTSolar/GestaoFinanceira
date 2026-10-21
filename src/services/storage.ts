@@ -29,6 +29,13 @@ import {
   ParamsImportacaoLote,
   ResultadoImportacaoLote,
   ResultadoDesfazerImportacao,
+  ResultadoAuditoriaReparo,
+  LancamentoAnomaloAuditoria,
+  ResultadoAjusteSaldoInicialLedgerbal,
+  DryRunReinicioConta,
+  ResultadoReinicioConta,
+  ImpactoContaReinicio,
+  ResumoSaldoContaPosReinicio,
 } from '../types';
 import { calcularDescontosRecorrentes } from '../utils/descontos';
 import { CONFIG_QUINZENAL_PADRAO, dataDoDiaNaCompetencia, dividirQuinzenas } from '../utils/quinzena';
@@ -3223,6 +3230,13 @@ export const dbService = {
       this.saveContaBancaria(contaAtualizada);
     }
 
+    // Se houve ajuste do saldo inicial para conciliação / prevenção de dupla contagem (Parte 15J)
+    if (params.saldoInicialAjustado) {
+      conta.saldo_inicial = params.saldoInicialAjustado.novoSaldoInicial;
+      conta.data_saldo_inicial = params.saldoInicialAjustado.novaDataSaldoInicial;
+      this.saveContaBancaria(conta);
+    }
+
     const totais = {
       lancadas: 0,
       ignoradas: 0,
@@ -3324,6 +3338,104 @@ export const dbService = {
       }
 
       if (item.acao === 'incluir') {
+        // GUARDA DE SEGURANÇA #1: tipoLancamento=transferencia sem conta destino explícita
+        // deve ser tratado como ignorar — jamais lançar como despesa avulsa.
+        // O conta_id do lançamento sempre será params.contaId (garantido abaixo no novoLancamento).
+        if (item.tipoLancamento === 'transferencia') {
+          if (!params.contaDestinoId) {
+            // Sem conta de aplicação explicitamente escolhida pelo usuário → ignorar com segurança
+            console.info(
+              `[importarExtratoLote] Movimentação interna ignorada (sem conta destino explícita): ${item.transacao.descricaoOriginal}`
+            );
+            totais.ignoradas++;
+            continue;
+          }
+
+          // Com conta destino explícita → criar par de transferência espelhando realizarTransferencia
+          // Resgate = da aplicação para a conta importada (crédito na CC)
+          // Aplicação = da conta importada para a aplicação (débito na CC)
+          const ehResgate = item.transacao.tipo === 'credito';
+          const contaOrigemTransferencia = ehResgate ? params.contaDestinoId : params.contaId;
+          const contaDestinoTransferencia = ehResgate ? params.contaId : params.contaDestinoId;
+
+          const timestamp = Date.now();
+          const idSaida = `lanc-imp-transf-out-${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
+          const idEntrada = `lanc-imp-transf-in-${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
+          const descTransf = item.transacao.contraparte
+            ? `${item.transacao.descricaoOriginal} - ${item.transacao.contraparte}`
+            : item.transacao.descricaoOriginal;
+          const assFraca = gerarAssinaturaFraca({
+            conta: params.contaId,
+            data: item.transacao.data,
+            tipo: item.transacao.tipo,
+            valor: item.transacao.valor,
+            descricaoNormalizada: item.transacao.descricaoNormalizada,
+            ordemNoDia: item.transacao.ordemNoDia,
+          });
+
+          // Lançamento de saída (despesa na conta de onde o dinheiro sai)
+          const lancSaida: Lancamento = {
+            id: idSaida,
+            tipo: 'despesa',
+            descricao: descTransf,
+            valor: item.transacao.valor,
+            data_vencimento: item.transacao.data,
+            data_pagamento: item.transacao.data,
+            status: 'pago',
+            conta_id: contaOrigemTransferencia,
+            conta_destino_id: contaDestinoTransferencia,
+            transferencia_vinculada_id: idEntrada,
+            categoria_id: 'cat-des-12',
+            forma_pagamento: 'transferencia',
+            recorrencia: 'nenhuma',
+            origem: 'transferencia',
+            origem_importacao: {
+              lote_id: params.loteId,
+              banco_codigo: params.bancoCodigo,
+              conta_id: params.contaId,
+              fitid: item.transacao.fitid,
+              assinatura_fraca: assFraca,
+              formato: params.formato,
+            },
+            criado_em: new Date().toISOString(),
+          };
+
+          // Lançamento de entrada (receita na conta onde o dinheiro entra)
+          const lancEntrada: Lancamento = {
+            id: idEntrada,
+            tipo: 'receita',
+            descricao: descTransf,
+            valor: item.transacao.valor,
+            data_vencimento: item.transacao.data,
+            data_pagamento: item.transacao.data,
+            status: 'pago',
+            conta_id: contaDestinoTransferencia,
+            transferencia_vinculada_id: idSaida,
+            categoria_id: 'cat-rec-5',
+            forma_pagamento: 'transferencia',
+            recorrencia: 'nenhuma',
+            origem: 'transferencia',
+            origem_importacao: {
+              lote_id: params.loteId,
+              banco_codigo: params.bancoCodigo,
+              conta_id: params.contaId,
+              fitid: item.transacao.fitid,
+              assinatura_fraca: assFraca,
+              formato: params.formato,
+            },
+            criado_em: new Date().toISOString(),
+          };
+
+          novosLancamentos.push(lancSaida, lancEntrada);
+          totais.lancadas++;
+          if (ehResgate) {
+            totais.total_creditos = +(totais.total_creditos + item.transacao.valor).toFixed(2);
+          } else {
+            totais.total_debitos = +(totais.total_debitos + item.transacao.valor).toFixed(2);
+          }
+          continue;
+        }
+
         const formaPagamento = inferirFormaPagamento(
           item.transacao.descricaoOriginal,
           item.natureza as any
@@ -3374,6 +3486,7 @@ export const dbService = {
           totais.total_debitos = +(totais.total_debitos + item.transacao.valor).toFixed(2);
         }
       }
+
     }
 
     // 3. Regras de importação a salvar
@@ -3386,6 +3499,29 @@ export const dbService = {
           usos: 1,
         };
         regrasSalvas.push(novaRegra);
+      }
+    }
+
+    // 3.5. VALIDAÇÃO DE SEGURANÇA ESTRITA (Trava Anti-Vazamento entre Contas - Requisito 3)
+    // Garante antes de persistir que NENHUM lançamento do lote afeta conta diferente da escolhida,
+    // exceto exclusivamente o lançamento de contrapartida de transferência quando contaDestinoId foi explicitamente fornecida.
+    for (const lanc of novosLancamentos) {
+      const contaValida =
+        lanc.conta_id === params.contaId ||
+        (params.contaDestinoId && lanc.conta_id === params.contaDestinoId && lanc.transferencia_vinculada_id);
+
+      if (!contaValida) {
+        const erroMsg = `[importarExtratoLote] VIOLAÇÃO DE SEGURANÇA: Tentativa de gravar lançamento '${lanc.id}' para conta '${lanc.conta_id}', diferente da conta escolhida '${params.contaId}'. A importação foi abortada imediatamente.`;
+        console.error(erroMsg);
+        throw new Error(erroMsg);
+      }
+    }
+
+    for (const lanc of lancamentosAtualizados) {
+      if (lanc.conta_id !== params.contaId) {
+        const erroMsg = `[importarExtratoLote] VIOLAÇÃO DE SEGURANÇA: Tentativa de atualizar lançamento '${lanc.id}' da conta '${lanc.conta_id}', diferente da conta do lote '${params.contaId}'. A importação foi abortada imediatamente.`;
+        console.error(erroMsg);
+        throw new Error(erroMsg);
       }
     }
 
@@ -3475,11 +3611,48 @@ export const dbService = {
       diferencaConciliacao = +(params.saldoBanco.valor - saldoDepois).toFixed(2);
     }
 
+    // 6b. Calcula contasAfetadas para painel de transparência na UI
+    const contasAfetadas: Array<{
+      contaId: string;
+      contaNome: string;
+      saldoAntes: number;
+      saldoDepois: number;
+    }> = [
+      {
+        contaId: conta.id,
+        contaNome: conta.nome,
+        saldoAntes,
+        saldoDepois,
+      },
+    ];
+    // Se houve transferência explícita para conta destino, incluir também
+    if (params.contaDestinoId) {
+      const contaDestino = this.getContaById(params.contaDestinoId);
+      if (contaDestino) {
+        const resumoDestino = this.calcularResumoConta(contaDestino);
+        // saldoAntes da conta destino = saldoDepois (após cache) menos a variação líquida gerada pela importação
+        const variacaoDestino = novosLancamentos
+          .filter((l) => l.conta_id === params.contaDestinoId)
+          .reduce((sum, l) => sum + (l.tipo === 'receita' ? l.valor : -l.valor), 0);
+        contasAfetadas.push({
+          contaId: contaDestino.id,
+          contaNome: contaDestino.nome,
+          saldoAntes: +(resumoDestino.saldo_real - variacaoDestino).toFixed(2),
+          saldoDepois: resumoDestino.saldo_real,
+        });
+      }
+    }
+
     // 7. Finaliza o registro de importação como 'concluida'
     registroLote.totais = totais;
     registroLote.saldo_sistema_depois = saldoDepois;
     registroLote.status = 'concluida';
     registroLote.snapshot_enriquecidos = snapshotsEnriquecidos;
+    if (params.saldoInicialAjustado) {
+      registroLote.saldoInicialAjustadoNesteLote = true;
+      registroLote.saldoInicialAnteriorConta = params.saldoInicialAjustado.saldoInicialAnterior;
+      registroLote.dataSaldoInicialAnteriorConta = params.saldoInicialAjustado.dataSaldoInicialAnterior;
+    }
     registroLote.atualizado_em = new Date().toISOString();
 
     await this.saveImportacao(registroLote);
@@ -3498,17 +3671,20 @@ export const dbService = {
     return {
       sucesso: true,
       loteId: params.loteId,
+      contaId: params.contaId,
       totais,
       saldoAntes,
       saldoDepois,
       diferencaConciliacao,
       mensagem: `Importação de ${totais.lancadas} lançamento(s) concluída com sucesso.`,
+      contasAfetadas,
     };
   },
 
+
   /**
    * Desfaz com segurança um lote de importação executado anteriormente:
-   * - Deleta exclusivamente os lançamentos criados pelo lote (com origem 'importacao')
+   * - Deleta exclusivamente os lançamentos criados pelo lote (com origem 'importacao' ou 'transferencia')
    * - Restaura o estado anterior dos lançamentos enriquecidos/vinculados usando snapshot
    * - Marca o status do lote como 'desfeita'
    */
@@ -3525,9 +3701,12 @@ export const dbService = {
     const snapshots = lote.snapshot_enriquecidos || [];
     const idsEnriquecidosSet = new Set(snapshots.map((s) => s.lancamentoId));
 
-    // Localiza os lançamentos criados por este lote (excluindo os que foram apenas enriquecidos)
+    // Localiza os lançamentos criados por este lote (incluindo transferências de contrapartida)
     const lancamentosARemover = cacheLancamentos.filter(
-      (l) => l.origem_importacao?.lote_id === loteId && l.origem === 'importacao' && !idsEnriquecidosSet.has(l.id)
+      (l) =>
+        l.origem_importacao?.lote_id === loteId &&
+        (l.origem === 'importacao' || l.origem === 'transferencia') &&
+        !idsEnriquecidosSet.has(l.id)
     );
     const TAMANHO_MAX_BATCH = 490;
 
@@ -3595,6 +3774,18 @@ export const dbService = {
       }
     }
 
+    // Se o saldo inicial foi alterado neste lote pelo assistente, restaura o saldo original da conta (Parte 15J)
+    if (lote.saldoInicialAjustadoNesteLote && lote.saldoInicialAnteriorConta !== undefined) {
+      const contaLote = this.getContaById(lote.conta_id);
+      if (contaLote) {
+        contaLote.saldo_inicial = lote.saldoInicialAnteriorConta;
+        if (lote.dataSaldoInicialAnteriorConta) {
+          contaLote.data_saldo_inicial = lote.dataSaldoInicialAnteriorConta;
+        }
+        this.saveContaBancaria(contaLote);
+      }
+    }
+
     this.registrarAuditoria(
       'importacoes',
       'desfazer',
@@ -3612,6 +3803,627 @@ export const dbService = {
       lancamentosRemovidos: lancamentosARemover.length,
       lancamentosRestaurados: snapshots.length,
       mensagem: `Importação desfeita com sucesso. ${lancamentosARemover.length} lançamento(s) removido(s) e ${snapshots.length} restaurado(s).`,
+    };
+  },
+
+  /**
+   * Ferramenta de auditoria e reparo seguro de importações (com dry-run por padrão).
+   * Identifica:
+   * 1. Lançamentos órfãos ou indevidos em conta diferente da conta do lote (vazamento)
+   * 2. Lançamentos duplicados gerados no mesmo lote de importação
+   * 3. Movimentações Contamax indevidamente convertidas em despesas avulsas
+   * 4. Ajustes de conciliação aplicados na conta errada
+   * Exibe saldos antes e depois para aprovação antes de qualquer alteração real.
+   */
+  async auditarERepararImportacoes(opcoes?: {
+    dryRun?: boolean;
+    contaIdAlvo?: string;
+    loteIdAlvo?: string;
+  }): Promise<ResultadoAuditoriaReparo> {
+    const dryRun = opcoes?.dryRun !== false; // Padrão seguro: SEMPRE dry-run a menos que explicitamente false
+    const lotes = cacheImportacoes;
+    const lancamentosIndevidos: LancamentoAnomaloAuditoria[] = [];
+
+    // Mapa de contas para consulta rápida
+    const mapaContas = new Map<string, ContaBancaria>();
+    for (const c of cacheContas) {
+      mapaContas.set(c.id, c);
+    }
+
+    // Mapa de lotes por ID
+    const mapaLotes = new Map<string, RegistroImportacao>();
+    for (const l of lotes) {
+      mapaLotes.set(l.id, l);
+    }
+
+    // Rastreia fitids por lote para detectar duplicidades
+    const fitidsVistosPorLote = new Map<string, Set<string>>();
+
+    for (const lanc of cacheLancamentos) {
+      if (lanc.origem !== 'importacao' && lanc.origem !== 'ajuste') continue;
+
+      const contaLanc = mapaContas.get(lanc.conta_id);
+      const contaNome = contaLanc?.nome || `Conta ID ${lanc.conta_id}`;
+
+      // Se filtro por conta foi especificado
+      if (opcoes?.contaIdAlvo && lanc.conta_id !== opcoes.contaIdAlvo) {
+        continue;
+      }
+
+      // 1. Verificação de Lote de Importação
+      if (lanc.origem === 'importacao' && lanc.origem_importacao?.lote_id) {
+        const loteId = lanc.origem_importacao.lote_id;
+        if (opcoes?.loteIdAlvo && loteId !== opcoes.loteIdAlvo) continue;
+
+        const lote = mapaLotes.get(loteId);
+        if (lote) {
+          // Anomalia 1: Lançamento em conta diferente da conta do lote (sem par de transferência legítimo)
+          if (lanc.conta_id !== lote.conta_id && !lanc.transferencia_vinculada_id) {
+            lancamentosIndevidos.push({
+              id: lanc.id,
+              descricao: lanc.descricao,
+              valor: lanc.valor,
+              tipo: lanc.tipo,
+              contaId: lanc.conta_id,
+              contaNome,
+              motivo: `Lançamento gravado indevidamente na conta '${contaNome}' quando o lote '${lote.nome_arquivo}' pertence à conta '${mapaContas.get(lote.conta_id)?.nome || lote.conta_id}'`,
+              loteId,
+            });
+            continue;
+          }
+
+          // Anomalia 2: Duplicidade exata de FITID dentro do mesmo lote
+          if (lanc.origem_importacao.fitid) {
+            let fitids = fitidsVistosPorLote.get(loteId);
+            if (!fitids) {
+              fitids = new Set();
+              fitidsVistosPorLote.set(loteId, fitids);
+            }
+            if (fitids.has(lanc.origem_importacao.fitid)) {
+              lancamentosIndevidos.push({
+                id: lanc.id,
+                descricao: lanc.descricao,
+                valor: lanc.valor,
+                tipo: lanc.tipo,
+                contaId: lanc.conta_id,
+                contaNome,
+                motivo: `Lançamento duplicado no lote '${lote.nome_arquivo}' (FITID ${lanc.origem_importacao.fitid} repetido)`,
+                loteId,
+              });
+              continue;
+            }
+            fitids.add(lanc.origem_importacao.fitid);
+          }
+
+          // Anomalia 3: Movimentação interna Contamax que virou despesa avulsa sem contraparte
+          const descUpper = lanc.descricao.toUpperCase();
+          if (
+            lanc.tipo === 'despesa' &&
+            !lanc.transferencia_vinculada_id &&
+            !lanc.conta_destino_id &&
+            (descUpper.includes('CONTAMAX') || descUpper.includes('RESG CONTAMAX') || descUpper.includes('APL CONTAMAX'))
+          ) {
+            lancamentosIndevidos.push({
+              id: lanc.id,
+              descricao: lanc.descricao,
+              valor: lanc.valor,
+              tipo: lanc.tipo,
+              contaId: lanc.conta_id,
+              contaNome,
+              motivo: `Movimentação interna Contamax gravada como despesa avulsa inflacionando o saldo da conta`,
+              loteId,
+            });
+            continue;
+          }
+        }
+      }
+    }
+
+    // Calcula os saldos atuais e os saldos projetados após exclusão dos lançamentos indevidos
+    const idsIndevidosSet = new Set(lancamentosIndevidos.map((l) => l.id));
+    const saldosPorConta = cacheContas.map((conta) => {
+      const resumoAtual = this.calcularResumoConta(conta);
+      const saldoAtual = resumoAtual.saldo_real;
+
+      // Recalcula o saldo projetado sem os lançamentos indevidos
+      let impactoCreditos = 0;
+      let impactoDebitos = 0;
+      for (const indevido of lancamentosIndevidos) {
+        if (indevido.contaId === conta.id) {
+          if (indevido.tipo === 'receita') {
+            impactoCreditos += indevido.valor;
+          } else {
+            impactoDebitos += indevido.valor;
+          }
+        }
+      }
+
+      // Remover receita reduz o saldo; remover despesa aumenta o saldo
+      const saldoProjetado = +(saldoAtual - impactoCreditos + impactoDebitos).toFixed(2);
+      const diferenca = +(saldoProjetado - saldoAtual).toFixed(2);
+
+      return {
+        contaId: conta.id,
+        contaNome: conta.nome,
+        saldoAtual,
+        saldoProjetado,
+        diferenca,
+      };
+    });
+
+    // Se NÃO for dry-run, executa o reparo atômico
+    if (!dryRun && lancamentosIndevidos.length > 0) {
+      console.info(`[auditarERepararImportacoes] APLICANDO REPARO: Removendo ${lancamentosIndevidos.length} lançamento(s) indevido(s)...`);
+      const TAMANHO_MAX = 490;
+      for (let i = 0; i < lancamentosIndevidos.length; i += TAMANHO_MAX) {
+        const batch = writeBatch(db);
+        const fatia = lancamentosIndevidos.slice(i, i + TAMANHO_MAX);
+
+        for (const item of fatia) {
+          const docRef = doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, item.id);
+          batch.delete(docRef);
+        }
+
+        await batch.commit();
+      }
+
+      // Atualiza o cache local em memória
+      cacheLancamentos = cacheLancamentos.filter((l) => !idsIndevidosSet.has(l.id));
+
+      this.registrarAuditoria(
+        'sistema',
+        'reparo_importacao',
+        `Reparo de importações executado`,
+        `${lancamentosIndevidos.length} lançamento(s) anômalo(s) removido(s)`
+      );
+
+      notify('lancamentos');
+      notify('contas');
+    }
+
+    const modoTexto = dryRun ? '[DRY-RUN - NENHUMA ALTERAÇÃO FEITA]' : '[REPARO APLICADO]';
+    return {
+      dryRun,
+      totalAnomalias: lancamentosIndevidos.length,
+      lancamentosIndevidos,
+      saldosPorConta,
+      mensagem: `${modoTexto} ${lancamentosIndevidos.length} anomalia(s) identificada(s).`,
+    };
+  },
+
+  /**
+   * Ajusta o saldo inicial da conta bancária para que o saldo real da conta na data do LEDGERBAL
+   * coincida exatamente com o saldo informado pelo banco (LEDGERBAL), sem criar lançamentos de ajuste.
+   *
+   * Fórmula:
+   * saldo_inicial_novo = LEDGERBAL - soma(lançamentos pagos da conta até a data do LEDGERBAL)
+   * data_saldo_inicial = dia anterior ao primeiro lançamento da conta (ou do extrato)
+   */
+  async ajustarSaldoInicialPorLedgerbal(params: {
+    contaId: string;
+    saldoLedgerbal: number;
+    dataLedgerbal: string;
+    dataPrimeiroLancamento?: string;
+  }): Promise<ResultadoAjusteSaldoInicialLedgerbal> {
+    const conta = this.getContaById(params.contaId);
+    if (!conta) {
+      throw new Error(`Conta bancária '${params.contaId}' não encontrada.`);
+    }
+
+    const saldoInicialAnterior = conta.saldo_inicial;
+    const dataSaldoInicialAnterior = conta.data_saldo_inicial;
+
+    // Localiza todos os lançamentos pagos da conta até a data do LEDGERBAL
+    const lancs = cacheLancamentos.filter(
+      (l) =>
+        l.conta_id === params.contaId &&
+        l.status === 'pago' &&
+        (l.data_pagamento || l.data_vencimento) <= params.dataLedgerbal
+    );
+
+    const receitas = lancs
+      .filter((l) => l.tipo === 'receita')
+      .reduce((sum, l) => sum + l.valor, 0);
+    const despesas = lancs
+      .filter((l) => l.tipo === 'despesa')
+      .reduce((sum, l) => sum + l.valor, 0);
+
+    // Soma dos lançamentos na conta (sem o saldo inicial)
+    const somaLancamentosSemSaldoInicial = +(receitas - despesas).toFixed(2);
+
+    // Novo saldo inicial para que: saldo_inicial_novo + somaLancamentos = saldoLedgerbal
+    const saldoInicialNovo = +(params.saldoLedgerbal - somaLancamentosSemSaldoInicial).toFixed(2);
+
+    // Determina a data do saldo inicial: dia anterior ao primeiro lançamento
+    let dataReferencia = params.dataPrimeiroLancamento;
+    if (!dataReferencia) {
+      const datasLancs = cacheLancamentos
+        .filter((l) => l.conta_id === params.contaId)
+        .map((l) => l.data_pagamento || l.data_vencimento)
+        .filter(Boolean)
+        .sort();
+      dataReferencia = datasLancs[0] || params.dataLedgerbal;
+    }
+
+    // Calcula dia anterior
+    const dRef = new Date(dataReferencia + 'T12:00:00Z');
+    dRef.setUTCDate(dRef.getUTCDate() - 1);
+    const dataSaldoInicialNova = dRef.toISOString().split('T')[0];
+
+    // Atualiza a conta bancária
+    conta.saldo_inicial = saldoInicialNovo;
+    conta.data_saldo_inicial = dataSaldoInicialNova;
+
+    await this.saveConta(conta);
+
+    const resumoAtualizado = this.calcularResumoConta(conta);
+    const saldoFinalAposAjuste = resumoAtualizado.saldo_real;
+    const diferenca = +(params.saldoLedgerbal - saldoFinalAposAjuste).toFixed(2);
+
+    this.registrarAuditoria(
+      'contas',
+      'edicao',
+      `Saldo inicial da conta ${conta.nome} recalculado pelo LEDGERBAL do banco`,
+      `Saldo inicial alterado de ${saldoInicialAnterior.toFixed(2)} para ${saldoInicialNovo.toFixed(2)} (Data: ${dataSaldoInicialNova}). Saldo final agora confere perfeitamente com LEDGERBAL ${params.saldoLedgerbal.toFixed(2)}.`
+    );
+
+    notify('contas');
+
+    return {
+      sucesso: true,
+      saldoInicialAnterior,
+      saldoInicialNovo,
+      dataSaldoInicialAnterior,
+      dataSaldoInicialNova,
+      saldoFinalAposAjuste,
+      diferenca,
+      mensagem: `Saldo inicial da conta ajustado para R$ ${saldoInicialNovo.toFixed(2)}. O saldo final confere com o banco.`,
+    };
+  },
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PARTE 15I — Reinício seguro de conta para reimportação
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * DRY-RUN: calcula o impacto da limpeza de importação sem gravar nada.
+   * Retorna lançamentos a remover, preservados e saldos antes/depois.
+   */
+  simularReinicioConta(params: {
+    contaId: string;
+    zerarSaldoInicial?: boolean;
+    novaDataSaldoInicial?: string;
+  }): DryRunReinicioConta {
+    const { contaId, zerarSaldoInicial = false, novaDataSaldoInicial } = params;
+
+    const conta = this.getContaById(contaId);
+    if (!conta) {
+      throw new Error(`Conta bancária ${contaId} não encontrada.`);
+    }
+
+    // ─── Lotes da conta ───────────────────────────────────────────────────
+    const lotesContaIds = new Set(
+      cacheImportacoes
+        .filter((i) => i.conta_id === contaId && i.status !== 'desfeita')
+        .map((i) => i.id)
+    );
+
+    // ─── Lançamentos a remover ────────────────────────────────────────────
+    // 1. origem='importacao' e conta_id=contaId
+    const lancamentosImportacaoDiretos = cacheLancamentos.filter(
+      (l) => l.origem === 'importacao' && l.conta_id === contaId
+    );
+
+    // 2. Transferências geradas por importação (contrapartidas em outras contas)
+    //    identificadas por transferencia_vinculada_id que aponta para um lançamento
+    //    da conta principal ou vinculadas ao lote
+    const idsLancamentosContaPrincipal = new Set(lancamentosImportacaoDiretos.map((l) => l.id));
+    const transferenciasContapartida = cacheLancamentos.filter(
+      (l) =>
+        l.origem === 'transferencia' &&
+        l.transferencia_vinculada_id &&
+        idsLancamentosContaPrincipal.has(l.transferencia_vinculada_id) &&
+        l.conta_id !== contaId
+    );
+    // Também transferências que têm origem_importacao apontando para um lote desta conta
+    const transferenciasLote = cacheLancamentos.filter(
+      (l) =>
+        l.origem === 'transferencia' &&
+        l.conta_id === contaId &&
+        l.origem_importacao?.lote_id &&
+        lotesContaIds.has(l.origem_importacao.lote_id)
+    );
+    const idsTransferenciasLote = new Set(transferenciasLote.map((l) => l.id));
+    const contrapartidasTransferenciasLote = cacheLancamentos.filter(
+      (l) =>
+        l.origem === 'transferencia' &&
+        l.transferencia_vinculada_id &&
+        idsTransferenciasLote.has(l.transferencia_vinculada_id) &&
+        l.conta_id !== contaId
+    );
+
+    // 3. Ajustes de conciliação com origem='ajuste' criados pelo lote
+    const ajustesConciliacao = cacheLancamentos.filter(
+      (l) =>
+        l.origem === 'ajuste' &&
+        l.conta_id === contaId &&
+        l.origem_importacao?.lote_id &&
+        lotesContaIds.has(l.origem_importacao.lote_id)
+    );
+
+    // ─── Conjunto total a remover ─────────────────────────────────────────
+    const todosARemover = [
+      ...lancamentosImportacaoDiretos,
+      ...transferenciasContapartida,
+      ...transferenciasLote,
+      ...contrapartidasTransferenciasLote,
+      ...ajustesConciliacao,
+    ];
+    // Deduplicar por id
+    const idsRemover = new Set(todosARemover.map((l) => l.id));
+
+    // ─── Lançamentos PRESERVADOS (manuais, folha, contas a pagar/receber) ─
+    const lancamentosContaPrincipal = cacheLancamentos.filter((l) => l.conta_id === contaId);
+    const preservados = lancamentosContaPrincipal.filter((l) => !idsRemover.has(l.id));
+
+    const contManuais = preservados.filter(
+      (l) => l.origem === 'manual'
+    ).length;
+    const contFolha = preservados.filter((l) => l.origem === 'folha').length;
+    // contas a pagar/receber não têm origem própria no tipo Lancamento;
+    // são lançamentos com origem='manual' ou 'extrato' — contamos separadamente os preservados não-folha
+    const contContasPagarReceber = 0;
+    const contTransferenciasManuais = preservados.filter(
+      (l) => l.origem === 'transferencia'
+    ).length;
+
+    // ─── Cálculo de impacto no saldo ──────────────────────────────────────
+    const resumoAtual = this.calcularResumoConta(contaId);
+    const saldoAntes = resumoAtual.saldo_real;
+
+    // Simular saldo depois removendo os lançamentos da conta principal
+    const idsRemoverContaPrincipal = new Set(
+      [...lancamentosImportacaoDiretos, ...transferenciasLote, ...ajustesConciliacao].map((l) => l.id)
+    );
+    const lancamentosRestantesPrincipal = lancamentosContaPrincipal.filter(
+      (l) => !idsRemoverContaPrincipal.has(l.id) && l.status === 'pago'
+    );
+    const receitasRestantes = lancamentosRestantesPrincipal
+      .filter((l) => l.tipo === 'receita')
+      .reduce((s, l) => s + l.valor, 0);
+    const despesasRestantes = lancamentosRestantesPrincipal
+      .filter((l) => l.tipo === 'despesa')
+      .reduce((s, l) => s + l.valor, 0);
+
+    const saldoInicialAjustado = zerarSaldoInicial ? 0 : conta.saldo_inicial;
+    const saldoDepois = +(saldoInicialAjustado + receitasRestantes - despesasRestantes).toFixed(2);
+
+    // ─── Impacto nas contas afetadas (contas secundárias) ─────────────────
+    const contasAfetadasMap = new Map<string, ImpactoContaReinicio>();
+
+    const todasTransferenciasSecundarias = [
+      ...transferenciasContapartida,
+      ...contrapartidasTransferenciasLote,
+    ];
+    for (const tl of todasTransferenciasSecundarias) {
+      if (!contasAfetadasMap.has(tl.conta_id)) {
+        const contaSec = this.getContaById(tl.conta_id);
+        if (contaSec) {
+          const resumoSec = this.calcularResumoConta(tl.conta_id);
+          contasAfetadasMap.set(tl.conta_id, {
+            conta_id: tl.conta_id,
+            conta_nome: contaSec.nome,
+            saldo_antes: resumoSec.saldo_real,
+            saldo_depois: resumoSec.saldo_real,
+            transferencias_removidas: 0,
+            diferenca: 0,
+          });
+        }
+      }
+      const impacto = contasAfetadasMap.get(tl.conta_id);
+      if (impacto) {
+        // Calcula variação que o lançamento causa no saldo
+        const variacao = tl.tipo === 'receita' ? tl.valor : -tl.valor;
+        impacto.saldo_depois = +(impacto.saldo_depois - variacao).toFixed(2);
+        impacto.transferencias_removidas += 1;
+        impacto.diferenca = +(impacto.saldo_depois - impacto.saldo_antes).toFixed(2);
+        contasAfetadasMap.set(tl.conta_id, impacto);
+      }
+    }
+
+    return {
+      conta_id: contaId,
+      conta_nome: conta.nome,
+      saldo_antes: +saldoAntes.toFixed(2),
+      saldo_depois: saldoDepois,
+      saldo_inicial_atual: conta.saldo_inicial,
+      novo_saldo_inicial: saldoInicialAjustado,
+      nova_data_saldo_inicial: novaDataSaldoInicial,
+      zerar_saldo_inicial: zerarSaldoInicial,
+      total_lancamentos_removidos: lancamentosImportacaoDiretos.length + transferenciasLote.length + ajustesConciliacao.length,
+      total_transferencias_removidas: transferenciasContapartida.length + contrapartidasTransferenciasLote.length,
+      total_lotes_afetados: lotesContaIds.size,
+      total_ajustes_removidos: ajustesConciliacao.length,
+      contas_afetadas: Array.from(contasAfetadasMap.values()),
+      preservados: {
+        manuais: contManuais,
+        folha: contFolha,
+        contas_pagar_receber: contContasPagarReceber,
+        transferencias_manuais: contTransferenciasManuais,
+        total: preservados.length,
+      },
+    };
+  },
+
+  /**
+   * Executa o reinício seguro da conta:
+   * 1. Gera e dispara download do backup completo antes de qualquer escrita
+   * 2. Remove em batches de até 490 os lançamentos de importação
+   * 3. Marca os lotes como 'desfeita'
+   * 4. Atualiza saldo_inicial se zerarSaldoInicial=true
+   * 5. Registra em RegistroAuditoria e dispara notify
+   */
+  async executarReinicioConta(params: {
+    contaId: string;
+    zerarSaldoInicial?: boolean;
+    novaDataSaldoInicial?: string;
+    usuarioEmail?: string;
+  }): Promise<ResultadoReinicioConta> {
+    const { contaId, zerarSaldoInicial = false, novaDataSaldoInicial } = params;
+
+    const conta = this.getContaById(contaId);
+    if (!conta) {
+      throw new Error(`Conta bancária ${contaId} não encontrada.`);
+    }
+
+    // ─── 1. Backup automático antes de qualquer escrita ───────────────────
+    const backupJson = this.exportarBackupCompletoJSON();
+    const backupTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const nomeArquivo = `backup_antes_reinicio_${conta.nome.replace(/\s+/g, '_')}_${backupTimestamp}.json`;
+    try {
+      const blob = new Blob([backupJson], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = nomeArquivo;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn('[executarReinicioConta] Falha ao disparar download do backup:', e);
+      // Não bloqueia: backup já está na memória se o download falhar
+    }
+
+    // ─── 2. Identificar lançamentos a remover (mesma lógica do dry-run) ───
+    const lotesContaIds = cacheImportacoes
+      .filter((i) => i.conta_id === contaId && i.status !== 'desfeita')
+      .map((i) => i.id);
+    const lotesContaIdsSet = new Set(lotesContaIds);
+
+    const lancamentosImportacaoDiretos = cacheLancamentos.filter(
+      (l) => l.origem === 'importacao' && l.conta_id === contaId
+    );
+    const idsLancamentosContaPrincipal = new Set(lancamentosImportacaoDiretos.map((l) => l.id));
+
+    const transferenciasContapartida = cacheLancamentos.filter(
+      (l) =>
+        l.origem === 'transferencia' &&
+        l.transferencia_vinculada_id &&
+        idsLancamentosContaPrincipal.has(l.transferencia_vinculada_id) &&
+        l.conta_id !== contaId
+    );
+    const transferenciasLote = cacheLancamentos.filter(
+      (l) =>
+        l.origem === 'transferencia' &&
+        l.conta_id === contaId &&
+        l.origem_importacao?.lote_id &&
+        lotesContaIdsSet.has(l.origem_importacao.lote_id)
+    );
+    const idsTransferenciasLote = new Set(transferenciasLote.map((l) => l.id));
+    const contrapartidasTransferenciasLote = cacheLancamentos.filter(
+      (l) =>
+        l.origem === 'transferencia' &&
+        l.transferencia_vinculada_id &&
+        idsTransferenciasLote.has(l.transferencia_vinculada_id) &&
+        l.conta_id !== contaId
+    );
+    const ajustesConciliacao = cacheLancamentos.filter(
+      (l) =>
+        l.origem === 'ajuste' &&
+        l.conta_id === contaId &&
+        l.origem_importacao?.lote_id &&
+        lotesContaIdsSet.has(l.origem_importacao.lote_id)
+    );
+
+    const todosIds = new Set([
+      ...lancamentosImportacaoDiretos.map((l) => l.id),
+      ...transferenciasContapartida.map((l) => l.id),
+      ...transferenciasLote.map((l) => l.id),
+      ...contrapartidasTransferenciasLote.map((l) => l.id),
+      ...ajustesConciliacao.map((l) => l.id),
+    ]);
+    const totalRemovidos = todosIds.size;
+
+    // ─── 3. Batches de exclusão ────────────────────────────────────────────
+    const idsArray = Array.from(todosIds);
+    const TAMANHO_MAX_BATCH = 490;
+
+    for (let i = 0; i < idsArray.length; i += TAMANHO_MAX_BATCH) {
+      const batch = writeBatch(db);
+      const fatia = idsArray.slice(i, i + TAMANHO_MAX_BATCH);
+      for (const id of fatia) {
+        batch.delete(doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, id));
+      }
+      await batch.commit();
+    }
+
+    // ─── 4. Marca lotes como 'desfeita' ────────────────────────────────────
+    for (const loteId of lotesContaIds) {
+      const lote = cacheImportacoes.find((i) => i.id === loteId);
+      if (lote) {
+        const loteAtualizado: RegistroImportacao = {
+          ...lote,
+          status: 'desfeita',
+          atualizado_em: new Date().toISOString(),
+        };
+        await this.saveImportacao(loteAtualizado);
+      }
+    }
+
+    // ─── 5. Zerar saldo inicial se solicitado ─────────────────────────────
+    if (zerarSaldoInicial) {
+      const contaAtualizada: ContaBancaria = {
+        ...conta,
+        saldo_inicial: 0,
+        data_saldo_inicial: novaDataSaldoInicial || conta.data_saldo_inicial,
+      };
+      this.saveContaBancaria(contaAtualizada);
+    }
+
+    // ─── 6. Atualizar caches locais ────────────────────────────────────────
+    cacheLancamentos = cacheLancamentos.filter((l) => !todosIds.has(l.id));
+
+    // ─── 7. Auditoria ─────────────────────────────────────────────────────
+    this.registrarAuditoria(
+      'contas',
+      'reset',
+      `Reinício seguro da conta ${conta.nome} — importações removidas`,
+      `${totalRemovidos} lançamento(s) de importação removidos. ${lotesContaIds.length} lote(s) marcado(s) como desfeito(s). Backup: ${nomeArquivo}. Saldo inicial zerado: ${zerarSaldoInicial}.`
+    );
+
+    notify('lancamentos');
+    notify('contas');
+    notify('importacoes');
+
+    // ─── 8. Saldos finais de cada conta afetada ────────────────────────────
+    const contasIds = new Set<string>([contaId]);
+    for (const l of [...transferenciasContapartida, ...contrapartidasTransferenciasLote]) {
+      contasIds.add(l.conta_id);
+    }
+
+    const saldosFinais: ResumoSaldoContaPosReinicio[] = [];
+    for (const cId of contasIds) {
+      const c = this.getContaById(cId);
+      if (c) {
+        const resumo = this.calcularResumoConta(cId);
+        saldosFinais.push({
+          conta_id: cId,
+          conta_nome: c.nome,
+          saldo_real: resumo.saldo_real,
+          limite_credito: c.limite_cheque_especial || 0,
+          cheque_utilizado: resumo.cheque_especial_utilizado,
+        });
+      }
+    }
+
+    return {
+      sucesso: true,
+      mensagem: `Reinício concluído: ${totalRemovidos} lançamento(s) de importação removidos, ${lotesContaIds.length} lote(s) desfeito(s). Backup gerado: ${nomeArquivo}.`,
+      removidos: totalRemovidos,
+      lotes_desfeitos: lotesContaIds.length,
+      backup_timestamp: backupTimestamp,
+      saldos_finais: saldosFinais,
     };
   },
 };
