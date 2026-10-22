@@ -81,6 +81,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
     nomeArquivo: string;
     bancoNome: string;
     contaNome: string;
+    contaId?: string;
     saldoBancoInformado?: number;
     dataSaldoBanco?: string;
   } | null>(null);
@@ -88,6 +89,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
   // Estados de Conciliação na Tela Final
   const [conciliadoSucesso, setConciliadoSucesso] = useState(false);
   const [saldoDigitadoConciliacao, setSaldoDigitadoConciliacao] = useState('');
+  const [pediuReconciliarPasso3, setPediuReconciliarPasso3] = useState(false);
 
   // Estados de Ajuste de Saldo Inicial (Requisito 2 - Parte 15H)
   const [modalAjusteAberto, setModalAjusteAberto] = useState(false);
@@ -126,8 +128,28 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
       setDesfazendo(false);
       setStatusDesfeito(null);
       setCopiadoLote(false);
+      setPediuReconciliarPasso3(false);
     }
   }, [isOpen]);
+
+  // Trava scroll do body e escuta Escape no passo 2 de tela cheia (Parte 16A)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen && passo === 2 && !gravando) {
+        onClose();
+      }
+    };
+    if (isOpen && passo === 2 && !gravando) {
+      document.body.style.overflow = 'hidden';
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      if (isOpen && passo === 2) {
+        document.body.style.overflow = 'unset';
+      }
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, passo, gravando, onClose]);
 
   const processarArquivos = async (fileList: FileList | File[]) => {
     const novosItens: ArquivoExtratoItem[] = Array.from(fileList).map(file => ({
@@ -304,6 +326,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
       nomeArquivo: nomeArquivoReal,
       bancoNome: arquivoAtivo.extrato.bancoNome || 'Banco',
       contaNome: contaAssociada?.nome || 'Conta Bancária',
+      contaId: arquivoAtivo.contaId,
       saldoBancoInformado: saldoBancoFinal?.valor,
       dataSaldoBanco: saldoBancoFinal?.data
     });
@@ -312,6 +335,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
       const res = await dbService.importarExtratoLote({
         loteId,
         bancoCodigo: arquivoAtivo.bancoCodigo,
+        bancoNome: arquivoAtivo.extrato.bancoNome || undefined,
         contaId: arquivoAtivo.contaId,
         nomeArquivo: nomeArquivoReal,
         formato: arquivoAtivo.formato,
@@ -371,12 +395,22 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
         restaurados: res.lancamentosRestaurados
       });
       setModalDesfazerAberto(false);
+      // Parte 16B: limpa rascunhos de extrato após desfazer importação
+      try {
+        const chavesPraRemover: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('mtsolar_extrato_draft_')) chavesPraRemover.push(k);
+        }
+        for (const k of chavesPraRemover) localStorage.removeItem(k);
+      } catch { /* ignora */ }
     } catch (err) {
       alert('Erro ao desfazer importação: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
       setDesfazendo(false);
     }
   };
+
 
   const copiarLoteId = () => {
     if (!resultadoLote?.loteId) return;
@@ -387,25 +421,56 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
 
   return (
     <>
-      <Modal
-        isOpen={isOpen}
-        onClose={onClose}
-        title={
-          passo === 1
-            ? 'Importar Extrato Bancário'
-            : passo === 2
-            ? 'Revisão e Categorização de Extrato'
-            : 'Resumo da Importação e Conciliação Bancária'
-        }
-        subtitle={
-          passo === 1
-            ? 'Passo 1: Seleção de arquivos e identificação automática de contas'
-            : passo === 2
-            ? 'Passo 2: Defina as categorias e revise as transações antes de lançar'
-            : 'Passo 3: Gravação concluída, totais contábeis e conciliação de saldos'
-        }
-        maxWidth={passo === 1 ? '2xl' : 'full'}
-      >
+      {isOpen && passo === 2 && !gravando ? (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-0 overflow-hidden">
+          <div className="w-full h-full h-[100dvh] max-h-[100dvh] bg-white flex flex-col overflow-hidden animate-in fade-in duration-150">
+            {/* Cabeçalho fixo */}
+            <div className="px-6 py-3 border-b border-slate-200 flex items-center justify-between bg-slate-50/80 shrink-0">
+              <div>
+                <h3 className="font-serif text-base font-bold text-[#003064]">
+                  Revisão e Categorização de Extrato
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Passo 2: Defina as categorias e revise as transações antes de lançar
+                </p>
+              </div>
+              <button
+                onClick={onClose}
+                type="button"
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition-colors cursor-pointer"
+                title="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Área central com min-h-0 e flex-1 */}
+            <div className="flex-1 min-h-0 p-3 md:px-6 md:py-3 overflow-hidden flex flex-col bg-slate-50/40">
+              <RevisaoExtrato
+                extratosComConta={arquivosValidosParaRevisao}
+                contas={contas}
+                onVoltar={() => setPasso(1)}
+                onConcluirRevisao={handleExecutarGravacaoLote}
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <Modal
+          isOpen={isOpen}
+          onClose={onClose}
+          title={
+            passo === 1
+              ? 'Importar Extrato Bancário'
+              : 'Resumo da Importação e Conciliação Bancária'
+          }
+          subtitle={
+            passo === 1
+              ? 'Passo 1: Seleção de arquivos e identificação automática de contas'
+              : 'Passo 3: Gravação concluída, totais contábeis e conciliação de saldos'
+          }
+          maxWidth={passo === 1 ? '2xl' : 'full'}
+        >
         {gravando ? (
           <div className="p-12 text-center space-y-4 max-w-md mx-auto animate-in zoom-in-95">
             <div className="w-16 h-16 rounded-full bg-[#003064]/10 flex items-center justify-center text-[#003064] mx-auto">
@@ -473,6 +538,21 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
             </div>
           ) : resultadoLote ? (
             <div className="space-y-6 max-w-4xl mx-auto py-2">
+              {/* Alerta de Lote Parcial (Parte 16C) */}
+              {resultadoLote.statusLote === 'parcial' && (
+                <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 flex items-center gap-3">
+                  <AlertTriangle className="w-6 h-6 text-amber-600 shrink-0" />
+                  <div>
+                    <h4 className="font-serif text-sm font-bold text-amber-950">
+                      Gravação com Pendências Parciais
+                    </h4>
+                    <p className="text-xs text-amber-800">
+                      O lote foi registrado com status <strong>parcial</strong>. Revise os avisos e informações abaixo antes de prosseguir.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Cabeçalho de Sucesso */}
               <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-center justify-between gap-4 flex-wrap">
                 <div className="flex items-center gap-3">
@@ -510,16 +590,33 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                 </div>
               </div>
 
-              {/* Grid 4 Colunas: Totais de Transações */}
+              {/* Avisos da Importação (Parte 16C) */}
+              {resultadoLote.avisos && resultadoLote.avisos.length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-amber-800 font-bold text-xs uppercase tracking-wider">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Avisos da Importação ({resultadoLote.avisos.length})</span>
+                  </div>
+                  <ul className="text-xs text-amber-900 space-y-1 list-disc list-inside">
+                    {resultadoLote.avisos.map((aviso, idx) => (
+                      <li key={idx} className="leading-relaxed">{aviso}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Grid 4 Colunas: Totais de Transações (Parte 16C) */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Novas Lançadas
+                    Lançadas (Gravadas)
                   </span>
                   <p className="font-num text-2xl font-black text-emerald-600 mt-0.5">
                     {resultadoLote.totais.lancadas}
                   </p>
-                  <span className="text-[10px] text-slate-500">Transações no sistema</span>
+                  <span className="text-[10px] text-emerald-700 font-medium block">
+                    ✓ {resultadoLote.confirmadosServidor ?? resultadoLote.totais.lancadas} confirmados no servidor
+                  </span>
                 </div>
 
                 <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs">
@@ -529,27 +626,29 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                   <p className="font-num text-2xl font-black text-[#1A4A85] mt-0.5">
                     {resultadoLote.totais.enriquecidas}
                   </p>
-                  <span className="text-[10px] text-slate-500">Descrição/FITID atualizados</span>
-                </div>
-
-                <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Vinculadas
+                  <span className="text-[10px] text-slate-500">
+                    {resultadoLote.totais.vinculadas > 0 ? `+ ${resultadoLote.totais.vinculadas} vinculadas` : 'Descrição/FITID atualizados'}
                   </span>
-                  <p className="font-num text-2xl font-black text-indigo-600 mt-0.5">
-                    {resultadoLote.totais.vinculadas}
-                  </p>
-                  <span className="text-[10px] text-slate-500">Lançamentos conciliados</span>
                 </div>
 
                 <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Ignoradas / Duplicadas
+                    Duplicadas
+                  </span>
+                  <p className="font-num text-2xl font-black text-amber-600 mt-0.5">
+                    {resultadoLote.totais.duplicadas}
+                  </p>
+                  <span className="text-[10px] text-slate-500">Detectadas contra o banco</span>
+                </div>
+
+                <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-2xs">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Ignoradas
                   </span>
                   <p className="font-num text-2xl font-black text-slate-500 mt-0.5">
-                    {resultadoLote.totais.ignoradas + resultadoLote.totais.duplicadas}
+                    {resultadoLote.totais.ignoradas}
                   </p>
-                  <span className="text-[10px] text-slate-500">Preservadas sem alteração</span>
+                  <span className="text-[10px] text-slate-500">Descartadas pelo usuário</span>
                 </div>
               </div>
 
@@ -733,35 +832,83 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                         </div>
                       </div>
                     ) : (
-                      /* Diferença → oferecer ajuste de saldo inicial */
-                      <div className="p-3.5 bg-amber-50/80 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-3">
-                        <div className="flex items-start gap-2">
-                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                          <div>
-                            <p className="font-bold text-amber-900">
-                              Diferença de {formatarMoeda(Math.abs(resultadoLote.diferencaConciliacao || 0))} entre o app e o extrato bancário.
-                            </p>
-                            <p className="text-[11px] text-amber-800 mt-0.5">
-                              Isso ocorre quando o saldo inicial da conta está diferente do saldo real antes do primeiro lançamento importado (ex.: lançamentos Contamax ignorados, histórico anterior ao período importado, etc.).
-                            </p>
-                          </div>
-                        </div>
+                      /* Diferença de Conciliação (Parte 16D) */
+                      (() => {
+                        const contaId = arquivoProcessadoFinal?.contaId;
+                        const contaTeveOutrosLotes = contaId
+                          ? dbService.getLancamentos().some(
+                              (l) =>
+                                l.conta_id === contaId &&
+                                l.origem === 'importacao' &&
+                                l.origem_importacao?.lote_id !== resultadoLote.loteId
+                            )
+                          : false;
 
-                        <div className="pt-2 border-t border-amber-200/80">
-                          <p className="text-[11px] text-amber-800 mb-2">
-                            <strong>Ação recomendada:</strong> Ajustar o saldo inicial da conta para que o saldo calculado pelo app coincida exatamente com o LEDGERBAL do banco.<br />
-                            <span className="text-amber-700">Isso altera SÓ o campo "Saldo Inicial" da conta. Nenhum lançamento de ajuste é criado.</span>
-                          </p>
-                          <button
-                            type="button"
-                            onClick={() => setModalAjusteAberto(true)}
-                            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#003064] hover:bg-[#00204A] text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            <DollarSign className="w-3.5 h-3.5" />
-                            Ajustar saldo inicial para bater com o banco
-                          </button>
-                        </div>
-                      </div>
+                        // Caso 1: Importação subsequente e usuário ainda NÃO pediu explicitamente reconciliar
+                        if (contaTeveOutrosLotes && !pediuReconciliarPasso3) {
+                          return (
+                            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-2.5 animate-in fade-in">
+                              <div className="flex items-start gap-2">
+                                <Info className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                                <div>
+                                  <p className="font-bold text-slate-800">
+                                    Conciliação: diferença de {formatarMoeda(Math.abs(resultadoLote.diferencaConciliacao || 0))} entre o app e o banco
+                                  </p>
+                                  <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                                    Esta não é a 1ª importação desta conta. O saldo inicial permanece intacto e <strong>não é alterado automaticamente</strong> para preservar o histórico contábil de períodos anteriores.
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="pt-2 border-t border-slate-200 flex items-center justify-between flex-wrap gap-2">
+                                <span className="text-[11px] text-slate-500">
+                                  Deseja alinhar o saldo inicial com o extrato bancário agora?
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setPediuReconciliarPasso3(true)}
+                                  className="px-3 py-1.5 bg-[#003064] hover:bg-[#00204A] text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+                                >
+                                  Reconciliar com o banco
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        // Caso 2: 1ª importação OU usuário pediu explicitamente reconciliar com o banco
+                        return (
+                          <div className="p-3.5 bg-amber-50/80 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-3 animate-in fade-in">
+                            <div className="flex items-start gap-2">
+                              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                              <div>
+                                <p className="font-bold text-amber-900">
+                                  Diferença de {formatarMoeda(Math.abs(resultadoLote.diferencaConciliacao || 0))} entre o app e o extrato bancário.
+                                </p>
+                                <p className="text-[11px] text-amber-800 mt-0.5">
+                                  {contaTeveOutrosLotes
+                                    ? 'Reconciliação com o banco solicitada: você pode recalcular o saldo inicial para igualar exatamente o LEDGERBAL.'
+                                    : 'Isso ocorre quando o saldo inicial da conta está diferente do saldo real antes do primeiro lançamento importado (ex.: lançamentos Contamax ignorados, histórico anterior ao período importado, etc.).'}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="pt-2 border-t border-amber-200/80">
+                              <p className="text-[11px] text-amber-800 mb-2">
+                                <strong>Ação disponível:</strong> Ajustar o saldo inicial da conta para que o saldo calculado pelo app coincida exatamente com o LEDGERBAL do banco.<br />
+                                <span className="text-amber-700">Isso altera SÓ o campo "Saldo Inicial" da conta. Nenhum lançamento de ajuste é criado.</span>
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => setModalAjusteAberto(true)}
+                                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#003064] hover:bg-[#00204A] text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+                              >
+                                <DollarSign className="w-3.5 h-3.5" />
+                                Ajustar saldo inicial para bater com o banco
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()
                     )}
                   </>
                 ) : (
@@ -839,13 +986,6 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
               </div>
             </div>
           ) : null
-        ) : passo === 2 ? (
-          <RevisaoExtrato
-            extratosComConta={arquivosValidosParaRevisao}
-            contas={contas}
-            onVoltar={() => setPasso(1)}
-            onConcluirRevisao={handleExecutarGravacaoLote}
-          />
         ) : (
           <div className="space-y-6">
           {/* Dropzone de Arquivos */}
@@ -1162,6 +1302,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
         </div>
       )}
     </Modal>
+      )}
 
       {/* MODAL DE CONFIRMAÇÃO PARA AJUSTE DE SALDO INICIAL (Item 2 - Parte 15H) */}
       {modalAjusteAberto && resultadoLote && arquivoProcessadoFinal?.saldoBancoInformado !== undefined && (

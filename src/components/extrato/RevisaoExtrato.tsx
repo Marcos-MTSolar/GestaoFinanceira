@@ -1,7 +1,7 @@
 // MT Solar - Gestão Financeira
-// Interface de Revisão e Categorização de Extratos Bancários (Parte 15E)
+// Interface de Revisão e Categorização de Extratos Bancários (Parte 15E / 16B)
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   Search,
   CheckCircle2,
@@ -10,6 +10,9 @@ import {
   ArrowRightLeft,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  SlidersHorizontal,
   Sparkles,
   Link2,
   Ban,
@@ -18,7 +21,8 @@ import {
   BookmarkPlus,
   X,
   AlertCircle,
-  DollarSign
+  DollarSign,
+  FileText
 } from 'lucide-react';
 import {
   ContaBancaria,
@@ -40,13 +44,18 @@ import {
   resolverMovimentacaoInterna,
   diferencaDias,
   calcularMovimentacoesConta,
-  analisarDuplaContagemSaldoInicial
+  analisarDuplaContagemSaldoInicial,
+  contaTemLancamentosImportados
 } from '../../utils/extrato';
-import { dbService } from '../../services/storage';
+import { dbService, subscribe } from '../../services/storage';
 import { usePrivacy } from '../../context/PrivacyContext';
 import { useAuth } from '../../context/AuthContext';
 import { formatarDataBR } from '../../utils/formatters';
 import { ComboboxCategoria } from './ComboboxCategoria';
+import {
+  gerarDescricaoCurta,
+  formatarObservacoesImportacao,
+} from '../../utils/extrato/observacoesHelper';
 
 export interface ItemRevisaoExtrato {
   id: string;
@@ -118,7 +127,11 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
   // Itens em revisão
   const [itens, setItens] = useState<ItemRevisaoExtrato[]>([]);
   const [inicializado, setInicializado] = useState(false);
-  const [rascunhoRecuperado, setRascunhoRecuperado] = useState(false);
+  // Estado do rascunho: null = sem rascunho; 'perguntando' = aguardando resposta; 'restaurado' = já restaurado
+  const [estadoRascunho, setEstadoRascunho] = useState<'nenhum' | 'perguntando' | 'restaurado'>('nenhum');
+  const [rascunhoDataSalvo, setRascunhoDataSalvo] = useState<string | null>(null);
+  // Mantido por compatibilidade com o banner de "Descartar" no JSX
+  const rascunhoRecuperado = estadoRascunho === 'restaurado';
 
   // Seleção múltipla para ações em lote
   const [selecionados, setSelecionados] = useState<Set<string>>(new Set());
@@ -142,6 +155,10 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
   const [valorMin, setValorMin] = useState('');
   const [valorMax, setValorMax] = useState('');
 
+  // Estados de Recolhimento do Topo (Parte 16A)
+  const [contamaxRecolhido, setContamaxRecolhido] = useState(true);
+  const [filtrosAvancadosAbertos, setFiltrosAvancadosAbertos] = useState(false);
+
   // Paginação
   const [paginaAtual, setPaginaAtual] = useState(1);
   const [itensPorPagina, setItensPorPagina] = useState(50);
@@ -155,50 +172,158 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
   // Modal de Confirmação Final de Revisão (15E pronta)
   const [modalConfirmacaoAberto, setModalConfirmacaoAberto] = useState(false);
 
-  // Chave do rascunho no localStorage
-  const storageDraftKey = useMemo(() => {
-    const contasIds = extratosComConta.map((e) => e.contaId).sort().join('_');
-    return `mtsolar_extrato_draft_${contasIds}`;
-  }, [extratosComConta]);
+  // Saldo informado pelo banco e ajuste de data inicial
+  const [saldoInformadoBanco, setSaldoInformadoBanco] = useState<string>('');
+  const [dataSaldoInformadoBanco, setDataSaldoInformadoBanco] = useState<string>('');
+  const [ajustarDataSaldoInicial, setAjustarDataSaldoInicial] = useState<boolean>(true);
+  const [confirmouMultiplasContas, setConfirmouMultiplasContas] = useState<boolean>(false);
 
-  // Carrega dados mestres
-  useEffect(() => {
-    setCategorias(dbService.getCategorias());
-    setContatos(dbService.getContatos());
-    setProjetos(dbService.getProjetos());
-    setRegrasUsuario(dbService.getRegrasImportacao());
-    setLancamentosExistentes(dbService.getLancamentos());
+  // Prevenção de Dupla Contagem do Saldo Inicial (Parte 15J)
+  const [ajusteSaldoInicialConfirmado, setAjusteSaldoInicialConfirmado] = useState<{
+    novoSaldoInicial: number;
+    novaDataSaldoInicial: string;
+    saldoInicialAnterior: number;
+    dataSaldoInicialAnterior: string;
+  } | null>(null);
+  const [modalConfirmarCorrecaoSaldoInicialAberto, setModalConfirmarCorrecaoSaldoInicialAberto] = useState(false);
+  const [ignorouAlertaDuplaContagem, setIgnorouAlertaDuplaContagem] = useState(false);
+  // Parte 16D: pedido explícito de reconciliação (importações subsequentes)
+  const [pediuReconciliarComBanco, setPediuReconciliarComBanco] = useState(false);
+  // Parte 16D: checkbox "Ajustar saldo inicial da conta para bater com o banco"
+  // Só vem MARCADO POR PADRÃO se for 1ª importação e se saldo da conta for zero/vazio. Em qualquer outro caso, DESMARCADO.
+  const [checkboxAjustarSaldoInicial, setCheckboxAjustarSaldoInicial] = useState<boolean | null>(null);
+
+  // Tratamento do Contamax (Parte 15H / 16D: SEM padrão implícito!)
+  // Inicia como null para forçar escolha explícita quando existirem transações Contamax.
+  const [tratamentoContamax, setTratamentoContamax] = useState<'ignorar' | 'transferencia' | null>(null);
+  const [contaAplicacaoId, setContaAplicacaoId] = useState<string>(''); // SEM PRÉ-SELEÇÃO!
+  const [criandoContaContamax, setCriandoContaContamax] = useState<boolean>(false);
+
+  // ---------------------------------------------------------------------------
+  // PARTE 16B – Chave do rascunho baseada na IDENTIDADE do arquivo
+  // ---------------------------------------------------------------------------
+  /**
+   * Gera um hash simples (soma de valores + concatenação de datas) do extrato
+   * para distinguir dois arquivos diferentes importados para a mesma conta.
+   * Não é criptográfico — apenas precisa ser determinístico e suficientemente
+   * único para o caso de uso (mesmo arquivo → mesma chave; arquivo diferente → outra).
+   */
+  const calcularHashExtrato = useCallback((extratosParam: typeof extratosComConta): string => {
+    let soma = 0;
+    const partes: string[] = [];
+    for (const item of extratosParam) {
+      const e = item.extrato;
+      partes.push(item.contaId);
+      partes.push(item.bancoCodigo);
+      partes.push(e.periodo.inicio || '');
+      partes.push(e.periodo.fim || '');
+      partes.push(String(e.transacoes.length));
+      for (const t of e.transacoes) {
+        soma += t.valor * (t.tipo === 'credito' ? 1 : -1);
+        partes.push(t.data);
+      }
+    }
+    // Inclui soma arredondada (evita imprecisão de float)
+    partes.push(Math.round(soma * 100).toString());
+    // Hash simples: djb2 sobre a string concatenada
+    let hash = 5381;
+    const str = partes.join('|');
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash) ^ str.charCodeAt(i);
+      hash = hash >>> 0; // mantém 32 bits sem sinal
+    }
+    return hash.toString(16).padStart(8, '0');
   }, []);
 
-  // Processa e Inicializa os itens de revisão
-  useEffect(() => {
-    if (inicializado || categorias.length === 0) return;
+  const storageDraftKey = useMemo(() => {
+    if (extratosComConta.length === 0) return '';
+    const hash = calcularHashExtrato(extratosComConta);
+    return `mtsolar_extrato_draft_v2_${hash}`;
+  }, [extratosComConta, calcularHashExtrato]);
 
-    // Tenta recuperar rascunho salvo anteriormente
+  /**
+   * Tipo do rascunho armazenado no localStorage (Parte 16B).
+   * Guarda APENAS as escolhas do usuário, indexadas pelo idTemporario da transação.
+   * Nunca inclui statusDeduplicacao nem resultados de regras.
+   */
+  interface EscolhaRascunho {
+    categoriaId: string;
+    categoriaNome?: string;
+    projetoId?: string;
+    contatoId?: string;
+    acao: 'incluir' | 'ignorar' | 'vincular';
+    tipoLancamento: 'receita' | 'despesa' | 'transferencia' | 'ajuste';
+    lembrarRegra?: boolean;
+    tratamentoContamax?: 'ignorar' | 'transferencia';
+    contaAplicacaoId?: string;
+  }
+  interface DadosRascunhoV2 {
+    versao: 2;
+    salvoEm: string; // ISO timestamp
+    chave: string;
+    escolhas: Record<string, EscolhaRascunho>; // idTemporario → escolhas
+    tratamentoContamax: 'ignorar' | 'transferencia' | null;
+    contaAplicacaoId: string;
+  }
+
+  /** Remove rascunhos antigos (>14 dias) e chaves da versão v1 (sem sufixo _v2_) */
+  const limparRascunhosAntigos = useCallback(() => {
     try {
-      const salvo = localStorage.getItem(storageDraftKey);
-      if (salvo) {
-        const parsed = JSON.parse(salvo);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setItens(parsed);
-          setInicializado(true);
-          setRascunhoRecuperado(true);
-          return;
+      const limite = Date.now() - 14 * 24 * 60 * 60 * 1000;
+      const chavesPraRemover: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        // Remove chaves da versão antiga (sem _v2_)
+        if (k.startsWith('mtsolar_extrato_draft_') && !k.includes('_v2_')) {
+          chavesPraRemover.push(k);
+          continue;
+        }
+        // Remove chaves da versão nova com mais de 14 dias
+        if (k.startsWith('mtsolar_extrato_draft_v2_')) {
+          try {
+            const dados: DadosRascunhoV2 = JSON.parse(localStorage.getItem(k) || '{}');
+            if (dados.salvoEm && new Date(dados.salvoEm).getTime() < limite) {
+              chavesPraRemover.push(k);
+            }
+          } catch { chavesPraRemover.push(k); }
         }
       }
-    } catch (e) {
-      console.warn('Erro ao ler rascunho do localStorage:', e);
-    }
+      for (const k of chavesPraRemover) localStorage.removeItem(k);
+    } catch { /* ignora erros de localStorage */ }
+  }, []);
 
+  /** Apaga o rascunho do arquivo atual */
+  const apagarRascunhoAtual = useCallback(() => {
+    if (!storageDraftKey) return;
+    try { localStorage.removeItem(storageDraftKey); } catch { /* ignora */ }
+  }, [storageDraftKey]);
+
+  /** Expõe apagarRascunhoAtual via ref para o ImportarExtratoModal (chamado após gravar/desfazer) */
+  const apagarRascunhoRef = useRef(apagarRascunhoAtual);
+  useEffect(() => { apagarRascunhoRef.current = apagarRascunhoAtual; }, [apagarRascunhoAtual]);
+
+  // ---------------------------------------------------------------------------
+  // PARTE 16B – Função central: processa extrato atual + reaplica escolhas salvas
+  // ---------------------------------------------------------------------------
+  /**
+   * Processa todos os extratos com os lançamentos existentes ATUAIS
+   * (sempre reclassifica duplicatas contra o Firestore) e opcionalmente
+   * reaplica o mapa de escolhas do usuário salvo no rascunho.
+   */
+  const processarExtrato = useCallback((
+    lancamentosAtuais: typeof lancamentosExistentes,
+    escolhasSalvas?: Record<string, EscolhaRascunho>
+  ) => {
     const novosItens: ItemRevisaoExtrato[] = [];
 
     for (const itemExtrato of extratosComConta) {
       const { extrato, contaId, bancoCodigo, formato } = itemExtrato;
 
-      // 15C: Deduplicação e cruzamento
+      // 15C: Deduplicação e cruzamento contra lançamentos ATUAIS
       const itensDedupe: TransacaoClassificada[] = classificarDuplicatas(
         extrato.transacoes,
-        lancamentosExistentes,
+        lancamentosAtuais,
         { bancoCodigo, contaId }
       );
 
@@ -214,16 +339,12 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
           contatos
         );
 
-        // Movimentação interna (Contamax)
-        // CORREÇÃO BUG #1: jamais escolher conta destino automaticamente entre as contas
-        // existentes. Movimentação interna sempre começa como 'ignorar'. O usuário pode
-        // alterar para 'transferencia' manualmente se quiser vincular a uma conta de aplicação.
+        // Ação e tipo padrão (sem rascunho)
         let acaoInicial: 'incluir' | 'ignorar' | 'vincular' = 'incluir';
         let tipoInicial: 'receita' | 'despesa' | 'transferencia' | 'ajuste' =
           transacao.tipo === 'credito' ? 'receita' : 'despesa';
 
         if (classif.natureza === 'movimentacao_interna') {
-          // Sempre ignorar: nunca inferir conta destino automaticamente
           acaoInicial = 'ignorar';
         } else if (itemDedupe.status === 'duplicada_exata') {
           acaoInicial = 'ignorar';
@@ -233,7 +354,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
           acaoInicial = 'incluir';
         }
 
-        // Tenta associar categoria sugerida
+        // Categoria sugerida pelas regras (padrão sem rascunho)
         let categoriaIdInicial = '';
         let categoriaNomeInicial: string | undefined = undefined;
         let sugestaoAplicada = false;
@@ -267,6 +388,34 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
           diferencaEmDias = diferencaDias(transacao.data, dataLanc);
         }
 
+        // Parte 16B: reaplica escolhas do rascunho SOMENTE se a transação ainda é 'nova'
+        // (duplicatas recém-detectadas contra lançamentos atuais NÃO recebem escolhas antigas)
+        let categoriaIdFinal = categoriaIdInicial;
+        let categoriaNomeFinal = categoriaNomeInicial;
+        let sugestaoAplicadaFinal = sugestaoAplicada;
+        let acaoFinal = acaoInicial;
+        let tipoFinal: 'receita' | 'despesa' | 'transferencia' | 'ajuste' = tipoInicial;
+        let projetoIdFinal: string | undefined = undefined;
+        let contatoIdFinal: string | undefined = classif.sugestao.contatoId;
+        let lembrarRegraFinal = false;
+
+        if (escolhasSalvas) {
+          const escolha = escolhasSalvas[transacao.idTemporario];
+          // Reaplica escolha apenas se a transação ainda é 'nova' (não se tornou duplicata)
+          if (escolha && itemDedupe.status === 'nova' && classif.natureza !== 'movimentacao_interna') {
+            acaoFinal = escolha.acao;
+            tipoFinal = escolha.tipoLancamento;
+            if (escolha.categoriaId) {
+              categoriaIdFinal = escolha.categoriaId;
+              categoriaNomeFinal = escolha.categoriaNome;
+              sugestaoAplicadaFinal = false;
+            }
+            if (escolha.projetoId) projetoIdFinal = escolha.projetoId;
+            if (escolha.contatoId) contatoIdFinal = escolha.contatoId;
+            if (escolha.lembrarRegra) lembrarRegraFinal = escolha.lembrarRegra;
+          }
+        }
+
         novosItens.push({
           id: `${contaId}_${transacao.idTemporario}`,
           transacao,
@@ -279,42 +428,156 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
           diferencaDiasManual: diferencaEmDias,
           natureza: classif.natureza,
           sugestaoClassificacao: classif.sugestao,
-          sugestaoAplicada,
-          acao: acaoInicial,
+          sugestaoAplicada: sugestaoAplicadaFinal,
+          acao: acaoFinal,
           decisaoManual:
             itemDedupe.status === 'possivel_duplicata_manual' ? 'novo' : undefined,
-          tipoLancamento: tipoInicial,
-          categoriaId: categoriaIdInicial,
-          categoriaNome: categoriaNomeInicial,
-          contatoId: classif.sugestao.contatoId,
+          tipoLancamento: tipoFinal,
+          categoriaId: categoriaIdFinal,
+          categoriaNome: categoriaNomeFinal,
+          projetoId: projetoIdFinal,
+          contatoId: contatoIdFinal,
           nomeContatoSugerido: classif.sugestao.nomeContatoSugerido,
-          lembrarRegra: false
+          lembrarRegra: lembrarRegraFinal
         });
       }
     }
+    return novosItens;
+  }, [
+    extratosComConta,
+    categorias,
+    regrasUsuario,
+    contatos,
+  ]);
 
+  // ---------------------------------------------------------------------------
+  // PARTE 16B – Carrega dados mestres + limpeza de rascunhos antigos na montagem
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    setCategorias(dbService.getCategorias());
+    setContatos(dbService.getContatos());
+    setProjetos(dbService.getProjetos());
+    setRegrasUsuario(dbService.getRegrasImportacao());
+    setLancamentosExistentes(dbService.getLancamentos());
+    // Limpa rascunhos antigos (>14 dias) e chaves da versão v1 na abertura
+    limparRascunhosAntigos();
+  }, [limparRascunhosAntigos]);
+
+  // Recarrega lançamentos existentes quando o evento 'lancamentos' for disparado
+  useEffect(() => {
+    const unsub = subscribe('lancamentos', () => {
+      setLancamentosExistentes(dbService.getLancamentos());
+    });
+    return unsub;
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // PARTE 16B – Inicialização: verifica rascunho e pergunta ao usuário
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (inicializado || categorias.length === 0 || !storageDraftKey) return;
+
+    // Verifica se há rascunho para este arquivo específico
+    try {
+      const salvo = localStorage.getItem(storageDraftKey);
+      if (salvo) {
+        const dados: DadosRascunhoV2 = JSON.parse(salvo);
+        if (dados.versao === 2 && dados.escolhas && dados.salvoEm) {
+          // Há rascunho válido → pergunta ao usuário (não restaura automaticamente)
+          setRascunhoDataSalvo(dados.salvoEm);
+          setEstadoRascunho('perguntando');
+          // Processa sem rascunho para ter os itens prontos enquanto aguarda resposta
+          const lancamentosAtuais = dbService.getLancamentos();
+          setLancamentosExistentes(lancamentosAtuais);
+          const novosItens = processarExtrato(lancamentosAtuais, undefined);
+          setItens(novosItens);
+          setInicializado(true);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('Erro ao ler rascunho do localStorage (16B):', e);
+    }
+
+    // Sem rascunho: processa normalmente
+    const lancamentosAtuais = dbService.getLancamentos();
+    setLancamentosExistentes(lancamentosAtuais);
+    const novosItens = processarExtrato(lancamentosAtuais, undefined);
     setItens(novosItens);
     setInicializado(true);
   }, [
     inicializado,
     categorias,
-    extratosComConta,
-    lancamentosExistentes,
-    regrasUsuario,
-    contatos,
-    contas,
-    storageDraftKey
+    storageDraftKey,
+    processarExtrato,
   ]);
 
-  // Salva rascunho em localStorage com try/catch
-  useEffect(() => {
-    if (!inicializado || itens.length === 0) return;
+  /** Usuário escolheu RESTAURAR o rascunho */
+  const handleRestaurarRascunho = useCallback(() => {
+    if (!storageDraftKey) return;
     try {
-      localStorage.setItem(storageDraftKey, JSON.stringify(itens));
+      const salvo = localStorage.getItem(storageDraftKey);
+      if (!salvo) { setEstadoRascunho('nenhum'); return; }
+      const dados: DadosRascunhoV2 = JSON.parse(salvo);
+      if (dados.versao !== 2) { setEstadoRascunho('nenhum'); return; }
+
+      const lancamentosAtuais = dbService.getLancamentos();
+      setLancamentosExistentes(lancamentosAtuais);
+      const novosItens = processarExtrato(lancamentosAtuais, dados.escolhas);
+      setItens(novosItens);
+      // Restaura também o tratamento Contamax
+      if (dados.tratamentoContamax) setTratamentoContamax(dados.tratamentoContamax);
+      if (dados.contaAplicacaoId) setContaAplicacaoId(dados.contaAplicacaoId);
+      setEstadoRascunho('restaurado');
     } catch (e) {
-      console.warn('Cota de localStorage excedida ou indisponível:', e);
+      console.warn('Erro ao restaurar rascunho (16B):', e);
+      setEstadoRascunho('nenhum');
     }
-  }, [itens, inicializado, storageDraftKey]);
+  }, [storageDraftKey, processarExtrato]);
+
+  /** Usuário escolheu COMEÇAR DO ZERO (descarta o rascunho) */
+  const handleDescartarRascunho = useCallback(() => {
+    apagarRascunhoAtual();
+    // Re-processa sem escolhas salvas
+    const lancamentosAtuais = dbService.getLancamentos();
+    setLancamentosExistentes(lancamentosAtuais);
+    const novosItens = processarExtrato(lancamentosAtuais, undefined);
+    setItens(novosItens);
+    setEstadoRascunho('nenhum');
+  }, [apagarRascunhoAtual, processarExtrato]);
+
+  // ---------------------------------------------------------------------------
+  // PARTE 16B – Salva rascunho (SOMENTE escolhas do usuário)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    if (!inicializado || itens.length === 0 || !storageDraftKey) return;
+    if (estadoRascunho === 'perguntando') return; // não sobrescreve enquanto aguarda resposta
+    try {
+      const escolhas: Record<string, EscolhaRascunho> = {};
+      for (const item of itens) {
+        escolhas[item.transacao.idTemporario] = {
+          categoriaId: item.categoriaId,
+          categoriaNome: item.categoriaNome,
+          projetoId: item.projetoId,
+          contatoId: item.contatoId,
+          acao: item.acao,
+          tipoLancamento: item.tipoLancamento,
+          lembrarRegra: item.lembrarRegra,
+        };
+      }
+      const dadosRascunho: DadosRascunhoV2 = {
+        versao: 2,
+        salvoEm: new Date().toISOString(),
+        chave: storageDraftKey,
+        escolhas,
+        tratamentoContamax,
+        contaAplicacaoId,
+      };
+      localStorage.setItem(storageDraftKey, JSON.stringify(dadosRascunho));
+    } catch (e) {
+      console.warn('Cota de localStorage excedida ou indisponível (16B):', e);
+    }
+  }, [itens, inicializado, storageDraftKey, tratamentoContamax, contaAplicacaoId, estadoRascunho]);
 
   // Contadores globais
   const contadores = useMemo(() => {
@@ -594,6 +857,13 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       return;
     }
 
+    // Parte 16D: bloqueia se há Contamax mas o usuário ainda não escolheu o tratamento
+    if (itensContamax.length > 0 && tratamentoContamax === null) {
+      alert('Existem movimentações Contamax neste extrato. Por favor, escolha o tratamento (Ignorar ou Transferência) antes de continuar.');
+      setContamaxRecolhido(false); // abre o bloco para o usuário ver
+      return;
+    }
+
     if (tratamentoContamax === 'transferencia' && !contaAplicacaoId) {
       alert('Por favor, selecione ou crie a conta de aplicação antes de concluir a revisão das transferências Contamax.');
       return;
@@ -636,6 +906,9 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       }
     }
 
+    // Parte 16B: apaga o rascunho ANTES de encaminhar para gravação
+    apagarRascunhoAtual();
+
     onConcluirRevisao({
       itens,
       regrasACriar,
@@ -644,30 +917,9 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       novaDataSaldoInicial:
         temTransacaoAnteriorSaldoInicial && ajustarDataSaldoInicial ? dataMinimaTransacoes : undefined,
       contaDestinoId: tratamentoContamax === 'transferencia' && contaAplicacaoId ? contaAplicacaoId : undefined,
-      saldoInicialAjustado: ajusteSaldoInicialConfirmado || undefined,
+      saldoInicialAjustado: checkboxAjustarSaldoInicial ? (ajusteSaldoInicialConfirmado || undefined) : undefined,
     });
   };
-
-  // Saldo informado pelo banco e ajuste de data inicial
-  const [saldoInformadoBanco, setSaldoInformadoBanco] = useState<string>('');
-  const [dataSaldoInformadoBanco, setDataSaldoInformadoBanco] = useState<string>('');
-  const [ajustarDataSaldoInicial, setAjustarDataSaldoInicial] = useState<boolean>(true);
-  const [confirmouMultiplasContas, setConfirmouMultiplasContas] = useState<boolean>(false);
-
-  // Prevenção de Dupla Contagem do Saldo Inicial (Parte 15J)
-  const [ajusteSaldoInicialConfirmado, setAjusteSaldoInicialConfirmado] = useState<{
-    novoSaldoInicial: number;
-    novaDataSaldoInicial: string;
-    saldoInicialAnterior: number;
-    dataSaldoInicialAnterior: string;
-  } | null>(null);
-  const [modalConfirmarCorrecaoSaldoInicialAberto, setModalConfirmarCorrecaoSaldoInicialAberto] = useState(false);
-  const [ignorouAlertaDuplaContagem, setIgnorouAlertaDuplaContagem] = useState(false);
-
-  // Tratamento do Contamax (Requisito 1 - Parte 15H)
-  const [tratamentoContamax, setTratamentoContamax] = useState<'ignorar' | 'transferencia'>('ignorar');
-  const [contaAplicacaoId, setContaAplicacaoId] = useState<string>(''); // SEM PRÉ-SELEÇÃO!
-  const [criandoContaContamax, setCriandoContaContamax] = useState<boolean>(false);
 
   // Transações Contamax detectadas
   const itensContamax = useMemo(() => {
@@ -704,6 +956,10 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         };
       })
     );
+    // Parte 16D: ao escolher 'ignorar', garante que o aviso de diferença de saldo não seja ignorado
+    if (novoTratamento === 'ignorar') {
+      setIgnorouAlertaDuplaContagem(false);
+    }
   };
 
   // Criação automática da conta de aplicação Contamax
@@ -740,6 +996,13 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
     if (extratosComConta.length === 0) return null;
     return contas.find((c) => c.id === extratosComConta[0].contaId);
   }, [extratosComConta, contas]);
+
+  // Parte 16D: detecta se a conta já tem lançamentos importados anteriores
+  // (usa dados FRESCOS do lancamentosExistentes, nunca rascunho antigo)
+  const contaTemImportacoesPrevias = useMemo(() => {
+    if (!contaPrincipal) return false;
+    return contaTemLancamentosImportados(contaPrincipal.id, lancamentosExistentes);
+  }, [contaPrincipal, lancamentosExistentes]);
 
   // Contas que serão afetadas por esta importação (para verificação de transparência e segurança)
   const contasAfetadasPrevistas = useMemo(() => {
@@ -803,11 +1066,17 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       ? ajusteSaldoInicialConfirmado.novoSaldoInicial
       : contaPrincipal.saldo_inicial;
 
+    // Parte 16D: passa o impacto líquido do Contamax ignorado para que a análise
+    // NÃO trate essa diferença como erro de saldo inicial.
+    const impactoContamaxIgnorado =
+      tratamentoContamax === 'ignorar' ? impactoContamax.liquido : 0;
+
     return analisarDuplaContagemSaldoInicial({
       saldoInicialAtual: saldoInicialParaAnalise,
       somaTotalMovimentacoes: somaTotal,
       saldoBanco: saldoBancoReferencia,
       menorDataTransacao: menorData,
+      impactoContamaxIgnorado,
     });
   }, [
     contaPrincipal,
@@ -818,7 +1087,27 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
     tratamentoContamax,
     contaAplicacaoId,
     ajusteSaldoInicialConfirmado,
+    impactoContamax,
   ]);
+
+  // Parte 16D: O checkbox "Ajustar saldo inicial da conta para bater com o banco"
+  // só pode vir MARCADO POR PADRÃO se for a primeira importação e se o saldo da conta for zero/vazio.
+  // Em qualquer outro caso, vem DESMARCADO.
+  useEffect(() => {
+    if (analiseDuplaContagem?.temDivergencia && checkboxAjustarSaldoInicial === null && contaPrincipal) {
+      const saldoVazioOuZero = contaPrincipal.saldo_inicial === 0 || !contaPrincipal.saldo_inicial;
+      const deveVirMarcadoPadrao = !contaTemImportacoesPrevias && saldoVazioOuZero;
+      setCheckboxAjustarSaldoInicial(deveVirMarcadoPadrao);
+      if (deveVirMarcadoPadrao) {
+        setAjusteSaldoInicialConfirmado({
+          novoSaldoInicial: analiseDuplaContagem.saldoInicialSugerido,
+          novaDataSaldoInicial: analiseDuplaContagem.dataSaldoInicialSugerida,
+          saldoInicialAnterior: contaPrincipal.saldo_inicial,
+          dataSaldoInicialAnterior: contaPrincipal.data_saldo_inicial,
+        });
+      }
+    }
+  }, [analiseDuplaContagem, contaTemImportacoesPrevias, contaPrincipal, checkboxAjustarSaldoInicial]);
 
   const dataMinimaTransacoes = useMemo(() => {
     if (itens.length === 0) return '';
@@ -852,30 +1141,29 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
   }
 
   return (
-    <div className="flex flex-col h-full max-h-[85vh] space-y-4">
+    <div className="flex flex-col h-full min-h-0 flex-1 overflow-hidden space-y-2">
       
-      {/* CABEÇALHO COM METADADOS E CONTADORES */}
-      <div className="bg-slate-50/80 p-4 rounded-2xl border border-slate-200/80 space-y-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-serif text-sm font-bold text-[#003064]">
-                {contaPrincipal?.nome || 'Conta Bancária'}
+      {/* CABEÇALHO COMPACTO COM METADADOS E CONTADORES EM LINHA ÚNICA */}
+      <div className="bg-slate-50/80 p-2.5 rounded-xl border border-slate-200/80 space-y-2 shrink-0">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span className="font-serif text-xs font-bold text-[#003064]">
+              {contaPrincipal?.nome || 'Conta Bancária'}
+            </span>
+            <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-[#003064] text-white">
+              {contaPrincipal?.banco || 'Extrato Bancário'}
+            </span>
+            {contaPrincipal?.numero_conta && (
+              <span className="text-[11px] text-slate-500 font-num">
+                CC {contaPrincipal.numero_conta}
               </span>
-              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-[#003064] text-white">
-                {contaPrincipal?.banco || 'Extrato Bancário'}
-              </span>
-              {contaPrincipal?.numero_conta && (
-                <span className="text-xs text-slate-500 font-num">
-                  CC {contaPrincipal.numero_conta}
-                </span>
-              )}
-            </div>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Período do extrato: {periodoGlobal.inicio ? formatarDataBR(periodoGlobal.inicio) : 'Início'} até{' '}
+            )}
+            <span className="text-slate-300">•</span>
+            <span className="text-[11px] text-slate-500">
+              Período: {periodoGlobal.inicio ? formatarDataBR(periodoGlobal.inicio) : 'Início'} até{' '}
               {periodoGlobal.fim ? formatarDataBR(periodoGlobal.fim) : 'Fim'} • Total de{' '}
               <strong className="font-num font-bold text-slate-800">{itens.length}</strong> transações
-            </p>
+            </span>
           </div>
 
           {/* Atalho Próxima Sem Categoria */}
@@ -883,52 +1171,85 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
             <button
               type="button"
               onClick={handleIrProximaSemCategoria}
-              className="flex items-center gap-2 px-3.5 py-2 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-xl text-xs font-bold transition-all shadow-2xs animate-pulse cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-lg text-xs font-bold transition-all shadow-2xs animate-pulse cursor-pointer shrink-0"
               title="Saltar para a próxima transação sem categoria"
             >
-              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+              <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />
               <span>Faltam <span className="font-num font-extrabold">{contadores.semCategoria}</span> sem categoria</span>
-              <ArrowRight className="w-3.5 h-3.5 ml-1" />
+              <ArrowRight className="w-3 h-3 ml-0.5" />
             </button>
           )}
         </div>
 
-        {/* Notificação de Rascunho Recuperado */}
-        {rascunhoRecuperado && (
-          <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900">
+
+        {/* PARTE 16B – Banner de confirmação de rascunho (nunca restaura automaticamente) */}
+        {estadoRascunho === 'perguntando' && rascunhoDataSalvo && (
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 px-3 py-2 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-900 shrink-0 animate-in fade-in">
             <span className="flex items-center gap-1.5 text-[11px]">
-              <BookmarkPlus className="w-3.5 h-3.5 text-amber-600" />
-              Rascunho de revisão recuperado do seu navegador.
+              <BookmarkPlus className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              <span>
+                <strong>Rascunho encontrado</strong> salvo em{' '}
+                {formatarDataBR(rascunhoDataSalvo.split('T')[0])} às{' '}
+                {new Date(rascunhoDataSalvo).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}.
+                Deseja restaurar as categorias e ações que você definiu anteriormente?
+              </span>
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleRestaurarRascunho}
+                className="px-3 py-1 bg-amber-700 hover:bg-amber-800 text-white text-[11px] font-bold rounded-lg cursor-pointer transition-colors"
+              >
+                Restaurar rascunho
+              </button>
+              <button
+                type="button"
+                onClick={handleDescartarRascunho}
+                className="px-3 py-1 bg-white border border-amber-400 text-amber-800 text-[11px] font-semibold rounded-lg hover:bg-amber-100 cursor-pointer transition-colors"
+              >
+                Começar do zero
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* PARTE 16B – Banner de rascunho restaurado (com opção de descartar) */}
+        {rascunhoRecuperado && (
+          <div className="flex items-center justify-between gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 shrink-0">
+            <span className="flex items-center gap-1.5 text-[11px] truncate">
+              <BookmarkPlus className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              Rascunho restaurado — suas categorias e ações foram reaplicadas.
             </span>
             <button
               type="button"
               onClick={() => {
-                localStorage.removeItem(storageDraftKey);
-                setRascunhoRecuperado(false);
+                apagarRascunhoAtual();
+                handleDescartarRascunho();
               }}
-              className="text-[10px] text-amber-700 underline hover:text-amber-900"
+              className="text-[10px] text-amber-700 underline hover:text-amber-900 cursor-pointer shrink-0"
             >
               Descartar rascunho
             </button>
           </div>
         )}
 
-        {/* Badges Interativos de Contadores */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-1 text-xs">
+
+        {/* Badges Interativos de Contadores em Linha Única */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-xs">
           <button
             type="button"
             onClick={() => {
               setFiltroStatus(filtroStatus === 'novas' ? 'todos' : 'novas');
               setApenasSemCategoria(false);
             }}
-            className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
               filtroStatus === 'novas'
-                ? 'bg-emerald-100/70 border-emerald-400 ring-2 ring-emerald-200'
+                ? 'bg-emerald-100/80 border-emerald-400 ring-2 ring-emerald-200 shadow-2xs'
                 : 'bg-emerald-50/50 border-emerald-200/80 hover:bg-emerald-100/50'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold text-emerald-800 block">Novas</span>
-            <span className="text-base font-bold text-emerald-950 font-num">{contadores.novas}</span>
+            <span className="text-[10px] uppercase font-bold text-emerald-800 truncate">Novas</span>
+            <span className="text-xs font-bold text-emerald-950 font-num shrink-0">{contadores.novas}</span>
           </button>
 
           <button
@@ -937,14 +1258,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
               setFiltroStatus(filtroStatus === 'duplicadas' ? 'todos' : 'duplicadas');
               setApenasSemCategoria(false);
             }}
-            className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
               filtroStatus === 'duplicadas'
-                ? 'bg-slate-200 border-slate-400 ring-2 ring-slate-300'
+                ? 'bg-slate-200 border-slate-400 ring-2 ring-slate-300 shadow-2xs'
                 : 'bg-slate-100/60 border-slate-200 hover:bg-slate-200/50'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold text-slate-600 block">Duplicadas</span>
-            <span className="text-base font-bold text-slate-800 font-num">{contadores.duplicadas}</span>
+            <span className="text-[10px] uppercase font-bold text-slate-600 truncate">Duplicadas</span>
+            <span className="text-xs font-bold text-slate-800 font-num shrink-0">{contadores.duplicadas}</span>
           </button>
 
           <button
@@ -953,14 +1274,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
               setFiltroStatus(filtroStatus === 'enriquecer' ? 'todos' : 'enriquecer');
               setApenasSemCategoria(false);
             }}
-            className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
               filtroStatus === 'enriquecer'
-                ? 'bg-blue-100 border-blue-400 ring-2 ring-blue-200'
+                ? 'bg-blue-100 border-blue-400 ring-2 ring-blue-200 shadow-2xs'
                 : 'bg-blue-50/60 border-blue-200 hover:bg-blue-100/50'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold text-blue-800 block">A Enriquecer</span>
-            <span className="text-base font-bold text-blue-950 font-num">{contadores.enriquecer}</span>
+            <span className="text-[10px] uppercase font-bold text-blue-800 truncate">A Enriquecer</span>
+            <span className="text-xs font-bold text-blue-950 font-num shrink-0">{contadores.enriquecer}</span>
           </button>
 
           <button
@@ -969,14 +1290,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
               setFiltroStatus(filtroStatus === 'manuais' ? 'todos' : 'manuais');
               setApenasSemCategoria(false);
             }}
-            className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
               filtroStatus === 'manuais'
-                ? 'bg-amber-100 border-amber-400 ring-2 ring-amber-200'
+                ? 'bg-amber-100 border-amber-400 ring-2 ring-amber-200 shadow-2xs'
                 : 'bg-amber-50/60 border-amber-200 hover:bg-amber-100/50'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold text-amber-800 block">Possíveis Duplicatas</span>
-            <span className="text-base font-bold text-amber-950 font-num">{contadores.manuais}</span>
+            <span className="text-[10px] uppercase font-bold text-amber-800 truncate">Possíveis Duplicatas</span>
+            <span className="text-xs font-bold text-amber-950 font-num shrink-0">{contadores.manuais}</span>
           </button>
 
           <button
@@ -985,14 +1306,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
               setFiltroStatus(filtroStatus === 'internas' ? 'todos' : 'internas');
               setApenasSemCategoria(false);
             }}
-            className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
               filtroStatus === 'internas'
-                ? 'bg-purple-100 border-purple-400 ring-2 ring-purple-200'
+                ? 'bg-purple-100 border-purple-400 ring-2 ring-purple-200 shadow-2xs'
                 : 'bg-purple-50/60 border-purple-200 hover:bg-purple-100/50'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold text-purple-800 block">Internas (Contamax)</span>
-            <span className="text-base font-bold text-purple-950 font-num">{contadores.internas}</span>
+            <span className="text-[10px] uppercase font-bold text-purple-800 truncate">Internas (Contamax)</span>
+            <span className="text-xs font-bold text-purple-950 font-num shrink-0">{contadores.internas}</span>
           </button>
 
           <button
@@ -1001,162 +1322,214 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
               setApenasSemCategoria(!apenasSemCategoria);
               setFiltroStatus('todos');
             }}
-            className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg border flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
               apenasSemCategoria
-                ? 'bg-red-100 border-red-400 ring-2 ring-red-200'
+                ? 'bg-red-100 border-red-400 ring-2 ring-red-200 shadow-2xs'
                 : contadores.semCategoria > 0
                 ? 'bg-red-50/80 border-red-200 hover:bg-red-100/60'
                 : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold text-red-800 block">Sem Categoria</span>
-            <span className="text-base font-bold text-red-950 font-num">{contadores.semCategoria}</span>
+            <span className="text-[10px] uppercase font-bold text-red-800 truncate">Sem Categoria</span>
+            <span className={`text-xs font-bold font-num shrink-0 ${contadores.semCategoria > 0 ? 'text-red-700' : 'text-slate-600'}`}>
+              {contadores.semCategoria}
+            </span>
           </button>
         </div>
       </div>
 
-      {/* SELETOR: TRATAMENTO DO CONTAMAX (Requisito 1 - Parte 15H) */}
+      {/* SELETOR: TRATAMENTO DO CONTAMAX RECOLHÍVEL (Requisito 1 - Parte 15H / 16A) */}
       {impactoContamax.quantidade > 0 && (
-        <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-purple-600"></span>
-              <h4 className="font-serif text-xs font-bold text-[#003064] uppercase tracking-wider">
-                Tratamento do Contamax ({impactoContamax.quantidade} movimentações detectadas)
-              </h4>
-            </div>
-            <div className="flex items-center gap-2 text-xs font-num">
-              <span className="text-emerald-700 font-medium">Resgates: +{formatarValor(impactoContamax.creditos)}</span>
-              <span className="text-slate-300">•</span>
-              <span className="text-red-700 font-medium">Aplicações: -{formatarValor(impactoContamax.debitos)}</span>
-              <span className="text-slate-300">•</span>
-              <span className="font-bold text-slate-800">
-                Impacto líquido no saldo da C/C: {impactoContamax.liquido >= 0 ? '+' : ''}{formatarValor(impactoContamax.liquido)}
-              </span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-            {/* Opção (a): Ignorar (Padrão) */}
-            <label
-              className={`p-3.5 rounded-xl border-2 transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
-                tratamentoContamax === 'ignorar'
-                  ? 'bg-white border-[#003064] shadow-xs'
-                  : 'bg-white/60 border-slate-200 hover:border-slate-300'
-              }`}
-            >
-              <div className="flex items-start gap-2.5">
-                <input
-                  type="radio"
-                  name="tratamentoContamax"
-                  checked={tratamentoContamax === 'ignorar'}
-                  onChange={() => handleTrocarTratamentoContamax('ignorar')}
-                  className="mt-0.5 text-[#003064] focus:ring-[#003064]"
-                />
-                <div>
-                  <span className="font-bold text-slate-900 block">
-                    (a) Ignorar movimentações Contamax (Padrão)
+        <div className="shrink-0 bg-slate-50 border border-slate-200/90 rounded-xl px-3 py-1.5 transition-all text-xs">
+          {contamaxRecolhido ? (
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 text-xs truncate">
+                <span className="w-2 h-2 rounded-full bg-purple-600 shrink-0"></span>
+                <span className="font-serif font-bold text-[#003064]">Tratamento do Contamax:</span>
+                <span className={`font-medium truncate ${tratamentoContamax === null ? 'text-red-600 font-bold' : 'text-slate-700'}`}>
+                  {tratamentoContamax === null ? (
+                    '⚠️ Escolha obrigatória antes de concluir'
+                  ) : tratamentoContamax === 'ignorar' ? (
+                    'Ignorando movimentações Contamax'
+                  ) : (
+                    `Lançando como transferência para ${
+                      contas.find((c) => c.id === contaAplicacaoId)?.nome || 'conta de aplicação'
+                    }`
+                  )}
+                </span>
+                <span className="text-slate-300 hidden sm:inline">•</span>
+                <span className="text-slate-500 font-num hidden sm:inline">
+                  {impactoContamax.quantidade} movimentações ({impactoContamax.liquido >= 0 ? '+' : ''}
+                  {formatarValor(impactoContamax.liquido)})
+                </span>
+                {tratamentoContamax === 'transferencia' && !contaAplicacaoId && (
+                  <span className="px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded font-semibold text-[10px]">
+                    ⚠️ Selecione a conta
                   </span>
-                  <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                    Não cria lançamentos na conta corrente para aplicações e resgates automáticos.
-                  </p>
-                </div>
+                )}
               </div>
-
-              {tratamentoContamax === 'ignorar' && (
-                <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 flex items-start gap-1.5">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                  <span>
-                    Aviso: O saldo da conta corrente no app ficará{' '}
-                    <strong>
-                      {formatarValor(Math.abs(impactoContamax.liquido))} {impactoContamax.liquido >= 0 ? 'menor' : 'maior'}
-                    </strong>{' '}
-                    que o saldo informado pelo banco no extrato (diferença líquida de {impactoContamax.liquido >= 0 ? '+' : ''}{formatarValor(impactoContamax.liquido)}).
-                  </span>
+              <button
+                type="button"
+                onClick={() => setContamaxRecolhido(false)}
+                className="flex items-center gap-1 text-[11px] font-bold text-[#003064] hover:text-[#00204A] hover:underline cursor-pointer shrink-0"
+              >
+                <span>Configurar</span>
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2.5 py-1">
+              <div className="flex items-center justify-between flex-wrap gap-2 pb-1.5 border-b border-slate-200">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-purple-600"></span>
+                  <h4 className="font-serif text-xs font-bold text-[#003064] uppercase tracking-wider">
+                    Tratamento do Contamax ({impactoContamax.quantidade} movimentações detectadas)
+                  </h4>
                 </div>
-              )}
-            </label>
-
-            {/* Opção (b): Lançar como Transferência para Conta de Aplicação */}
-            <div
-              onClick={() => {
-                if (tratamentoContamax !== 'transferencia') {
-                  handleTrocarTratamentoContamax('transferencia');
-                }
-              }}
-              className={`p-3.5 rounded-xl border-2 transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
-                tratamentoContamax === 'transferencia'
-                  ? 'bg-white border-[#003064] shadow-xs'
-                  : 'bg-white/60 border-slate-200 hover:border-slate-300'
-              }`}
-            >
-              <div className="flex items-start gap-2.5">
-                <input
-                  type="radio"
-                  name="tratamentoContamax"
-                  checked={tratamentoContamax === 'transferencia'}
-                  onChange={() => handleTrocarTratamentoContamax('transferencia')}
-                  className="mt-0.5 text-[#003064] focus:ring-[#003064]"
-                />
-                <div className="flex-1">
-                  <span className="font-bold text-slate-900 block">
-                    (b) Lançar como transferência para a conta de aplicação
-                  </span>
-                  <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                    Resgate = entrada na C/C e saída da aplicação. Aplicação = saída da C/C e entrada na aplicação. O saldo da C/C baterá 100% com o extrato.
-                  </p>
-                </div>
-              </div>
-
-              {tratamentoContamax === 'transferencia' && (
-                <div className="pt-2 border-t border-slate-100 space-y-2" onClick={(e) => e.stopPropagation()}>
-                  <label className="block text-[11px] font-bold text-slate-700">
-                    Conta de Aplicação (sem pré-seleção):
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={contaAplicacaoId}
-                      onChange={(e) => setContaAplicacaoId(e.target.value)}
-                      className="flex-1 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
-                    >
-                      <option value="">-- Selecione a conta de aplicação --</option>
-                      {contas
-                        .filter((c) => c.ativa && c.id !== (contaPrincipal?.id || ''))
-                        .map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.nome} ({c.banco})
-                          </option>
-                        ))}
-                    </select>
-
-                    <button
-                      type="button"
-                      disabled={criandoContaContamax}
-                      onClick={handleCriarContaContamax}
-                      className="px-2.5 py-1.5 bg-[#003064] hover:bg-[#00204A] disabled:bg-slate-300 text-white rounded-lg text-[11px] font-bold shrink-0 transition-colors shadow-2xs cursor-pointer"
-                      title="Cria automaticamente a conta Santander Contamax (Aplicação) com saldo inicial 0"
-                    >
-                      {criandoContaContamax ? 'Criando...' : '+ Criar conta Contamax (Aplicação)'}
-                    </button>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 text-xs font-num text-slate-600">
+                    <span className="text-emerald-700 font-medium">Resgates: +{formatarValor(impactoContamax.creditos)}</span>
+                    <span className="text-slate-300">•</span>
+                    <span className="text-red-700 font-medium">Aplicações: -{formatarValor(impactoContamax.debitos)}</span>
+                    <span className="text-slate-300">•</span>
+                    <span className="font-bold text-slate-800">
+                      Impacto líquido: {impactoContamax.liquido >= 0 ? '+' : ''}{formatarValor(impactoContamax.liquido)}
+                    </span>
                   </div>
-                  {!contaAplicacaoId && (
-                    <p className="text-[10px] text-amber-700 font-semibold">
-                      ⚠️ Selecione uma conta existente ou clique em "+ Criar conta Contamax (Aplicação)" para poder concluir.
-                    </p>
+                  <button
+                    type="button"
+                    onClick={() => setContamaxRecolhido(true)}
+                    className="flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-800 cursor-pointer ml-2"
+                  >
+                    <span>Recolher</span>
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                {/* Opção (a): Ignorar (Padrão) */}
+                <label
+                  className={`p-3 rounded-xl border-2 transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
+                    tratamentoContamax === 'ignorar'
+                      ? 'bg-white border-[#003064] shadow-xs'
+                      : 'bg-white/60 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <input
+                      type="radio"
+                      name="tratamentoContamax"
+                      checked={tratamentoContamax === 'ignorar'}
+                      onChange={() => handleTrocarTratamentoContamax('ignorar')}
+                      className="mt-0.5 text-[#003064] focus:ring-[#003064]"
+                    />
+                    <div>
+                      <span className="font-bold text-slate-900 block">
+                        (a) Ignorar movimentações Contamax (Padrão)
+                      </span>
+                      <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                        Não cria lançamentos na conta corrente para aplicações e resgates automáticos.
+                      </p>
+                    </div>
+                  </div>
+
+                  {tratamentoContamax === 'ignorar' && (
+                    <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-900 flex items-start gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <span>
+                        Aviso: O saldo da conta corrente no app ficará{' '}
+                        <strong>
+                          {formatarValor(Math.abs(impactoContamax.liquido))} {impactoContamax.liquido >= 0 ? 'menor' : 'maior'}
+                        </strong>{' '}
+                        que o saldo informado pelo banco no extrato (diferença líquida de {impactoContamax.liquido >= 0 ? '+' : ''}{formatarValor(impactoContamax.liquido)}).
+                      </span>
+                    </div>
+                  )}
+                </label>
+
+                {/* Opção (b): Lançar como Transferência para Conta de Aplicação */}
+                <div
+                  onClick={() => {
+                    if (tratamentoContamax !== 'transferencia') {
+                      handleTrocarTratamentoContamax('transferencia');
+                    }
+                  }}
+                  className={`p-3 rounded-xl border-2 transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
+                    tratamentoContamax === 'transferencia'
+                      ? 'bg-white border-[#003064] shadow-xs'
+                      : 'bg-white/60 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <input
+                      type="radio"
+                      name="tratamentoContamax"
+                      checked={tratamentoContamax === 'transferencia'}
+                      onChange={() => handleTrocarTratamentoContamax('transferencia')}
+                      className="mt-0.5 text-[#003064] focus:ring-[#003064]"
+                    />
+                    <div className="flex-1">
+                      <span className="font-bold text-slate-900 block">
+                        (b) Lançar como transferência para a conta de aplicação
+                      </span>
+                      <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                        Resgate = entrada na C/C e saída da aplicação. Aplicação = saída da C/C e entrada na aplicação. O saldo da C/C baterá 100% com o extrato.
+                      </p>
+                    </div>
+                  </div>
+
+                  {tratamentoContamax === 'transferencia' && (
+                    <div className="pt-2 border-t border-slate-100 space-y-2" onClick={(e) => e.stopPropagation()}>
+                      <label className="block text-[11px] font-bold text-slate-700">
+                        Conta de Aplicação (sem pré-seleção):
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={contaAplicacaoId}
+                          onChange={(e) => setContaAplicacaoId(e.target.value)}
+                          className="flex-1 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
+                        >
+                          <option value="">-- Selecione a conta de aplicação --</option>
+                          {contas
+                            .filter((c) => c.ativa && c.id !== (contaPrincipal?.id || ''))
+                            .map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.nome} ({c.banco})
+                              </option>
+                            ))}
+                        </select>
+
+                        <button
+                          type="button"
+                          disabled={criandoContaContamax}
+                          onClick={handleCriarContaContamax}
+                          className="px-2.5 py-1.5 bg-[#003064] hover:bg-[#00204A] disabled:bg-slate-300 text-white rounded-lg text-[11px] font-bold shrink-0 transition-colors shadow-2xs cursor-pointer"
+                          title="Cria automaticamente a conta Santander Contamax (Aplicação) com saldo inicial 0"
+                        >
+                          {criandoContaContamax ? 'Criando...' : '+ Criar conta Contamax (Aplicação)'}
+                        </button>
+                      </div>
+                      {!contaAplicacaoId && (
+                        <p className="text-[10px] text-amber-700 font-semibold">
+                          ⚠️ Selecione uma conta existente ou clique em "+ Criar conta Contamax (Aplicação)" para poder concluir.
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
-              )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
       {/* BANNER DE SUGESTÃO DE CATEGORIZAÇÃO EM LOTE PARA ITENS PARECIDOS */}
       {sugestaoLoteParecidas && (
-        <div className="flex items-center justify-between gap-3 p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 animate-in fade-in slide-in-from-top-2">
-          <div className="flex items-center gap-2">
+        <div className="shrink-0 flex items-center justify-between gap-3 px-3 py-1.5 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 animate-in fade-in slide-in-from-top-1">
+          <div className="flex items-center gap-2 truncate">
             <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
-            <p>
+            <p className="truncate">
               Encontradas mais <strong className="font-num">{sugestaoLoteParecidas.quantidade}</strong> transações semelhantes a “<span className="font-semibold">{sugestaoLoteParecidas.descricaoPadrao}</span>”.
               Deseja aplicar a categoria <strong>“{sugestaoLoteParecidas.categoriaNome}”</strong> a todas elas?
             </p>
@@ -1165,14 +1538,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
             <button
               type="button"
               onClick={handleAplicarSemelhantes}
-              className="px-3 py-1.5 bg-[#003064] hover:bg-[#00204A] text-white text-[11px] font-bold rounded-lg transition-colors shadow-2xs cursor-pointer"
+              className="px-3 py-1 bg-[#003064] hover:bg-[#00204A] text-white text-[11px] font-bold rounded-lg transition-colors shadow-2xs cursor-pointer"
             >
               Aplicar a todas ({sugestaoLoteParecidas.quantidade})
             </button>
             <button
               type="button"
               onClick={() => setSugestaoLoteParecidas(null)}
-              className="p-1 text-slate-400 hover:text-slate-600 rounded"
+              className="p-1 text-slate-400 hover:text-slate-600 rounded cursor-pointer"
               title="Ignorar sugestão"
             >
               <X className="w-4 h-4" />
@@ -1181,80 +1554,127 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         </div>
       )}
 
-      {/* BARRA DE FILTROS E BUSCA */}
-      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 text-xs">
-        {/* Campo de Busca por Texto */}
-        <div className="relative flex-1 min-w-[220px]">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={buscaTexto}
-            onChange={(e) => {
-              setBuscaTexto(e.target.value);
-              setPaginaAtual(1);
-            }}
-            placeholder="Buscar por descrição, contraparte ou categoria..."
-            className="w-full pl-9 pr-3 py-2 bg-white border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
-          />
-          {buscaTexto && (
-            <button
-              type="button"
-              onClick={() => setBuscaTexto('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+      {/* BARRA DE FILTROS E BUSCA COMPACTA (RECOLHÍVEL) */}
+      <div className="shrink-0 space-y-2">
+        <div className="flex items-center justify-between gap-2 text-xs">
+          {/* Campo de Busca por Texto */}
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={buscaTexto}
+              onChange={(e) => {
+                setBuscaTexto(e.target.value);
+                setPaginaAtual(1);
+              }}
+              placeholder="Buscar por descrição, contraparte ou categoria..."
+              className="w-full pl-8 pr-7 py-1.5 bg-white border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
+            />
+            {buscaTexto && (
+              <button
+                type="button"
+                onClick={() => setBuscaTexto('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
 
-        {/* Filtros em linha */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <select
-            value={filtroStatus}
-            onChange={(e) => {
-              setFiltroStatus(e.target.value);
-              setPaginaAtual(1);
-            }}
-            className="px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
-          >
-            <option value="todos">Status: Todos</option>
-            <option value="novas">Apenas Novas</option>
-            <option value="enriquecer">Apenas A Enriquecer</option>
-            <option value="manuais">Possíveis Duplicatas</option>
-            <option value="duplicadas">Apenas Duplicadas</option>
-            <option value="internas">Movimentações Internas</option>
-            <option value="incluir">Marcadas p/ Incluir</option>
-            <option value="ignorar">Marcadas p/ Ignorar</option>
-          </select>
-
-          <select
-            value={filtroTipo}
-            onChange={(e) => {
-              setFiltroTipo(e.target.value as any);
-              setPaginaAtual(1);
-            }}
-            className="px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
-          >
-            <option value="todos">Tipo: Entradas e Saídas</option>
-            <option value="credito">Apenas Créditos (Entradas)</option>
-            <option value="debito">Apenas Débitos (Saídas)</option>
-          </select>
-
+          {/* Botão Sem Categoria */}
           <button
             type="button"
             onClick={() => {
               setApenasSemCategoria(!apenasSemCategoria);
               setPaginaAtual(1);
             }}
-            className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer shrink-0 ${
               apenasSemCategoria
-                ? 'bg-red-500 text-white border-red-600 shadow-2xs'
+                ? 'bg-red-600 text-white border-red-700 shadow-2xs'
+                : contadores.semCategoria > 0
+                ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
                 : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
             }`}
           >
-            {apenasSemCategoria ? 'Exibindo: Sem Categoria' : 'Filtrar: Sem Categoria'}
+            {apenasSemCategoria ? 'Apenas Sem Categoria' : `Sem Categoria (${contadores.semCategoria})`}
+          </button>
+
+          {/* Botão Recolhível de Filtros Avançados */}
+          <button
+            type="button"
+            onClick={() => setFiltrosAvancadosAbertos(!filtrosAvancadosAbertos)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer shrink-0 ${
+              filtrosAvancadosAbertos || filtroStatus !== 'todos' || filtroTipo !== 'todos'
+                ? 'bg-[#003064] text-white border-[#003064]'
+                : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            <span>Filtros avançados</span>
+            {(filtroStatus !== 'todos' || filtroTipo !== 'todos') && (
+              <span className="w-2 h-2 rounded-full bg-[#FCBC00] shrink-0" />
+            )}
+            {filtrosAvancadosAbertos ? (
+              <ChevronUp className="w-3.5 h-3.5 ml-0.5" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5 ml-0.5" />
+            )}
           </button>
         </div>
+
+        {/* Painel Recolhível de Filtros Avançados */}
+        {filtrosAvancadosAbertos && (
+          <div className="flex items-center gap-2 flex-wrap p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs animate-in fade-in slide-in-from-top-1">
+            <span className="text-[11px] font-bold text-slate-600">Status:</span>
+            <select
+              value={filtroStatus}
+              onChange={(e) => {
+                setFiltroStatus(e.target.value);
+                setPaginaAtual(1);
+              }}
+              className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg text-xs focus:ring-1 focus:ring-[#003064]"
+            >
+              <option value="todos">Todos</option>
+              <option value="novas">Apenas Novas</option>
+              <option value="enriquecer">Apenas A Enriquecer</option>
+              <option value="manuais">Possíveis Duplicatas</option>
+              <option value="duplicadas">Apenas Duplicadas</option>
+              <option value="internas">Movimentações Internas</option>
+              <option value="incluir">Marcadas p/ Incluir</option>
+              <option value="ignorar">Marcadas p/ Ignorar</option>
+            </select>
+
+            <span className="text-[11px] font-bold text-slate-600 ml-2">Tipo:</span>
+            <select
+              value={filtroTipo}
+              onChange={(e) => {
+                setFiltroTipo(e.target.value as any);
+                setPaginaAtual(1);
+              }}
+              className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg text-xs focus:ring-1 focus:ring-[#003064]"
+            >
+              <option value="todos">Entradas e Saídas</option>
+              <option value="credito">Apenas Créditos (Entradas)</option>
+              <option value="debito">Apenas Débitos (Saídas)</option>
+            </select>
+
+            {(filtroStatus !== 'todos' || filtroTipo !== 'todos' || apenasSemCategoria || buscaTexto) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFiltroStatus('todos');
+                  setFiltroTipo('todos');
+                  setApenasSemCategoria(false);
+                  setBuscaTexto('');
+                  setPaginaAtual(1);
+                }}
+                className="ml-auto text-[11px] text-red-600 hover:text-red-800 underline font-medium cursor-pointer"
+              >
+                Limpar todos os filtros
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* BARRA DE AÇÕES EM LOTE (QUANDO HOUVER SELECIONADOS) */}
@@ -1305,12 +1725,12 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       )}
 
       {/* TABELA DE TRANSAÇÕES (DESKTOP) E CARDS (MOBILE) */}
-      <div className="flex-1 overflow-y-auto border border-slate-200 rounded-2xl bg-white shadow-2xs">
+      <div className="flex-1 min-h-0 overflow-auto border border-slate-200 rounded-2xl bg-white shadow-2xs">
         {/* Desktop: Tabela */}
-        <table className="hidden md:table w-full text-left text-xs border-collapse">
-          <thead className="sticky top-0 z-10 bg-slate-100/95 backdrop-blur-xs text-slate-600 font-semibold border-b border-slate-200">
+        <table className="hidden md:table w-full text-left text-xs border-collapse min-w-[1240px]">
+          <thead className="sticky top-0 z-10 bg-slate-100 shadow-xs text-slate-600 font-semibold border-b border-slate-200">
             <tr>
-              <th className="p-3 w-10 text-center">
+              <th className="p-2.5 w-10 min-w-[40px] max-w-[40px] text-center">
                 <input
                   type="checkbox"
                   checked={selecionados.size === itensPagina.length && itensPagina.length > 0}
@@ -1319,16 +1739,16 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                   title="Selecionar todos da página"
                 />
               </th>
-              <th className="p-3 w-24">Data</th>
-              <th className="p-3">Descrição / Contraparte</th>
-              <th className="p-3 w-28 text-right">Valor</th>
-              <th className="p-3 w-32">Natureza</th>
-              <th className="p-3 w-24">Tipo</th>
-              <th className="p-3 min-w-[220px]">Categoria (Obrigatória)</th>
-              <th className="p-3 w-36">Projeto</th>
-              <th className="p-3 w-36">Contato</th>
-              <th className="p-3 w-24 text-center">Ação</th>
-              <th className="p-3 w-16 text-center" title="Lembrar esta regra para importações futuras">
+              <th className="p-2.5 w-24 min-w-[96px] max-w-[96px]">Data</th>
+              <th className="p-2.5 min-w-[220px] max-w-[320px]">Descrição / Contraparte</th>
+              <th className="p-2.5 w-28 min-w-[110px] max-w-[120px] text-right">Valor</th>
+              <th className="p-2.5 w-28 min-w-[110px] max-w-[120px]">Natureza</th>
+              <th className="p-2.5 w-28 min-w-[110px] max-w-[120px]">Tipo</th>
+              <th className="p-2.5 w-64 min-w-[240px] max-w-[280px]">Categoria (Obrigatória)</th>
+              <th className="p-2.5 w-44 min-w-[160px] max-w-[200px]">Projeto</th>
+              <th className="p-2.5 w-44 min-w-[160px] max-w-[200px]">Contato</th>
+              <th className="p-2.5 w-28 min-w-[110px] max-w-[120px] text-center">Ação</th>
+              <th className="p-2.5 w-14 min-w-[56px] max-w-[56px] text-center" title="Lembrar esta regra para importações futuras">
                 Regra
               </th>
             </tr>
@@ -1341,6 +1761,18 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                 item.acao === 'incluir' &&
                 (item.tipoLancamento === 'receita' || item.tipoLancamento === 'despesa');
               const semCategoriaErro = precisaCategoria && !item.categoriaId;
+
+              const descQueSeraGravada = gerarDescricaoCurta(item.transacao.descricaoOriginal, item.transacao.contraparte);
+              const obsQueSeraoGravadas = formatarObservacoesImportacao({
+                descricaoOriginal: item.transacao.descricaoOriginal,
+                contraparte: item.transacao.contraparte,
+                documento: item.transacao.documento,
+                fitid: item.transacao.fitid,
+                bancoCodigo: item.bancoCodigo,
+                nomeArquivo: 'extrato',
+                formato: item.formato,
+                loteId: 'Lote Atual',
+              });
 
               return (
                 <React.Fragment key={item.id}>
@@ -1356,7 +1788,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     }`}
                   >
                     {/* Checkbox */}
-                    <td className="p-3 text-center">
+                    <td className="p-2 w-10 min-w-[40px] max-w-[40px] text-center">
                       <input
                         type="checkbox"
                         checked={estaSelecionado}
@@ -1366,27 +1798,27 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     </td>
 
                     {/* Data */}
-                    <td className="p-3 font-num font-semibold text-slate-700 whitespace-nowrap">
+                    <td className="p-2 w-24 min-w-[96px] max-w-[96px] font-num font-semibold text-slate-700 whitespace-nowrap">
                       {formatarDataBR(item.transacao.data)}
                     </td>
 
                     {/* Descrição e Contraparte */}
-                    <td className="p-3 max-w-xs">
+                    <td className="p-2 min-w-[220px] max-w-[320px]">
                       <div className="font-semibold text-slate-800 truncate" title={item.transacao.descricaoOriginal}>
                         {item.transacao.descricaoOriginal}
                       </div>
 
                       {item.transacao.contraparte && (
-                        <div className="flex items-center gap-1 text-[11px] text-[#1A4A85] font-medium mt-0.5 truncate">
+                        <div className="flex items-center gap-1 text-[11px] text-[#1A4A85] font-medium mt-0.5 truncate" title={item.transacao.contraparte}>
                           <User className="w-3 h-3 shrink-0" />
-                          <span className="truncate" title={item.transacao.contraparte}>
+                          <span className="truncate">
                             {item.transacao.contraparte}
                           </span>
                         </div>
                       )}
 
                       {/* Badges de Status da Deduplicação */}
-                      <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         {item.statusDeduplicacao === 'duplicada_exata' && (
                           <span className="text-[10px] font-bold text-slate-600 bg-slate-200/80 px-1.5 py-0.2 rounded">
                             Duplicada ignorada
@@ -1405,10 +1837,46 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                           </span>
                         )}
                       </div>
+
+                      {/* Prévia do que será gravado (descrição curta + tooltip com observações) */}
+                      <div className="mt-1.5 pt-1 border-t border-slate-100 flex items-center justify-between gap-1 text-[11px]">
+                        <div className="flex items-center gap-1 min-w-0 text-slate-500 truncate" title={`Descrição a ser gravada: ${descQueSeraGravada}`}>
+                          <span className="text-[10px] uppercase font-bold text-slate-400 shrink-0">Grava:</span>
+                          <span className="font-semibold text-slate-700 truncate">{descQueSeraGravada}</span>
+                        </div>
+                        <div className="relative group/conferir shrink-0">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-[#003064] bg-blue-50 hover:bg-blue-100 px-1.5 py-0.5 rounded border border-blue-200 transition-colors cursor-help"
+                            title="Conferir descrição e observações completas a serem gravadas"
+                          >
+                            <FileText className="w-3 h-3 text-[#003064]" />
+                            <span>Conferir</span>
+                          </button>
+                          <div className="absolute left-0 bottom-full mb-1.5 hidden group-hover/conferir:flex flex-col z-50 w-72 p-2.5 bg-slate-900 text-white text-[11px] rounded-lg shadow-2xl border border-slate-700 pointer-events-none">
+                            <div className="font-bold text-amber-300 text-xs mb-1.5 border-b border-slate-800 pb-1 flex items-center gap-1.5">
+                              <FileText className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                              Conferência de Gravação
+                            </div>
+                            <div className="mb-2">
+                              <span className="text-slate-400 font-semibold text-[10px] uppercase">Descrição curta:</span>
+                              <div className="text-white font-medium break-words mt-0.5 bg-slate-800/90 p-1.5 rounded border border-slate-700/60">
+                                {descQueSeraGravada}
+                              </div>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 font-semibold text-[10px] uppercase">Campo Observações:</span>
+                              <pre className="text-slate-200 font-mono text-[10px] whitespace-pre-wrap mt-0.5 bg-slate-800/90 p-1.5 rounded border border-slate-700/60 leading-relaxed max-h-48 overflow-y-auto">
+                                {obsQueSeraoGravadas}
+                              </pre>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </td>
 
                     {/* Valor */}
-                    <td className="p-3 text-right font-num font-bold whitespace-nowrap">
+                    <td className="p-2 w-28 min-w-[110px] max-w-[120px] text-right font-num font-bold whitespace-nowrap">
                       <span className={ehCredito ? 'text-emerald-600' : 'text-red-600'}>
                         {ehCredito ? '+ ' : '- '}
                         {ocultarValores ? '••••' : formatarValor(item.transacao.valor)}
@@ -1416,14 +1884,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     </td>
 
                     {/* Natureza */}
-                    <td className="p-3 whitespace-nowrap">
+                    <td className="p-2 w-28 min-w-[110px] max-w-[120px] whitespace-nowrap">
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase tracking-wider">
                         {item.natureza.replace('_', ' ')}
                       </span>
                     </td>
 
                     {/* Tipo Lançamento */}
-                    <td className="p-3">
+                    <td className="p-2 w-28 min-w-[110px] max-w-[120px]">
                       <select
                         value={item.tipoLancamento}
                         onChange={(e) =>
@@ -1433,7 +1901,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                             categoriaNome: undefined
                           })
                         }
-                        className="px-2 py-1 text-xs bg-white border border-slate-200 rounded-lg focus:ring-1 focus:ring-[#003064] focus:outline-hidden"
+                        className="w-full px-2 py-1 text-xs bg-white border border-slate-200 rounded-lg focus:ring-1 focus:ring-[#003064] focus:outline-hidden"
                       >
                         <option value="receita">Receita</option>
                         <option value="despesa">Despesa</option>
@@ -1443,7 +1911,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     </td>
 
                     {/* Categoria Obrigatória */}
-                    <td className="p-3">
+                    <td className="p-2 w-64 min-w-[240px] max-w-[280px]">
                       {item.natureza === 'movimentacao_interna' || item.tipoLancamento === 'transferencia' ? (
                         <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-medium">
                           <ArrowRightLeft className="w-3.5 h-3.5 shrink-0 text-indigo-600" />
@@ -1467,7 +1935,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     </td>
 
                     {/* Projeto */}
-                    <td className="p-3">
+                    <td className="p-2 w-44 min-w-[160px] max-w-[200px]">
                       <select
                         value={item.projetoId || ''}
                         onChange={(e) => atualizarItem(item.id, { projetoId: e.target.value })}
@@ -1484,7 +1952,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     </td>
 
                     {/* Contato */}
-                    <td className="p-3">
+                    <td className="p-2 w-44 min-w-[160px] max-w-[200px]">
                       <select
                         value={item.contatoId || ''}
                         onChange={(e) => atualizarItem(item.id, { contatoId: e.target.value })}
@@ -1501,7 +1969,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     </td>
 
                     {/* Ação (Incluir / Ignorar) */}
-                    <td className="p-3 text-center whitespace-nowrap">
+                    <td className="p-2 w-28 min-w-[110px] max-w-[120px] text-center whitespace-nowrap">
                       <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-100">
                         <button
                           type="button"
@@ -1529,7 +1997,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     </td>
 
                     {/* Checkbox Lembrar Regra */}
-                    <td className="p-3 text-center">
+                    <td className="p-2 w-14 min-w-[56px] max-w-[56px] text-center">
                       <input
                         type="checkbox"
                         checked={Boolean(item.lembrarRegra)}
@@ -2053,56 +2521,136 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
               </div>
             )}
 
-            {/* ALERTA DE DETECÇÃO DE DUPLA CONTAGEM DO SALDO INICIAL (Item 2 - Parte 15J) */}
-            {analiseDuplaContagem && analiseDuplaContagem.temDivergencia && !ignorouAlertaDuplaContagem && !ajusteSaldoInicialConfirmado && (
-              <div className="p-4 bg-amber-50 border-2 border-amber-400 rounded-xl space-y-3 text-xs text-amber-950 animate-in fade-in">
-                <div className="flex items-start gap-2.5">
-                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                  <div className="space-y-1.5 flex-1">
-                    <p className="font-bold text-amber-900 text-sm">
-                      Pelo saldo do banco, o saldo inicial da conta provavelmente está errado
-                    </p>
-                    <p className="text-[11px] text-amber-800 leading-relaxed">
-                      O saldo projetado após a importação difere do saldo final informado pelo banco em mais de R$ 0,01.
-                      Isso normalmente ocorre quando o saldo atual de hoje foi digitado como saldo inicial, somando o movimento do período em dobro.
-                    </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-                      <div className="bg-white/90 p-2.5 rounded-lg border border-amber-200">
-                        <span className="text-[10px] text-slate-500 uppercase font-semibold block">Saldo projetado</span>
-                        <strong className="font-num text-slate-900 text-sm">{formatarValor(analiseDuplaContagem.saldoProjetado)}</strong>
+            {/* PAINEL DE CONCILIAÇÃO / ALERTA DE DUPLA CONTAGEM (Parte 16D) */}
+            {analiseDuplaContagem && !ajusteSaldoInicialConfirmado && (() => {
+              const { temDivergencia, divergenciaExclusivaContamax, saldoProjetado, saldoBanco, saldoInicialSugerido, dataSaldoInicialSugerida, diferenca } = analiseDuplaContagem;
+              const podeSugerirAjuste = !contaTemImportacoesPrevias || pediuReconciliarComBanco;
+
+              // Caso 1: Contamax Ignorado é o único motivo da diferença → avisa, mas não sugere ajuste de saldo inicial
+              if (divergenciaExclusivaContamax) {
+                return (
+                  <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-start gap-2 animate-in fade-in">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Diferença de saldo por Contamax Ignorado:</strong> Com o Contamax em "Ignorar", o saldo da conta corrente no app ficará{' '}
+                      <strong className="font-num">{formatarValor(Math.abs(diferenca))}</strong>{' '}
+                      {diferenca > 0 ? 'acima' : 'abaixo'} do extrato do banco (impacto líquido do Contamax).{' '}
+                      Isso é esperado e <strong>não deve ser corrigido</strong> via ajuste de saldo inicial — a diferença reflete apenas os valores não contabilizados da aplicação.
+                    </span>
+                  </div>
+                );
+              }
+
+              // Caso 2: Há divergência real de saldo inicial
+              if (temDivergencia && !ignorouAlertaDuplaContagem) {
+                // Caso 2a: 1ª importação OU usuário pediu reconciliar → sugere correção de saldo inicial
+                if (podeSugerirAjuste) {
+                  return (
+                    <div className="p-4 bg-amber-50 border-2 border-amber-400 rounded-xl space-y-3 text-xs text-amber-950 animate-in fade-in">
+                      <div className="flex items-start gap-2.5">
+                        <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="space-y-1.5 flex-1">
+                          <p className="font-bold text-amber-900 text-sm">
+                            {contaTemImportacoesPrevias ? 'Reconciliação: saldo divergente' : 'Pelo saldo do banco, o saldo inicial da conta provavelmente está errado'}
+                          </p>
+                          <p className="text-[11px] text-amber-800 leading-relaxed">
+                            {contaTemImportacoesPrevias
+                              ? 'O saldo projetado pelo app difere do saldo do banco. Isso pode indicar lançamentos ausentes ou um saldo inicial incorreto.'
+                              : 'O saldo projetado após a importação difere do saldo final informado pelo banco em mais de R$ 0,01. Isso normalmente ocorre quando o saldo atual de hoje foi digitado como saldo inicial, somando o movimento do período em dobro.'}
+                          </p>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                            <div className="bg-white/90 p-2.5 rounded-lg border border-amber-200">
+                              <span className="text-[10px] text-slate-500 uppercase font-semibold block">Saldo projetado</span>
+                              <strong className="font-num text-slate-900 text-sm">{formatarValor(saldoProjetado)}</strong>
+                            </div>
+                            <div className="bg-white/90 p-2.5 rounded-lg border border-amber-200">
+                              <span className="text-[10px] text-slate-500 uppercase font-semibold block">Saldo do banco</span>
+                              <strong className="font-num text-[#003064] text-sm">{formatarValor(saldoBanco)}</strong>
+                            </div>
+                            <div className="bg-white/90 p-2.5 rounded-lg border border-amber-200">
+                              <span className="text-[10px] text-slate-500 uppercase font-semibold block">Saldo inicial sugerido</span>
+                              <strong className="font-num text-emerald-700 text-sm">{formatarValor(saldoInicialSugerido)}</strong>
+                              <span className="block text-[10px] text-slate-500">em {formatarDataBR(dataSaldoInicialSugerida)}</span>
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                      <div className="bg-white/90 p-2.5 rounded-lg border border-amber-200">
-                        <span className="text-[10px] text-slate-500 uppercase font-semibold block">Saldo do banco</span>
-                        <strong className="font-num text-[#003064] text-sm">{formatarValor(analiseDuplaContagem.saldoBanco)}</strong>
-                      </div>
-                      <div className="bg-white/90 p-2.5 rounded-lg border border-amber-200">
-                        <span className="text-[10px] text-slate-500 uppercase font-semibold block">Saldo inicial sugerido</span>
-                        <strong className="font-num text-emerald-700 text-sm">{formatarValor(analiseDuplaContagem.saldoInicialSugerido)}</strong>
-                        <span className="block text-[10px] text-slate-500">em {formatarDataBR(analiseDuplaContagem.dataSaldoInicialSugerida)}</span>
+                      <div className="pt-2 border-t border-amber-200 space-y-2">
+                        <label className="flex items-center gap-2 font-bold text-xs text-amber-950 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(checkboxAjustarSaldoInicial)}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setCheckboxAjustarSaldoInicial(checked);
+                              if (checked) {
+                                setAjusteSaldoInicialConfirmado({
+                                  novoSaldoInicial: saldoInicialSugerido,
+                                  novaDataSaldoInicial: dataSaldoInicialSugerida,
+                                  saldoInicialAnterior: contaPrincipal?.saldo_inicial || 0,
+                                  dataSaldoInicialAnterior: contaPrincipal?.data_saldo_inicial || '',
+                                });
+                              } else {
+                                setAjusteSaldoInicialConfirmado(null);
+                              }
+                            }}
+                            className="rounded border-amber-500 text-[#003064] focus:ring-[#003064] cursor-pointer w-4 h-4"
+                          />
+                          <span>Ajustar saldo inicial da conta para bater com o banco</span>
+                        </label>
+                        <p className="text-[11px] text-amber-800 leading-relaxed pl-6">
+                          {checkboxAjustarSaldoInicial
+                            ? `✓ O saldo inicial será alterado para ${formatarValor(saldoInicialSugerido)} (data: ${formatarDataBR(dataSaldoInicialSugerida)}). Nenhum lançamento de ajuste é criado.`
+                            : 'O saldo inicial da conta será mantido inalterado.'}
+                        </p>
                       </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                }
 
-                <div className="flex items-center gap-2 pt-2 border-t border-amber-200 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => setModalConfirmarCorrecaoSaldoInicialAberto(true)}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold text-xs transition-colors cursor-pointer"
-                  >
-                    <DollarSign className="w-3.5 h-3.5" />
-                    <span>Corrigir saldo inicial agora</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIgnorouAlertaDuplaContagem(true)}
-                    className="px-3.5 py-2 border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-lg font-semibold text-xs transition-colors cursor-pointer"
-                  >
-                    Continuar sem corrigir
-                  </button>
-                </div>
-              </div>
-            )}
+                // Caso 2b: Importação subsequente e usuário NÃO pediu reconciliar → só painel informativo
+                return (
+                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-2 animate-in fade-in">
+                    <p className="font-bold text-slate-700 flex items-center gap-1.5">
+                      <AlertCircle className="w-4 h-4 text-slate-500 shrink-0" />
+                      Conciliação de saldo (importação subsequente)
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-white p-2 rounded-lg border border-slate-200 text-center">
+                        <span className="text-[10px] text-slate-500 uppercase block">Saldo no app</span>
+                        <strong className="font-num text-slate-900">{formatarValor(saldoProjetado)}</strong>
+                      </div>
+                      <div className="bg-white p-2 rounded-lg border border-slate-200 text-center">
+                        <span className="text-[10px] text-slate-500 uppercase block">Saldo banco</span>
+                        <strong className="font-num text-[#003064]">{formatarValor(saldoBanco)}</strong>
+                      </div>
+                      <div className={`p-2 rounded-lg border text-center ${Math.abs(diferenca) > 0.01 ? 'bg-amber-50 border-amber-300' : 'bg-emerald-50 border-emerald-200'}`}>
+                        <span className="text-[10px] text-slate-500 uppercase block">Diferença</span>
+                        <strong className={`font-num ${Math.abs(diferenca) > 0.01 ? 'text-amber-700' : 'text-emerald-700'}`}>{formatarValor(diferenca)}</strong>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Esta não é a 1ª importação da conta. O saldo inicial não será alterado automaticamente.{' '}
+                      Se desejar reconciliar com o banco, clique em{' '}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPediuReconciliarComBanco(true);
+                          setCheckboxAjustarSaldoInicial(false);
+                          setAjusteSaldoInicialConfirmado(null);
+                          setIgnorouAlertaDuplaContagem(false);
+                        }}
+                        className="underline text-[#003064] font-semibold hover:text-[#00204A] cursor-pointer"
+                      >
+                        Reconciliar com o banco
+                      </button>.
+                    </p>
+                  </div>
+                );
+              }
+
+              return null;
+            })()}
 
             {ajusteSaldoInicialConfirmado && (
               <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-xs text-emerald-900 flex items-center gap-2 animate-in fade-in">

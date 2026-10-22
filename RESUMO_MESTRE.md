@@ -1,8 +1,199 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 21/10/2026 04:05:00 (Consolidação do Módulo de Importação de Extratos 15A–15J e Limpeza de Scripts CLI)
+**Última Atualização:** 22/10/2026 18:10:00 (Parte 16F – Diagnóstico e Teste de Regressão Completo de Importações em Sequência)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
+  - **Parte 16F – Diagnóstico de Importações e Teste de Regressão Completo em Simulador**:
+    - **Diagnóstico do Sistema e Coleção de Importações**:
+      - Inspeção não-destrutiva sem tocar no Firestore de produção e sem expor credenciais locais.
+      - Levantamento das duas últimas importações e análise dos impactos em saldo inicial da conta e duplicatas.
+      - Comparativo técnico claro entre a operação "Desfazer importação" (remoção cirúrgica de um lote específico mantendo os demais) e "Reiniciar conta / Preparar para reimportar" (limpeza ampla de lançamentos com `origem: 'importacao'`, preservando lançamentos manuais, folha e cadastros).
+    - **16F.1 (Suite de Testes de Regressão Completa em `scripts/test_parte_16F.ts` – novo arquivo)**:
+      - 58 asserções automatizadas cobrindo 7 seções rigorosas:
+        1. **Estado Inicial e Isolamento Multi-Contas**: Configuração com 2 contas bancárias cadastradas (Santander e Sicoob), validando isolamento estrito onde a segunda conta não sofre qualquer contaminação.
+        2. **Importação do Lote A (Período 1 - Jan/2026)**: Gravação completa de lançamentos OFX com FITID único, documento, contraparte e observações formatadas ricas.
+        3. **Revisão e Deduplicação do Lote B (Período 2 - Fev/2026 na mesma conta)**: Comprovação de que **nenhum item do Lote A** reaparece como novo na revisão de B; detecção imediata de transações repetidas como `duplicada_exata`.
+        4. **Análise de Saldo Inicial em Importação Subsequente**: Detecção automática de lançamentos prévios (`contaTemLancamentosImportados`); bloqueio de alterações arbitrárias no saldo inicial da conta.
+        5. **Gravação do Lote B com 0 Duplicatas e Saldo Inicial Inalterado**: Saldo inicial e data do saldo inicial da Conta 1 permanecem estritamente inalterados após B; todos os FITIDs e assinaturas fracas permanecem únicos (0 duplicados).
+        6. **Tentativa de Reimportação do Lote B**: Validação de 100% de deduplicação e 0 novos lançamentos gerados.
+        7. **Simulador de Limpeza e Preservação de Lançamentos Manuais**:
+           - Validação de `desfazerImportacao` removendo apenas lançamentos do lote alvo e preservando os demais.
+           - Validação de `simularReinicioConta` (DryRun) removendo exclusivamente lotes de importação e mantendo 100% intactos os lançamentos manuais cadastrados pelo usuário.
+      - **100% de aprovação (58 PASSARAM / 0 FALHARAM)**. Validação TypeScript estrita (`npx tsc --noEmit`) sem erros.
+    - **16F.2 (Script npm configurado em `package.json`)**:
+      - Adicionado comando `"test:16f": "tsx scripts/test_parte_16F.ts"`.
+  - **Data e hora da alteração**: 22/10/2026 18:10:00
+  - **Arquivos modificados**:
+    - `scripts/test_parte_16F.ts` *(novo)*
+    - `package.json`
+    - `RESUMO_MESTRE.md`
+
+---
+
+- **Alterações Anteriores:**
+  - **Parte 16E – Preservação e Exibição das Informações do Extrato nos Lançamentos Importados**:
+    - **Causa raiz resolvida**: Ao importar um extrato bancário, o lançamento criado só guardava "descrição original - favorecido" na descrição. Documento, FITID, histórico original do banco, arquivo de origem, banco, lote e data/hora da importação não ficavam acessíveis ao usuário, impossibilitando rastreabilidade e auditoria.
+    - **16E.1 (Helper `src/utils/extrato/observacoesHelper.ts` – novo arquivo)**:
+      - `formatarObservacoesImportacao`: gera bloco legível estruturado com histórico original, favorecido/contraparte, documento, FITID, banco (nome+código), arquivo, formato, lote e data/hora da importação.
+      - `gerarDescricaoCurta`: produz descrição curta e limpa ("Tipo Operação - Favorecido") sem duplicar informações, usando regex para identificar prefixos bancários comuns (Pix, TED, DOC, Pagamento, Tarifa etc.).
+      - `complementarObservacoesEnriquecimento`: ao enriquecer OFX×XLSX, adiciona bloco "[Origem: Extrato Bancário - Enriquecimento]" preservando integralmente o texto prévio do usuário.
+      - `extrairCamposOrigem`: extrai de forma estruturada os campos de origem de um lançamento a partir das observações e/ou do objeto `origem_importacao`.
+      - `obterNomeBanco`: mapeia códigos de banco para nomes legíveis (Santander, Bradesco, Itaú etc.).
+    - **16E.2 (Novos campos em `src/types/index.ts`)**:
+      - `OrigemImportacao` recebeu: `nome_arquivo`, `data_importacao`, `documento`, `contraparte`, `descricao_original`.
+      - `ParamsImportacaoLote` recebeu: `bancoNome` (opcional) e `documento` dentro de `transacao`.
+      - `RegistroImportacao.snapshot_enriquecidos` recebeu `observacoesAnterior` (para restauração perfeita via desfazer).
+    - **16E.3 (Gravação completa em `src/services/storage.ts`)**:
+      - `importarExtratoLote` agora chama `gerarDescricaoCurta` + `formatarObservacoesImportacao` ao criar cada novo lançamento, preenchendo `descricao` (curta/limpa) e `observacoes` (bloco completo com todos os metadados).
+      - No enriquecimento (vincular), chama `complementarObservacoesEnriquecimento` para adicionar metadados sem apagar o que o usuário já escreveu; grava `observacoesAnterior` no snapshot do lote.
+      - No `desfazerImportacao`, restaura `observacoes` a partir do snapshot para reverter perfeitamente o enriquecimento.
+    - **16E.4 (Exibição na lista `src/pages/Lancamentos.tsx`)**:
+      - Badge "Importado • Banco • Formato • Data" (roxo/purple) exibido em linha para todos os lançamentos com `origem === 'importacao'`.
+      - Botão "Detalhes" com ícone History e chevron animado abre painel expansível com grid de 4 cards: Histórico Original do Banco, Favorecido/Contraparte, Nº Documento/FITID, Arquivo & Lote de Origem. Abaixo: campo observações completo em `<pre>` formatado.
+      - Novos filtros: **Filtro de Origem** ("Todas as Origens" / "Extratos Bancários (Importados)") e **Filtro de Lote de Importação** (dropdown dinâmico com todos os lotes disponíveis).
+      - **Proteção de filtro de período**: quando um lote específico está selecionado, o filtro de período não descarta lançamentos antigos do lote (evita que transações de datas históricas sumam).
+      - Busca aprimorada: pesquisa agora inclui FITID, documento, contraparte, descrição original e nome do arquivo.
+    - **16E.5 (Prévia na Revisão `src/components/extrato/RevisaoExtrato.tsx`)**:
+      - Na tabela de revisão (antes de confirmar a importação), cada linha mostra: "Grava: [descrição curta]" + botão "Conferir" que abre tooltip dark mostrando a descrição curta e o bloco completo das observações que serão gravadas.
+    - **16E.6 (Suite de Testes Automatizados em `scripts/test_parte_16E.ts`)**:
+      - 50 asserções em 6 seções:
+        1. Helpers puros (descrição curta, nomes de banco, formatação)
+        2. Lançamento OFX: observações completas com todos os campos
+        3. Lançamento XLSX: campos disponíveis sem "undefined"
+        4. Enriquecimento OFX×XLSX: preservação do texto do usuário + bloco de enriquecimento
+        5. Desfazer importação: restauração perfeita de descrição e observações via snapshot
+        6. Proteção de filtro de período por lote
+      - **100% de aprovação (50 PASSARAM / 0 FALHARAM)**. TypeScript (`npx tsc --noEmit`) sem erros.
+  - **Data e hora da alteração**: 22/10/2026 17:31:00
+  - **Arquivos modificados**:
+    - `src/utils/extrato/observacoesHelper.ts` *(novo)*
+    - `src/types/index.ts`
+    - `src/services/storage.ts`
+    - `src/pages/Lancamentos.tsx`
+    - `src/components/extrato/RevisaoExtrato.tsx`
+    - `src/components/ImportarExtratoModal.tsx`
+    - `scripts/test_parte_16E.ts` *(novo)*
+    - `RESUMO_MESTRE.md`
+
+---
+
+- **Alterações Anteriores:**
+  - **Parte 16D – Prevenção de Alteração Indevida de Saldo da Conta em Importações**:
+    - **Causa raiz resolvida**: O cálculo de dupla contagem e sugestão de alteração de saldo inicial era oferecido indiscriminadamente em qualquer importação, inclusive nas subsequentes à primeira. Quando transações Contamax eram marcadas como "Ignorar", a diferença financeira do Contamax (aplicações/resgates não contabilizados no app) era absorvida incorretamente pelo cálculo de ajuste de saldo inicial, distorcendo o saldo retroativo e o histórico contábil da conta. Além disso, checkboxes e botões de ajuste de saldo podiam induzir o usuário a alterar o saldo da conta em importações cotidianas.
+    - **16D.1 (Restrição de Sugestão de Ajuste de Saldo Inicial)**:
+      - O ajuste de saldo inicial só é oferecido quando: (a) a conta ainda não tem lançamentos importados anteriores (primeira importação da conta), ou (b) o usuário solicitar explicitamente "Reconciliar com o banco".
+      - Em importações subsequentes à primeira, o sistema **NÃO sugere** mudar o saldo inicial: exibe exclusivamente um comparativo neutro e informativo ("Saldo no app × Saldo do banco" e a diferença), mantendo o saldo inicial 100% inalterado.
+    - **16D.2 (Análise Estritamente com Dados Frescos)**:
+      - A análise de saldo e detecção de importações anteriores utiliza o banco de dados em tempo real (`dbService.getLancamentos()`) e o estado atual dos itens recém-classificados na sessão. Rascunhos antigos não podem contaminar ou burlar essa verificação.
+    - **16D.3 (Isolamento Financeiro do Contamax em "Ignorar")**:
+      - Em `saldoInicialHelper.ts`, a função `analisarDuplaContagemSaldoInicial` agora recebe `impactoContamaxIgnorado`. Quando o Contamax está em modo "Ignorar", a diferença explicada exclusivamente pelo Contamax é isolada (`divergenciaExclusivaContamax = true`).
+      - O sistema explica claramente: *"Diferença de R$ X corresponde aos lançamentos de aplicação ignorados"* e **NÃO** trata essa divergência como erro de saldo inicial, impedindo qualquer absorção indevida dessa diferença no saldo retroativo.
+    - **16D.4 (Checkbox "Ajustar saldo inicial da conta para bater com o banco" com Padrão Seguro)**:
+      - O checkbox só vem **MARCADO POR PADRÃO** se for a primeira importação da conta E se o saldo inicial da conta for zero/vazio.
+      - Em qualquer outro caso (segunda importação em diante, ou conta com saldo inicial já preenchido), o checkbox vem **DESMARCADO POR PADRÃO**, exigindo ação consciente e deliberada do usuário para qualquer modificação.
+    - **16D.5 (Proteção e Reconciliação no Passo 3 em `ImportarExtratoModal.tsx`)**:
+      - O painel de conciliação pós-lote no Passo 3 audita se a conta já possuía lançamentos de outros lotes. Em importações subsequentes com diferença, exibe card informativo em tom neutro informando que o saldo inicial não é alterado para preservar o histórico, fornecendo botão explícito "Reconciliar com o banco" caso o usuário deseje alinhar.
+    - **16D.6 (Suite de Testes Automatizados em `scripts/test_parte_16D.ts`)**:
+      - 23 asserções automatizadas cobrindo os 6 cenários exigidos:
+        - Cenário A: 1ª importação com saldo zero (detecta menor data, calcula saldo sugerido, sem lançamentos prévios).
+        - Cenário B: 2ª importação com lançamentos prévios (isolamento de conta e não oferece alteração arbitrária).
+        - Cenário C: Contamax em "Ignorar" (gera `divergenciaExclusivaContamax = true`, `diferencaReal = 0`, mantém `saldoInicialSugerido` inalterado).
+        - Cenário D: Contamax em "Transferência" (análise contábil limpa sem distorção).
+        - Cenário E: Desfazer importação 2 preserva integralmente os lançamentos da importação 1.
+        - Cenário F: Reimportar o mesmo arquivo resulta em 0 novas transações por deduplicação.
+      - 100% de aprovação (`23 PASSARAM / 0 FALHARAM`).
+      - TypeScript (`npx tsc --noEmit`) sem erros e build de produção (`npm run build`) validado.
+  - **Data e hora da alteração**: 21/10/2026 06:45:00
+  - **Arquivos modificados**:
+    - `src/utils/extrato/saldoInicialHelper.ts`
+    - `src/components/extrato/RevisaoExtrato.tsx`
+    - `src/components/ImportarExtratoModal.tsx`
+    - `scripts/test_parte_16D.ts`
+    - `package.json`
+    - `RESUMO_MESTRE.md`
+
+---
+
+- **Alterações Anteriores:**
+  - **Parte 16C – Gravação de Lote Confiável, Verificável e Resiliente**:
+    - **Causa raiz resolvida**: Em `storage.ts > importarExtratoLote`, o ajuste de `saldo_inicial` e `data_saldo_inicial` da conta bancária era executado de forma síncrona/sem `await` antes da gravação dos lançamentos e mutando o cache em memória; em caso de falha de rede/permissão, a conta ficava alterada. Atualizações de lançamentos enriquecidos usavam `batch.update`, que falhava se o documento não existisse. Não havia verificação pós-commit da contagem no servidor e erros de rede/permissão eram silenciados ou mal traduzidos.
+    - **16C.1 (Ordem Estrita de Execução Transacional em `storage.ts`)**:
+      - Fluxo reordenado: Validar parâmetros → Gravar novos lançamentos e regras em batches atômicos com `merge: true` → Confirmar com `batch.commit()` → Auditar pós-commit → **SÓ ENTÃO** aplicar o ajuste de saldo inicial e data com `await this.saveContaBancaria(...)` sobre cópia imutável da conta, sem mutar o objeto original nem o cache. Se qualquer etapa anterior falhar, a conta permanece 100% inalterada e o lote é marcado como `'parcial'`.
+    - **16C.2 (Resiliência no Enriquecimento / Vinculação)**:
+      - Antes de enriquecer, o sistema valida a existência do lançamento alvo no cache/base. Caso o documento não exista, a operação não derruba o lote: o item é pulado, contabilizado como ignorado e registrado na lista de avisos (`avisos`). No Firestore, a operação utiliza `set` com `{ merge: true }`, prevenindo erros de documento ausente.
+    - **16C.3 (Conferência Pós-Commit no Firestore por `lote_id`)**:
+      - Após a confirmação dos batches, realiza leitura no Firestore (`where('origem_importacao.lote_id', '==', loteId)`) e compara a quantidade de documentos confirmados pelo servidor com os lançamentos esperados. Em caso de divergência, emite erro descritivo, marca o lote como `'parcial'` e impede a alteração indevida da conta.
+    - **16C.4 (Tradução e Tratamento Amigável de Erros)**:
+      - Criada função auxiliar `traduzirErroFirestore` mapeando códigos e mensagens comuns de Firebase/Firestore (`permission-denied`, `unavailable`, `offline`, `resource-exhausted`, `deadline-exceeded`) para mensagens em português claras e amigáveis, exibidas com destaque no modal (Passo 3), sem silenciar exceções.
+    - **16C.5 (Transparência no Resultado do Passo 3 em `ImportarExtratoModal.tsx`)**:
+      - Cards de totais atualizados para destacar:
+        - Transações Lançadas / Gravadas com badge de confirmação no servidor (`✓ X confirmados no servidor`).
+        - Transações Enriquecidas e Vinculadas.
+        - Transações Duplicadas discriminadas.
+        - Transações Ignoradas discriminadas.
+        - Painel de Avisos em destaque âmbar listando pendências ou avisos gerados durante a gravação.
+        - Banner de alerta visual caso o lote tenha terminado como `'parcial'`.
+    - **16C.6 (Testes com Simulador em `scripts/test_parte_16C.ts`)**:
+      - 25 asserções automatizadas cobrindo:
+        - Cenário 1: Falha no meio do batch não altera `saldo_inicial` nem data da conta bancária (lote fica 'parcial').
+        - Cenário 2: Lançamento a enriquecer inexistente não derruba o lote, registra aviso e grava os demais.
+        - Cenário 3: Divergência na contagem pós-commit detecta discrepância, marca 'parcial' e preserva a conta.
+        - Cenário 4: Sucesso completo confirma no servidor e aplica o ajuste da conta bancária somente no final.
+      - 100% de aprovação (`25 PASSARAM / 0 FALHARAM`).
+      - TypeScript (`npx tsc --noEmit`) sem erros e build de produção (`npm run build`) validado com sucesso.
+  - **Data e hora da alteração**: 21/10/2026 06:15:00
+  - **Arquivos modificados**:
+    - `src/services/storage.ts`
+    - `src/types/index.ts`
+    - `src/components/ImportarExtratoModal.tsx`
+    - `scripts/test_parte_16C.ts`
+    - `package.json`
+    - `RESUMO_MESTRE.md`
+
+---
+
+- **Alterações Anteriores:**
+  - **Parte 16B – Rascunho de Revisão Baseado na Identidade do Arquivo e Proteção Contra Duplicações**:
+    - **Causa raiz resolvida**: A chave de rascunho no `localStorage` dependia exclusivamente do ID da conta (`mtsolar_extrato_draft_${contaId}`), fazia restauração indiscriminada e nunca era apagada após a conclusão da revisão. Ao importar um segundo extrato diferente para a mesma conta, o rascunho anterior reaproveitava dados antigos marcados como `"nova"`, ignorando o arquivo novo ou duplicando lançamentos caso fosse concluído.
+    - **16B.1 (Chave por Identidade do Arquivo em `RevisaoExtrato.tsx`)**:
+      - Implementada a função determinística de hash `calcularHashExtrato`: concatena contas envolvidas, códigos de banco, datas de início e fim do período, quantidade de transações e a soma dos valores com algoritmo djb2, gerando chave exclusiva no padrão `mtsolar_extrato_draft_v2_${hash}`. Dois extratos diferentes para a mesma conta jamais compartilham rascunho.
+    - **16B.2 (Formato de Rascunho v2 Contendo Apenas Escolhas do Usuário)**:
+      - O rascunho agora armazena estritamente as preferências e classificações informadas pelo usuário: dicionário `Record<string, EscolhaRascunho>` indexado pelo `idTemporario` contendo `categoriaId`, `categoriaNome`, `projetoId`, `contatoId`, `acao`, `tipoLancamento`, `lembrarRegra`, além de `tratamentoContamax` e `contaAplicacaoId`.
+      - **Nunca** persiste `statusDeduplicacao` ou metadados de regras: o status de deduplicação é recalculado a quente contra o banco de dados atual a cada abertura.
+    - **16B.3 (Proteção Contra Falsos Positivos e Duplicações)**:
+      - Na restauração do rascunho, a escolha antiga do usuário só é reaplicada se a transação continuar classificada como `'nova'`. Se o lançamento tiver sido registrado no banco de dados entre sessões e for detectado como `'duplicada_exata'`, a escolha antiga de `'incluir'` é ignorada e a transação permanece com ação segura `'ignorar'`.
+      - Exibido banner com data de gravação do rascunho e botões "Manter Rascunho" ou "Descartar", além de avisos não intrusivos.
+    - **16B.4 (Exclusão Oportuna e Limpeza)**:
+      - Rascunho atual é removido imediatamente do `localStorage` no momento em que o usuário clica em "Concluir Revisão e Lançar" (`handleConfirmarRevisao`) e quando clica no botão "Descartar".
+      - No `ImportarExtratoModal.tsx`, ao acionar "Desfazer Importação" com sucesso, rascunhos pendentes são limpos.
+      - Na inicialização, rascunhos antigos (> 14 dias) e chaves da versão antiga v1 (`mtsolar_extrato_draft_*` sem `_v2_`) são automaticamente expurgados.
+    - **16B.5 (Testes Automatizados em `scripts/test_parte_16B.ts`)**:
+      - 12 asserções cobrindo: cálculo determinístico de hash, isolamento entre arquivos distintos da mesma conta, formato seguro v2 sem status de deduplicação, proteção contra reaplicação em duplicatas e política de retenção de 14 dias. 100% de aprovação (`12 PASSARAM / 0 FALHARAM`).
+      - TypeScript (`npx tsc --noEmit`) sem erros e suítes das Partes 15 e 16 100% aprovadas.
+  - **Arquivos modificados:**
+    - `src/components/extrato/RevisaoExtrato.tsx`
+    - `src/components/ImportarExtratoModal.tsx`
+    - `scripts/test_parte_16B.ts`
+    - `package.json`
+    - `RESUMO_MESTRE.md`
+
+---
+
+- **Alterações Anteriores:**
+  - **Parte 16A – Correção de Layout da Tela de Revisão do Extrato (somente layout, sem alteração de regras de negócio)**:
+    - **`src/components/ImportarExtratoModal.tsx`**: Passo 2 (Revisão e Categorização) agora é renderizado em **tela cheia** (`fixed inset-0 z-50 h-[100dvh]`) em vez de ser encapsulado pelo `Modal.tsx` com `max-h-[80vh]`. O overlay possui cabeçalho fixo com título e botão de fechar, e área central com `flex-1 min-h-0 overflow-hidden` que contém o `RevisaoExtrato`. Passos 1 e 3 continuam usando o `Modal` padrão.
+    - **`src/components/extrato/RevisaoExtrato.tsx`**: Reestruturado o container raiz para `flex flex-col h-full min-h-0 flex-1 overflow-hidden space-y-2`. Todos os blocos estáticos (cabeçalho com metadados + contadores, bloco Contamax recolhível, filtros/busca) receberam `shrink-0` para não competir pela altura. O container da tabela (`flex-1 min-h-0 overflow-auto`) ocupa todo o espaço restante; apenas ele tem rolagem. O rodapé (paginação + "Concluir Revisão e Lançar") ficou fora do container da tabela para nunca ser encoberto.
+    - **Bloco Contamax**: Recolhível por padrão (`contamaxRecolhido = true`); exibe resumo em 1 linha quando recolhido, com botão "Configurar" para expandir.
+    - **Filtros Avançados**: Permanecem recolhíveis via botão com ícone `SlidersHorizontal`; o painel expande abaixo da barra de busca sem empurrar a tabela.
+    - Build de produção validado (`npm run build`) sem erros de TypeScript ou Vite.
+  - **Arquivos modificados:**
+    - `src/components/ImportarExtratoModal.tsx`
+    - `src/components/extrato/RevisaoExtrato.tsx`
+    - `RESUMO_MESTRE.md`
+
+---
+
+- **Alterações Anteriores:**
   - **Consolidação do Módulo de Importação de Extratos (Partes 15A a 15J) e Limpeza**:
     - Removido script temporário `scripts/auditoria_reparo_importacoes.ts` e comandos `auditar:importacao` / `reparar:importacao` do `package.json`, uma vez que a auditoria e reparo com isolamento foram incorporados diretamente na interface visual de produção através do módulo de Reinício Seguro de Conta (Parte 15I);
     - Confirmada ausência de referências a esses scripts em todo o projeto via verificação estrita (`grep`);

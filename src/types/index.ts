@@ -73,6 +73,11 @@ export interface OrigemImportacao {
   fitid?: string;
   assinatura_fraca: string;
   formato: 'ofx' | 'xlsx';
+  nome_arquivo?: string;
+  data_importacao?: string;
+  documento?: string;
+  contraparte?: string;
+  descricao_original?: string;
 }
 
 /**
@@ -170,6 +175,7 @@ export interface RegistroImportacao {
     lancamentoId: string;
     descricaoAnterior: string;
     origemImportacaoAnterior?: OrigemImportacao;
+    observacoesAnterior?: string;
   }>;
   /** Armazena os valores anteriores caso o saldo inicial da conta tenha sido ajustado neste lote (para restauração em desfazer) */
   saldoInicialAnteriorConta?: number;
@@ -182,6 +188,7 @@ export interface ParamsImportacaoLote {
   usuario: string;
   contaId: string;
   bancoCodigo: string;
+  bancoNome?: string;
   formato: 'ofx' | 'xlsx';
   nomeArquivo: string;
   periodo: { inicio: string; fim: string };
@@ -206,6 +213,7 @@ export interface ParamsImportacaoLote {
       descricaoOriginal: string;
       descricaoNormalizada: string;
       contraparte?: string;
+      documento?: string;
       ordemNoDia: number;
     };
     acao: 'incluir' | 'ignorar' | 'vincular';
@@ -249,6 +257,12 @@ export interface ResultadoImportacaoLote {
     saldoAntes: number;
     saldoDepois: number;
   }>;
+  /** Lançamentos gravados e confirmados com sucesso no Firestore (Parte 16C) */
+  confirmadosServidor?: number;
+  /** Avisos ocorridos durante a gravação (ex: lançamentos não encontrados para enriquecimento) (Parte 16C) */
+  avisos?: string[];
+  /** Status final da persistência do lote (Parte 16C) */
+  statusLote?: 'concluida' | 'parcial';
 }
 
 export interface LancamentoAnomaloAuditoria {

@@ -12,7 +12,12 @@
     "test:isolamento": "tsx scripts/test_isolamento_importacao.ts",
     "test:15h": "tsx scripts/test_parte_15H.ts",
     "test:15i": "tsx scripts/test_parte_15I.ts",
-    "test:15j": "tsx scripts/test_parte_15J.ts"
+    "test:15j": "tsx scripts/test_parte_15J.ts",
+    "test:16b": "tsx scripts/test_parte_16B.ts",
+    "test:16c": "tsx scripts/test_parte_16C.ts",
+    "test:16d": "tsx scripts/test_parte_16D.ts",
+    "test:16e": "tsx scripts/test_parte_16E.ts",
+    "test:16f": "tsx scripts/test_parte_16F.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

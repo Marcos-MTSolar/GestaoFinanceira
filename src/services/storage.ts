@@ -6,8 +6,39 @@ import {
   onSnapshot,
   Unsubscribe,
   writeBatch,
+  getDocs,
+  query,
+  where,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+
+/**
+ * Traduz erros do Firestore / Firebase / Rede para mensagens amigáveis em português (Parte 16C)
+ */
+function traduzirErroFirestore(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const code = (err as any)?.code || '';
+
+  if (code === 'permission-denied' || msg.includes('permission-denied') || msg.includes('insufficient permissions')) {
+    return 'Permissão insuficiente para gravar os dados no servidor. Verifique se o seu usuário possui perfil de administrador.';
+  }
+  if (
+    code === 'unavailable' ||
+    msg.includes('unavailable') ||
+    msg.includes('network') ||
+    msg.includes('offline') ||
+    msg.includes('failed to fetch')
+  ) {
+    return 'Falha de conexão com a rede ou servidor indisponível. Verifique sua conexão com a internet e tente novamente.';
+  }
+  if (code === 'resource-exhausted' || msg.includes('resource-exhausted') || msg.includes('quota')) {
+    return 'Cota de requisições do servidor excedida temporariamente. Aguarde alguns instantes e tente novamente.';
+  }
+  if (code === 'deadline-exceeded' || msg.includes('deadline-exceeded') || msg.includes('timeout')) {
+    return 'Tempo limite de resposta do servidor excedido. Verifique sua conexão e tente novamente.';
+  }
+  return msg;
+}
 import {
   ContaBancaria,
   Categoria,
@@ -42,6 +73,12 @@ import { CONFIG_QUINZENAL_PADRAO, dataDoDiaNaCompetencia, dividirQuinzenas } fro
 import { montarBalanco, ItemManualBalanco } from '../utils/balanco';
 import { gerarAssinaturaFraca } from '../utils/extrato/assinatura';
 import { inferirFormaPagamento } from '../utils/extrato/inferirFormaPagamento';
+import {
+  gerarDescricaoCurta,
+  formatarObservacoesImportacao,
+  complementarObservacoesEnriquecimento,
+  obterNomeBanco,
+} from '../utils/extrato/observacoesHelper';
 
 // Nomes das coleções do Firestore
 const FIRESTORE_COLLECTIONS = {
@@ -456,13 +493,16 @@ export const dbService = {
     return this.getContasBancarias().find((c) => c.id === id);
   },
 
-  saveContaBancaria(conta: ContaBancaria): ContaBancaria {
+  async saveContaBancaria(conta: ContaBancaria): Promise<ContaBancaria> {
     const docId = conta.id || `conta-${Date.now()}`;
     const item = { ...conta, id: docId, criado_em: conta.criado_em || new Date().toISOString() };
 
-    setDoc(doc(db, FIRESTORE_COLLECTIONS.CONTAS, docId), item, { merge: true }).catch((e) =>
-      console.warn('Erro async saveContaBancaria:', e)
-    );
+    try {
+      await setDoc(doc(db, FIRESTORE_COLLECTIONS.CONTAS, docId), item, { merge: true });
+    } catch (e) {
+      console.warn('Erro ao salvar conta bancária no Firestore:', e);
+      throw new Error(`Falha ao salvar conta bancária: ${traduzirErroFirestore(e)}`);
+    }
 
     const idx = cacheContas.findIndex((c) => c.id === docId);
     if (idx >= 0) cacheContas[idx] = item;
@@ -471,7 +511,7 @@ export const dbService = {
     return item;
   },
 
-  saveConta(conta: ContaBancaria): ContaBancaria {
+  async saveConta(conta: ContaBancaria): Promise<ContaBancaria> {
     return this.saveContaBancaria(conta);
   },
 
@@ -3221,20 +3261,21 @@ export const dbService = {
     const resumoAntes = this.calcularResumoConta(conta);
     const saldoAntes = resumoAntes.saldo_real;
 
-    // Se o usuário optou por ajustar a data do saldo inicial da conta
-    if (params.ajustarDataSaldoInicial && params.novaDataSaldoInicial) {
-      const contaAtualizada: ContaBancaria = {
+    // 1. Planejamento do ajuste de saldo inicial e data da conta (Parte 16C)
+    // ATENÇÃO: Nenhuma alteração é gravada ou aplicada à conta antes que todos os
+    // lançamentos sejam devidamente comitados e confirmados no Firestore!
+    let contaAtualizadaPlanejada: ContaBancaria | null = null;
+    if (params.saldoInicialAjustado) {
+      contaAtualizadaPlanejada = {
+        ...conta,
+        saldo_inicial: params.saldoInicialAjustado.novoSaldoInicial,
+        data_saldo_inicial: params.saldoInicialAjustado.novaDataSaldoInicial,
+      };
+    } else if (params.ajustarDataSaldoInicial && params.novaDataSaldoInicial) {
+      contaAtualizadaPlanejada = {
         ...conta,
         data_saldo_inicial: params.novaDataSaldoInicial,
       };
-      this.saveContaBancaria(contaAtualizada);
-    }
-
-    // Se houve ajuste do saldo inicial para conciliação / prevenção de dupla contagem (Parte 15J)
-    if (params.saldoInicialAjustado) {
-      conta.saldo_inicial = params.saldoInicialAjustado.novoSaldoInicial;
-      conta.data_saldo_inicial = params.saldoInicialAjustado.novaDataSaldoInicial;
-      this.saveContaBancaria(conta);
     }
 
     const totais = {
@@ -3247,16 +3288,18 @@ export const dbService = {
       total_debitos: 0,
     };
 
+    const avisos: string[] = [];
     const novosLancamentos: Lancamento[] = [];
     const snapshotsEnriquecidos: Array<{
       lancamentoId: string;
       descricaoAnterior: string;
       origemImportacaoAnterior?: any;
+      observacoesAnterior?: string;
     }> = [];
     const lancamentosAtualizados: Lancamento[] = [];
     const regrasSalvas: RegraImportacao[] = [];
 
-    // 1. Registro inicial como 'parcial' no Firestore para rastreabilidade
+    // 2. Registro preliminar como 'parcial' no Firestore para rastreabilidade
     const registroLote: RegistroImportacao = {
       id: params.loteId,
       data: new Date().toISOString().split('T')[0],
@@ -3280,7 +3323,7 @@ export const dbService = {
       console.warn('Erro ao salvar registro preliminar de importacao:', e);
     }
 
-    // 2. Processa cada item revisado
+    // 3. Processa cada item revisado
     for (const item of params.itens) {
       if (item.acao === 'ignorar') {
         if (item.statusDeduplicacao === 'duplicada_exata') {
@@ -3291,48 +3334,80 @@ export const dbService = {
         continue;
       }
 
+      // Enriquecimento / Vinculação (Parte 16C: verifica existência prévia para nunca derrubar o lote)
       if (item.acao === 'vincular' && item.lancamentoExistenteId) {
         const lancExistente = this.getLancamentos().find((l) => l.id === item.lancamentoExistenteId);
-        if (lancExistente) {
-          snapshotsEnriquecidos.push({
-            lancamentoId: lancExistente.id,
-            descricaoAnterior: lancExistente.descricao,
-            origemImportacaoAnterior: lancExistente.origem_importacao,
-          });
+        if (!lancExistente) {
+          avisos.push(
+            `Lançamento existente ID "${item.lancamentoExistenteId}" não foi encontrado no sistema para enriquecimento. Transação ignorada.`
+          );
+          totais.ignoradas++;
+          continue;
+        }
 
-          // Enriquecimento OFX x XLSX (ou vinculação manual)
-          const descEnriquecida = item.transacao.contraparte
-            ? `${item.transacao.descricaoOriginal} - ${item.transacao.contraparte}`
-            : item.transacao.descricaoOriginal;
+        snapshotsEnriquecidos.push({
+          lancamentoId: lancExistente.id,
+          descricaoAnterior: lancExistente.descricao,
+          origemImportacaoAnterior: lancExistente.origem_importacao,
+          observacoesAnterior: lancExistente.observacoes || '',
+        });
 
-          const lancAtualizado: Lancamento = {
-            ...lancExistente,
-            descricao: lancExistente.origem === 'manual' ? lancExistente.descricao : descEnriquecida,
-            origem_importacao: {
-              lote_id: params.loteId,
-              banco_codigo: params.bancoCodigo,
-              conta_id: params.contaId,
-              fitid: item.transacao.fitid || lancExistente.origem_importacao?.fitid,
-              assinatura_fraca:
-                lancExistente.origem_importacao?.assinatura_fraca ||
-                gerarAssinaturaFraca({
-                  conta: params.contaId,
-                  data: item.transacao.data,
-                  tipo: item.transacao.tipo,
-                  valor: item.transacao.valor,
-                  descricaoNormalizada: item.transacao.descricaoNormalizada,
-                  ordemNoDia: item.transacao.ordemNoDia,
-                }),
-              formato: params.formato,
-            },
-          };
+        // Enriquecimento OFX x XLSX (ou vinculação manual)
+        const descEnriquecida = gerarDescricaoCurta(
+          item.transacao.descricaoOriginal,
+          item.transacao.contraparte
+        );
 
-          lancamentosAtualizados.push(lancAtualizado);
-          if (item.statusDeduplicacao === 'enriquecer_existente') {
-            totais.enriquecidas++;
-          } else {
-            totais.vinculadas++;
+        const dataHoraImportacaoAtual = new Date().toISOString();
+        const observacoesEnriquecidas = complementarObservacoesEnriquecimento(
+          lancExistente.observacoes,
+          {
+            descricaoOriginal: item.transacao.descricaoOriginal,
+            contraparte: item.transacao.contraparte,
+            documento: item.transacao.documento,
+            fitid: item.transacao.fitid || lancExistente.origem_importacao?.fitid,
+            bancoCodigo: params.bancoCodigo,
+            bancoNome: params.bancoNome,
+            nomeArquivo: params.nomeArquivo,
+            formato: params.formato,
+            loteId: params.loteId,
+            dataHoraImportacao: dataHoraImportacaoAtual,
           }
+        );
+
+        const lancAtualizado: Lancamento = {
+          ...lancExistente,
+          descricao: lancExistente.origem === 'manual' ? lancExistente.descricao : descEnriquecida,
+          observacoes: observacoesEnriquecidas,
+          origem_importacao: {
+            lote_id: params.loteId,
+            banco_codigo: params.bancoCodigo,
+            conta_id: params.contaId,
+            fitid: item.transacao.fitid || lancExistente.origem_importacao?.fitid,
+            assinatura_fraca:
+              lancExistente.origem_importacao?.assinatura_fraca ||
+              gerarAssinaturaFraca({
+                conta: params.contaId,
+                data: item.transacao.data,
+                tipo: item.transacao.tipo,
+                valor: item.transacao.valor,
+                descricaoNormalizada: item.transacao.descricaoNormalizada,
+                ordemNoDia: item.transacao.ordemNoDia,
+              }),
+            formato: params.formato,
+            nome_arquivo: params.nomeArquivo,
+            data_importacao: dataHoraImportacaoAtual,
+            documento: item.transacao.documento,
+            contraparte: item.transacao.contraparte,
+            descricao_original: item.transacao.descricaoOriginal,
+          },
+        };
+
+        lancamentosAtualizados.push(lancAtualizado);
+        if (item.statusDeduplicacao === 'enriquecer_existente') {
+          totais.enriquecidas++;
+        } else {
+          totais.vinculadas++;
         }
         continue;
       }
@@ -3340,10 +3415,8 @@ export const dbService = {
       if (item.acao === 'incluir') {
         // GUARDA DE SEGURANÇA #1: tipoLancamento=transferencia sem conta destino explícita
         // deve ser tratado como ignorar — jamais lançar como despesa avulsa.
-        // O conta_id do lançamento sempre será params.contaId (garantido abaixo no novoLancamento).
         if (item.tipoLancamento === 'transferencia') {
           if (!params.contaDestinoId) {
-            // Sem conta de aplicação explicitamente escolhida pelo usuário → ignorar com segurança
             console.info(
               `[importarExtratoLote] Movimentação interna ignorada (sem conta destino explícita): ${item.transacao.descricaoOriginal}`
             );
@@ -3351,9 +3424,7 @@ export const dbService = {
             continue;
           }
 
-          // Com conta destino explícita → criar par de transferência espelhando realizarTransferencia
-          // Resgate = da aplicação para a conta importada (crédito na CC)
-          // Aplicação = da conta importada para a aplicação (débito na CC)
+          // Com conta destino explícita → criar par de transferência
           const ehResgate = item.transacao.tipo === 'credito';
           const contaOrigemTransferencia = ehResgate ? params.contaDestinoId : params.contaId;
           const contaDestinoTransferencia = ehResgate ? params.contaId : params.contaDestinoId;
@@ -3361,9 +3432,20 @@ export const dbService = {
           const timestamp = Date.now();
           const idSaida = `lanc-imp-transf-out-${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
           const idEntrada = `lanc-imp-transf-in-${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
-          const descTransf = item.transacao.contraparte
-            ? `${item.transacao.descricaoOriginal} - ${item.transacao.contraparte}`
-            : item.transacao.descricaoOriginal;
+          const dataHoraImportacaoAtual = new Date().toISOString();
+          const descTransf = gerarDescricaoCurta(item.transacao.descricaoOriginal, item.transacao.contraparte);
+          const obsTransf = formatarObservacoesImportacao({
+            descricaoOriginal: item.transacao.descricaoOriginal,
+            contraparte: item.transacao.contraparte,
+            documento: item.transacao.documento,
+            fitid: item.transacao.fitid,
+            bancoCodigo: params.bancoCodigo,
+            bancoNome: params.bancoNome,
+            nomeArquivo: params.nomeArquivo,
+            formato: params.formato,
+            loteId: params.loteId,
+            dataHoraImportacao: dataHoraImportacaoAtual,
+          });
           const assFraca = gerarAssinaturaFraca({
             conta: params.contaId,
             data: item.transacao.data,
@@ -3373,7 +3455,6 @@ export const dbService = {
             ordemNoDia: item.transacao.ordemNoDia,
           });
 
-          // Lançamento de saída (despesa na conta de onde o dinheiro sai)
           const lancSaida: Lancamento = {
             id: idSaida,
             tipo: 'despesa',
@@ -3388,6 +3469,7 @@ export const dbService = {
             categoria_id: 'cat-des-12',
             forma_pagamento: 'transferencia',
             recorrencia: 'nenhuma',
+            observacoes: obsTransf,
             origem: 'transferencia',
             origem_importacao: {
               lote_id: params.loteId,
@@ -3396,11 +3478,15 @@ export const dbService = {
               fitid: item.transacao.fitid,
               assinatura_fraca: assFraca,
               formato: params.formato,
+              nome_arquivo: params.nomeArquivo,
+              data_importacao: dataHoraImportacaoAtual,
+              documento: item.transacao.documento,
+              contraparte: item.transacao.contraparte,
+              descricao_original: item.transacao.descricaoOriginal,
             },
             criado_em: new Date().toISOString(),
           };
 
-          // Lançamento de entrada (receita na conta onde o dinheiro entra)
           const lancEntrada: Lancamento = {
             id: idEntrada,
             tipo: 'receita',
@@ -3414,6 +3500,7 @@ export const dbService = {
             categoria_id: 'cat-rec-5',
             forma_pagamento: 'transferencia',
             recorrencia: 'nenhuma',
+            observacoes: obsTransf,
             origem: 'transferencia',
             origem_importacao: {
               lote_id: params.loteId,
@@ -3422,6 +3509,11 @@ export const dbService = {
               fitid: item.transacao.fitid,
               assinatura_fraca: assFraca,
               formato: params.formato,
+              nome_arquivo: params.nomeArquivo,
+              data_importacao: dataHoraImportacaoAtual,
+              documento: item.transacao.documento,
+              contraparte: item.transacao.contraparte,
+              descricao_original: item.transacao.descricaoOriginal,
             },
             criado_em: new Date().toISOString(),
           };
@@ -3441,6 +3533,21 @@ export const dbService = {
           item.natureza as any
         );
 
+        const dataHoraImportacaoAtual = new Date().toISOString();
+        const descNovo = gerarDescricaoCurta(item.transacao.descricaoOriginal, item.transacao.contraparte);
+        const obsNovo = formatarObservacoesImportacao({
+          descricaoOriginal: item.transacao.descricaoOriginal,
+          contraparte: item.transacao.contraparte,
+          documento: item.transacao.documento,
+          fitid: item.transacao.fitid,
+          bancoCodigo: params.bancoCodigo,
+          bancoNome: params.bancoNome,
+          nomeArquivo: params.nomeArquivo,
+          formato: params.formato,
+          loteId: params.loteId,
+          dataHoraImportacao: dataHoraImportacaoAtual,
+        });
+
         const assinaturaFraca = gerarAssinaturaFraca({
           conta: params.contaId,
           data: item.transacao.data,
@@ -3453,9 +3560,7 @@ export const dbService = {
         const novoLancamento: Lancamento = {
           id: `lanc-imp-${Date.now()}-${Math.random().toString(36).substr(2, 7)}`,
           tipo: item.tipoLancamento === 'receita' ? 'receita' : 'despesa',
-          descricao: item.transacao.contraparte
-            ? `${item.transacao.descricaoOriginal} - ${item.transacao.contraparte}`
-            : item.transacao.descricaoOriginal,
+          descricao: descNovo,
           valor: item.transacao.valor,
           data_vencimento: item.transacao.data,
           data_pagamento: item.transacao.data,
@@ -3466,6 +3571,7 @@ export const dbService = {
           projeto_id: item.projetoId || undefined,
           forma_pagamento: formaPagamento,
           recorrencia: 'nenhuma',
+          observacoes: obsNovo,
           origem: 'importacao',
           origem_importacao: {
             lote_id: params.loteId,
@@ -3474,6 +3580,11 @@ export const dbService = {
             fitid: item.transacao.fitid,
             assinatura_fraca: assinaturaFraca,
             formato: params.formato,
+            nome_arquivo: params.nomeArquivo,
+            data_importacao: dataHoraImportacaoAtual,
+            documento: item.transacao.documento,
+            contraparte: item.transacao.contraparte,
+            descricao_original: item.transacao.descricaoOriginal,
           },
           criado_em: new Date().toISOString(),
         };
@@ -3486,10 +3597,9 @@ export const dbService = {
           totais.total_debitos = +(totais.total_debitos + item.transacao.valor).toFixed(2);
         }
       }
-
     }
 
-    // 3. Regras de importação a salvar
+    // 4. Regras de importação a salvar
     if (params.regrasACriar && params.regrasACriar.length > 0) {
       for (const r of params.regrasACriar) {
         const novaRegra: RegraImportacao = {
@@ -3502,9 +3612,7 @@ export const dbService = {
       }
     }
 
-    // 3.5. VALIDAÇÃO DE SEGURANÇA ESTRITA (Trava Anti-Vazamento entre Contas - Requisito 3)
-    // Garante antes de persistir que NENHUM lançamento do lote afeta conta diferente da escolhida,
-    // exceto exclusivamente o lançamento de contrapartida de transferência quando contaDestinoId foi explicitamente fornecida.
+    // 5. Trava Anti-Vazamento entre Contas (Requisito 3 - Parte 15G)
     for (const lanc of novosLancamentos) {
       const contaValida =
         lanc.conta_id === params.contaId ||
@@ -3525,12 +3633,13 @@ export const dbService = {
       }
     }
 
-    // 4. Execução atômica em batches de no máximo 500 operações no Firestore
+    // 6. Execução em batches no Firestore (máx 490 operações por lote)
     const todasOperacoes: Array<{
-      tipo: 'set' | 'update';
+      tipo: 'set';
       colecao: string;
       id: string;
       dado: any;
+      merge?: boolean;
     }> = [];
 
     for (const lanc of novosLancamentos) {
@@ -3543,14 +3652,16 @@ export const dbService = {
     }
 
     for (const lanc of lancamentosAtualizados) {
+      // Usar set com merge: true para enriquecimento seguro (não derruba o lote se documento não existir)
       todasOperacoes.push({
-        tipo: 'update',
+        tipo: 'set',
         colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS,
         id: lanc.id,
         dado: {
           descricao: lanc.descricao,
           origem_importacao: lanc.origem_importacao,
         },
+        merge: true,
       });
     }
 
@@ -3563,7 +3674,6 @@ export const dbService = {
       });
     }
 
-    // Lotes de até 490 operações para respeitar folga do Firestore
     const TAMANHO_MAX_BATCH = 490;
     try {
       for (let i = 0; i < todasOperacoes.length; i += TAMANHO_MAX_BATCH) {
@@ -3572,25 +3682,66 @@ export const dbService = {
 
         for (const op of fatia) {
           const docRef = doc(db, op.colecao, op.id);
-          if (op.tipo === 'set') {
-            batch.set(docRef, op.dado);
+          if (op.merge) {
+            batch.set(docRef, op.dado, { merge: true });
           } else {
-            batch.update(docRef, op.dado);
+            batch.set(docRef, op.dado);
           }
         }
 
         await batch.commit();
       }
     } catch (err) {
+      const msgTraduzida = traduzirErroFirestore(err);
       console.error('Falha ao persistir batch no Firestore:', err);
       registroLote.totais = totais;
       registroLote.status = 'parcial';
       registroLote.atualizado_em = new Date().toISOString();
       await setDoc(doc(db, FIRESTORE_COLLECTIONS.IMPORTOES, params.loteId), registroLote, { merge: true }).catch(() => {});
-      throw new Error(`Falha na gravação do lote no Firestore. O lote foi registrado como 'parcial'. Detalhes: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`Falha na gravação do lote no servidor. O lote foi registrado como 'parcial'. Detalhes: ${msgTraduzida}`);
     }
 
-    // 5. Atualização atômica do cache síncrono em memória
+    // 7. Conferência pós-commit no Firestore por lote_id (Parte 16C)
+    let totalConfirmadosServidor = 0;
+    try {
+      const qLote = query(
+        collection(db, FIRESTORE_COLLECTIONS.LANCAMENTOS),
+        where('origem_importacao.lote_id', '==', params.loteId)
+      );
+      const snapshotLote = await getDocs(qLote);
+      totalConfirmadosServidor = snapshotLote.size;
+    } catch (checkErr) {
+      console.warn('Não foi possível verificar contagem no Firestore pós-commit:', checkErr);
+      avisos.push(`Não foi possível auditar contagem no servidor após gravação: ${traduzirErroFirestore(checkErr)}`);
+      // Em fallback de ambiente local ou offline, assume novosLancamentos.length
+      totalConfirmadosServidor = novosLancamentos.length;
+    }
+
+    if (totalConfirmadosServidor !== novosLancamentos.length) {
+      const msgDivergencia = `Divergência detectada após gravação: o servidor confirmou ${totalConfirmadosServidor} lançamento(s), mas o lote esperava ${novosLancamentos.length}. O lote foi registrado como 'parcial'.`;
+      console.error(msgDivergencia);
+      registroLote.totais = totais;
+      registroLote.status = 'parcial';
+      registroLote.atualizado_em = new Date().toISOString();
+      await setDoc(doc(db, FIRESTORE_COLLECTIONS.IMPORTOES, params.loteId), registroLote, { merge: true }).catch(() => {});
+      throw new Error(msgDivergencia);
+    }
+
+    // 8. SÓ AGORA aplicar o ajuste de saldo inicial e data na conta (com await e sem mutar cache)
+    if (contaAtualizadaPlanejada) {
+      try {
+        await this.saveContaBancaria(contaAtualizadaPlanejada);
+      } catch (contaErr) {
+        console.error('Falha ao atualizar dados de saldo inicial da conta:', contaErr);
+        registroLote.totais = totais;
+        registroLote.status = 'parcial';
+        registroLote.atualizado_em = new Date().toISOString();
+        await setDoc(doc(db, FIRESTORE_COLLECTIONS.IMPORTOES, params.loteId), registroLote, { merge: true }).catch(() => {});
+        throw new Error(`Lançamentos foram gravados, mas houve falha ao atualizar a conta bancária: ${traduzirErroFirestore(contaErr)}`);
+      }
+    }
+
+    // 9. Atualização atômica do cache síncrono em memória
     for (const novo of novosLancamentos) {
       cacheLancamentos.push(novo);
     }
@@ -3602,8 +3753,9 @@ export const dbService = {
       cacheRegrasImportacao.push(reg);
     }
 
-    // 6. Recalcula saldos finais
-    const resumoDepois = this.calcularResumoConta(conta);
+    // 10. Recalcula saldos finais
+    const contaFinal = this.getContaById(params.contaId) || conta;
+    const resumoDepois = this.calcularResumoConta(contaFinal);
     const saldoDepois = resumoDepois.saldo_real;
 
     let diferencaConciliacao: number | undefined = undefined;
@@ -3611,7 +3763,6 @@ export const dbService = {
       diferencaConciliacao = +(params.saldoBanco.valor - saldoDepois).toFixed(2);
     }
 
-    // 6b. Calcula contasAfetadas para painel de transparência na UI
     const contasAfetadas: Array<{
       contaId: string;
       contaNome: string;
@@ -3619,18 +3770,17 @@ export const dbService = {
       saldoDepois: number;
     }> = [
       {
-        contaId: conta.id,
-        contaNome: conta.nome,
+        contaId: contaFinal.id,
+        contaNome: contaFinal.nome,
         saldoAntes,
         saldoDepois,
       },
     ];
-    // Se houve transferência explícita para conta destino, incluir também
+
     if (params.contaDestinoId) {
       const contaDestino = this.getContaById(params.contaDestinoId);
       if (contaDestino) {
         const resumoDestino = this.calcularResumoConta(contaDestino);
-        // saldoAntes da conta destino = saldoDepois (após cache) menos a variação líquida gerada pela importação
         const variacaoDestino = novosLancamentos
           .filter((l) => l.conta_id === params.contaDestinoId)
           .reduce((sum, l) => sum + (l.tipo === 'receita' ? l.valor : -l.valor), 0);
@@ -3643,7 +3793,7 @@ export const dbService = {
       }
     }
 
-    // 7. Finaliza o registro de importação como 'concluida'
+    // 11. Finaliza o registro de importação como 'concluida'
     registroLote.totais = totais;
     registroLote.saldo_sistema_depois = saldoDepois;
     registroLote.status = 'concluida';
@@ -3661,7 +3811,7 @@ export const dbService = {
       'importacoes',
       'importacao',
       `Importação de extrato bancário lote ${params.loteId} (${totais.lancadas} lançamentos)`,
-      `Arquivo: ${params.nomeArquivo}, Conta: ${conta.nome}, Banco: ${params.bancoCodigo}, Período: ${params.periodo.inicio} a ${params.periodo.fim}`
+      `Arquivo: ${params.nomeArquivo}, Conta: ${contaFinal.nome}, Banco: ${params.bancoCodigo}, Período: ${params.periodo.inicio} a ${params.periodo.fim}`
     );
 
     notify('lancamentos');
@@ -3678,6 +3828,9 @@ export const dbService = {
       diferencaConciliacao,
       mensagem: `Importação de ${totais.lancadas} lançamento(s) concluída com sucesso.`,
       contasAfetadas,
+      confirmadosServidor: totalConfirmadosServidor,
+      avisos,
+      statusLote: 'concluida',
     };
   },
 
@@ -3731,6 +3884,7 @@ export const dbService = {
         dado: {
           descricao: snap.descricaoAnterior,
           origem_importacao: snap.origemImportacaoAnterior || null,
+          observacoes: snap.observacoesAnterior !== undefined ? snap.observacoesAnterior : '',
         },
       });
     }
@@ -3770,6 +3924,7 @@ export const dbService = {
           ...cacheLancamentos[idx],
           descricao: snap.descricaoAnterior,
           origem_importacao: snap.origemImportacaoAnterior,
+          observacoes: snap.observacoesAnterior !== undefined ? snap.observacoesAnterior : cacheLancamentos[idx].observacoes,
         };
       }
     }
@@ -3782,7 +3937,7 @@ export const dbService = {
         if (lote.dataSaldoInicialAnteriorConta) {
           contaLote.data_saldo_inicial = lote.dataSaldoInicialAnteriorConta;
         }
-        this.saveContaBancaria(contaLote);
+        await this.saveContaBancaria(contaLote);
       }
     }
 
@@ -4378,7 +4533,7 @@ export const dbService = {
         saldo_inicial: 0,
         data_saldo_inicial: novaDataSaldoInicial || conta.data_saldo_inicial,
       };
-      this.saveContaBancaria(contaAtualizada);
+      await this.saveContaBancaria(contaAtualizada);
     }
 
     // ─── 6. Atualizar caches locais ────────────────────────────────────────

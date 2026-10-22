@@ -137,11 +137,18 @@ export interface AnaliseDuplaContagem {
   diferenca: number;
   saldoInicialSugerido: number;
   dataSaldoInicialSugerida: string;
+  divergenciaExclusivaContamax?: boolean;
+  impactoContamaxIgnorado?: number;
+  diferencaReal?: number;
 }
 
 /**
  * Detecta se o saldo projetado da conta diverge do LEDGERBAL do banco,
  * indicando provável dupla contagem do saldo inicial, e sugere a correção exata.
+ * 
+ * PARTE 16D: Isola o impacto financeiro de movimentações Contamax marcadas
+ * como 'ignorar' para que o ajuste de saldo inicial NUNCA absorva a diferença
+ * do Contamax nem distorça o histórico da conta.
  */
 export function analisarDuplaContagemSaldoInicial(params: {
   saldoInicialAtual: number;
@@ -149,6 +156,7 @@ export function analisarDuplaContagemSaldoInicial(params: {
   saldoBanco: number;
   menorDataTransacao?: string;
   tolerancia?: number;
+  impactoContamaxIgnorado?: number;
 }): AnaliseDuplaContagem {
   const {
     saldoInicialAtual,
@@ -156,14 +164,27 @@ export function analisarDuplaContagemSaldoInicial(params: {
     saldoBanco,
     menorDataTransacao,
     tolerancia = 0.01,
+    impactoContamaxIgnorado = 0,
   } = params;
 
   const saldoProjetado = +(saldoInicialAtual + somaTotalMovimentacoes).toFixed(2);
   const diferenca = +(saldoProjetado - saldoBanco).toFixed(2);
-  const temDivergencia = Math.abs(diferenca) > tolerancia;
 
-  // saldo_inicial_sugerido = LEDGERBAL - soma(todas as movimentações da conta)
-  const saldoInicialSugerido = +(saldoBanco - somaTotalMovimentacoes).toFixed(2);
+  // Quando o Contamax é ignorado, a movimentação da aplicação/resgate não entra no app,
+  // mas está no saldo do banco.
+  // Se débito no extrato (aplicação): impactoContamax < 0. No banco, o saldo final diminui.
+  // No app, o saldo projetado é maior que o saldo do banco por esse valor.
+  // Logo, a divergência bruta explicada pelo Contamax ignorado é (-impactoContamax).
+  // A divergência REAL (atribuível puramente a saldo inicial) é:
+  const diferencaReal = +(diferenca + impactoContamaxIgnorado).toFixed(2);
+
+  // Só há divergência de saldo inicial se a diferença REAL superar a tolerância
+  const temDivergencia = Math.abs(diferencaReal) > tolerancia;
+  const divergenciaExclusivaContamax = !temDivergencia && Math.abs(diferenca) > tolerancia;
+
+  // saldo_inicial_sugerido corrige apenas a diferencaReal, sem absorver a diferença do Contamax:
+  // saldo_inicial_sugerido = saldoBanco - somaTotalMovimentacoes - impactoContamaxIgnorado
+  const saldoInicialSugerido = +(saldoBanco - somaTotalMovimentacoes - impactoContamaxIgnorado).toFixed(2);
 
   // data_saldo_inicial = dia anterior à primeira transação da conta
   const dataReferencia = menorDataTransacao || new Date().toISOString().split('T')[0];
@@ -176,5 +197,9 @@ export function analisarDuplaContagemSaldoInicial(params: {
     diferenca,
     saldoInicialSugerido,
     dataSaldoInicialSugerida,
+    divergenciaExclusivaContamax,
+    impactoContamaxIgnorado,
+    diferencaReal,
   };
 }
+
