@@ -1,18 +1,8 @@
 // MT Solar - Gestão Financeira
-// Auxiliar de Prevenção de Dupla Contagem e Cálculo de Saldo Inicial Retroativo (Parte 15J)
+// Auxiliar Único de Saldo Inicial na Importação de Extratos Bancários (Parte 18C - REGRA ÚNICA)
+// Substitui integralmente a Parte 17B e toda a lógica de ajuste de saldo inicial das Partes 15J e 16D.
 
 import { Lancamento } from '../../types';
-
-export interface ItemMovimentacaoCalc {
-  acao: 'incluir' | 'ignorar' | 'vincular';
-  natureza?: string;
-  tipoLancamento: 'receita' | 'despesa' | 'transferencia' | 'ajuste';
-  transacao: {
-    tipo: 'credito' | 'debito';
-    valor: number;
-    data: string;
-  };
-}
 
 /**
  * Subtrai exatamente 1 dia civil de uma data ISO (YYYY-MM-DD),
@@ -27,6 +17,17 @@ export function subtrairUmDia(dataIso: string): string {
 }
 
 /**
+ * Converte saldo "disponível" (que inclui limite do cheque especial) para saldo real da conta.
+ * Regra: saldo real = disponível − limite da conta
+ */
+export function converterDisponivelParaSaldoReal(
+  saldoDisponivel: number,
+  limiteConta: number
+): number {
+  return +(saldoDisponivel - (limiteConta || 0)).toFixed(2);
+}
+
+/**
  * Verifica se a conta bancária já possui algum lançamento prévio com origem de importação de extrato.
  */
 export function contaTemLancamentosImportados(
@@ -38,9 +39,130 @@ export function contaTemLancamentosImportados(
   );
 }
 
+export interface ParamsCalculoSaldoInicialUnico {
+  /** Saldo real informado (LEDGERBAL do OFX ou digitado pelo usuário, já convertido se era disponível) */
+  saldoRealInformado: number;
+  /** Data de referência do saldo informado (ex.: data do LEDGERBAL ou data digitada) */
+  dataSaldoInformado: string;
+  /** ID da conta bancária */
+  contaId: string;
+  /**
+   * Todos os lançamentos pagos da conta pós-gravação (já incluindo os novos lançamentos do extrato).
+   * Itens ignorados (ex.: Contamax ignorado) NÃO devem estar nesta lista.
+   */
+  todosLancamentosPagosConta: Lancamento[];
+}
+
+export interface ResultadoCalculoSaldoInicialUnico {
+  novoSaldoInicial: number;
+  novaDataSaldoInicial: string;
+  somaLancamentosConsiderados: number;
+  totalLancamentosConsiderados: number;
+  menorDataLancamento?: string;
+}
+
 /**
- * Calcula a variação financeira líquida e identifica a menor data entre
- * os lançamentos existentes da conta e os novos itens revisados do extrato.
+ * REGRA ÚNICA (Parte 18C):
+ * saldo_inicial = saldo_real_informado − (soma de TODOS os lançamentos pagos da conta com data ≤ data do saldo informado,
+ *                 já incluindo os que serão gravados pelo extrato e considerando entradas positivas e saídas negativas).
+ * data_saldo_inicial = dia anterior ao lançamento mais antigo da conta.
+ */
+export function calcularSaldoInicialPrimeiraImportacao(
+  params: ParamsCalculoSaldoInicialUnico
+): ResultadoCalculoSaldoInicialUnico {
+  const { saldoRealInformado, dataSaldoInformado, contaId, todosLancamentosPagosConta } = params;
+
+  // 1. Deduplicação estrita por ID
+  const mapPorId = new Map<string, Lancamento>();
+  for (const l of todosLancamentosPagosConta) {
+    if (l.conta_id === contaId && l.status === 'pago') {
+      mapPorId.set(l.id, l);
+    }
+  }
+  const lancamentosDeduplicados = Array.from(mapPorId.values());
+
+  // 2. Filtrar lançamentos pagos da conta com data <= dataSaldoInformado
+  const lancsAteData = lancamentosDeduplicados.filter((l) => {
+    const dt = l.data_pagamento || l.data_vencimento;
+    return dt && dt <= dataSaldoInformado;
+  });
+
+  // 3. Somar entradas (+ valor) e saídas (- valor)
+  let soma = 0;
+  for (const l of lancsAteData) {
+    if (l.tipo === 'receita') {
+      soma += l.valor;
+    } else {
+      soma -= l.valor;
+    }
+  }
+  const somaLancamentosConsiderados = +soma.toFixed(2);
+
+  // 4. saldo_inicial = saldo_real_informado - soma
+  const novoSaldoInicial = +(saldoRealInformado - somaLancamentosConsiderados).toFixed(2);
+
+  // 5. data_saldo_inicial = dia anterior ao lançamento mais antigo da conta
+  const todasDatas = lancamentosDeduplicados
+    .map((l) => l.data_pagamento || l.data_vencimento)
+    .filter(Boolean)
+    .sort();
+
+  const menorDataLancamento = todasDatas[0];
+  const dataReferencia = menorDataLancamento || dataSaldoInformado;
+  const novaDataSaldoInicial = subtrairUmDia(dataReferencia);
+
+  return {
+    novoSaldoInicial,
+    novaDataSaldoInicial,
+    somaLancamentosConsiderados,
+    totalLancamentosConsiderados: lancsAteData.length,
+    menorDataLancamento,
+  };
+}
+
+/**
+ * Confere se o saldo real do app é igual ao saldo informado (tolerância de R$ 0,01).
+ */
+export function conferirSaldoFinal(
+  saldoRealApp: number,
+  saldoRealInformado: number,
+  tolerancia: number = 0.01
+): { confere: boolean; diferenca: number } {
+  const diferenca = +(saldoRealApp - saldoRealInformado).toFixed(2);
+  const confere = Math.abs(diferenca) <= tolerancia;
+  return { confere, diferenca };
+}
+
+// ============================================================
+// STUBS LEGADOS (Partes 15J, 16D, 16F)
+// Mantidos para retrocompatibilidade com scripts de testes existentes
+// ============================================================
+
+export interface ItemMovimentacaoCalc {
+  acao: string;
+  transacao: {
+    data: string;
+    valor: number;
+    tipo: 'credito' | 'debito';
+  };
+  tipoLancamento?: string;
+  natureza?: string;
+}
+
+export interface AnaliseDuplaContagem {
+  temDivergencia: boolean;
+  saldoProjetado: number;
+  saldoBanco: number;
+  diferenca: number;
+  saldoInicialSugerido: number;
+  dataSaldoInicialSugerida: string;
+  divergenciaExclusivaContamax?: boolean;
+  impactoContamaxIgnorado?: number;
+  diferencaReal?: number;
+}
+
+/**
+ * @deprecated Substituído pela REGRA ÚNICA da Parte 18C.
  */
 export function calcularMovimentacoesConta(params: {
   contaId: string;
@@ -56,7 +178,6 @@ export function calcularMovimentacoesConta(params: {
 } {
   const { contaId, lancamentosExistentes, novosItens, contaDestinoId, dataCorte } = params;
 
-  // 1. Lançamentos existentes pagos da conta
   const existentesFiltrados = lancamentosExistentes.filter((l) => {
     if (l.conta_id !== contaId) return false;
     if (l.status !== 'pago') return false;
@@ -74,20 +195,15 @@ export function calcularMovimentacoesConta(params: {
     }
   }
 
-  // 2. Novos itens a serem incluídos pelo lote
   let somaNovos = 0;
   for (const item of novosItens) {
     if (item.acao !== 'incluir') continue;
 
-    // Movimentação interna sem conta destino explícita é ignorada
     if (item.natureza === 'movimentacao_interna' && !contaDestinoId) {
       continue;
     }
 
     if (item.natureza === 'movimentacao_interna' && contaDestinoId) {
-      // Transferência Contamax:
-      // Débito no extrato da CC = aplicação (sai da CC) -> despesa (-valor)
-      // Crédito no extrato da CC = resgate (entra na CC) -> receita (+valor)
       if (item.transacao.tipo === 'debito') {
         somaNovos -= item.transacao.valor;
       } else {
@@ -96,7 +212,6 @@ export function calcularMovimentacoesConta(params: {
       continue;
     }
 
-    // Lançamentos comuns
     if (item.tipoLancamento === 'receita' || item.transacao.tipo === 'credito') {
       somaNovos += item.transacao.valor;
     } else {
@@ -108,7 +223,6 @@ export function calcularMovimentacoesConta(params: {
   somaNovos = +somaNovos.toFixed(2);
   const somaTotal = +(somaExistentes + somaNovos).toFixed(2);
 
-  // Menor data entre todas as movimentações consideradas
   const datas: string[] = [];
   for (const l of existentesFiltrados) {
     const dt = l.data_pagamento || l.data_vencimento;
@@ -130,25 +244,8 @@ export function calcularMovimentacoesConta(params: {
   };
 }
 
-export interface AnaliseDuplaContagem {
-  temDivergencia: boolean;
-  saldoProjetado: number;
-  saldoBanco: number;
-  diferenca: number;
-  saldoInicialSugerido: number;
-  dataSaldoInicialSugerida: string;
-  divergenciaExclusivaContamax?: boolean;
-  impactoContamaxIgnorado?: number;
-  diferencaReal?: number;
-}
-
 /**
- * Detecta se o saldo projetado da conta diverge do LEDGERBAL do banco,
- * indicando provável dupla contagem do saldo inicial, e sugere a correção exata.
- * 
- * PARTE 16D: Isola o impacto financeiro de movimentações Contamax marcadas
- * como 'ignorar' para que o ajuste de saldo inicial NUNCA absorva a diferença
- * do Contamax nem distorça o histórico da conta.
+ * @deprecated Substituído pela REGRA ÚNICA da Parte 18C.
  */
 export function analisarDuplaContagemSaldoInicial(params: {
   saldoInicialAtual: number;
@@ -169,24 +266,13 @@ export function analisarDuplaContagemSaldoInicial(params: {
 
   const saldoProjetado = +(saldoInicialAtual + somaTotalMovimentacoes).toFixed(2);
   const diferenca = +(saldoProjetado - saldoBanco).toFixed(2);
-
-  // Quando o Contamax é ignorado, a movimentação da aplicação/resgate não entra no app,
-  // mas está no saldo do banco.
-  // Se débito no extrato (aplicação): impactoContamax < 0. No banco, o saldo final diminui.
-  // No app, o saldo projetado é maior que o saldo do banco por esse valor.
-  // Logo, a divergência bruta explicada pelo Contamax ignorado é (-impactoContamax).
-  // A divergência REAL (atribuível puramente a saldo inicial) é:
   const diferencaReal = +(diferenca + impactoContamaxIgnorado).toFixed(2);
 
-  // Só há divergência de saldo inicial se a diferença REAL superar a tolerância
   const temDivergencia = Math.abs(diferencaReal) > tolerancia;
   const divergenciaExclusivaContamax = !temDivergencia && Math.abs(diferenca) > tolerancia;
 
-  // saldo_inicial_sugerido corrige apenas a diferencaReal, sem absorver a diferença do Contamax:
-  // saldo_inicial_sugerido = saldoBanco - somaTotalMovimentacoes - impactoContamaxIgnorado
   const saldoInicialSugerido = +(saldoBanco - somaTotalMovimentacoes - impactoContamaxIgnorado).toFixed(2);
 
-  // data_saldo_inicial = dia anterior à primeira transação da conta
   const dataReferencia = menorDataTransacao || new Date().toISOString().split('T')[0];
   const dataSaldoInicialSugerida = subtrairUmDia(dataReferencia);
 

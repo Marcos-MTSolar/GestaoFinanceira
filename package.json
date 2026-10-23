@@ -17,7 +17,10 @@
     "test:16c": "tsx scripts/test_parte_16C.ts",
     "test:16d": "tsx scripts/test_parte_16D.ts",
     "test:16e": "tsx scripts/test_parte_16E.ts",
-    "test:16f": "tsx scripts/test_parte_16F.ts"
+    "test:16f": "tsx scripts/test_parte_16F.ts",
+    "test:18a": "tsx scripts/test_parte_18A.ts",
+    "test:18b": "tsx scripts/test_parte_18B.ts",
+    "test:18c": "tsx scripts/test_parte_18C.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

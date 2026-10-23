@@ -231,6 +231,13 @@ export interface ParamsImportacaoLote {
   saldoBanco?: { valor: number; data: string };
   ajustarDataSaldoInicial?: boolean;
   novaDataSaldoInicial?: string;
+  /** Saldo informado pelo banco ou digitado pelo usuário (Parte 18C - Regra Única) */
+  saldoInformado?: {
+    valor: number;
+    data: string;
+    isDisponivel?: boolean;
+    origem?: 'ledgerbal' | 'digitado' | 'ofx_ledgerbal' | 'usuario';
+  };
 }
 
 export interface ResultadoImportacaoLote {
@@ -263,6 +270,13 @@ export interface ResultadoImportacaoLote {
   avisos?: string[];
   /** Status final da persistência do lote (Parte 16C) */
   statusLote?: 'concluida' | 'parcial';
+  /** Saldo inicial definido na primeira importação da conta (Parte 18C) */
+  saldoInicialDefinido?: {
+    novoSaldoInicial: number;
+    novaDataSaldoInicial: string;
+  };
+  /** Erro de conferência caso o saldo do app não coincida com o saldo informado (Parte 18C) */
+  erroConferenciaSaldo?: string;
 }
 
 export interface LancamentoAnomaloAuditoria {
@@ -569,4 +583,118 @@ export interface ResultadoReinicioConta {
   backup_timestamp: string;
   saldos_finais: ResumoSaldoContaPosReinicio[];
 }
+
+// ─── PARTE 18A: Exclusão Completa e Segura de Conta Bancária ───────────────────
+export interface ImpactoOutraContaExclusao {
+  conta_id: string;
+  conta_nome: string;
+  saldo_antes: number;
+  saldo_depois: number;
+  diferenca: number;
+  quantidade_transferencias: number;
+  valores_transferencias: number[];
+}
+
+export interface DryRunExclusaoConta {
+  conta: ContaBancaria;
+  total_lancamentos_conta: number;
+  discriminacao_lancamentos: {
+    importados: number;
+    manuais: number;
+    pendentes_pagar_receber: number;
+    folha: number;
+    transferencias: number;
+  };
+  total_transferencias_outras_contas: number;
+  outras_contas_afetadas: ImpactoOutraContaExclusao[];
+  total_lotes_importacoes: number;
+  total_regras_importacao: number;
+  registros_folha_sem_conta: number;
+  bloqueado_por_transferencias: boolean;
+  motivo_bloqueio?: string;
+}
+
+export interface ParamsExclusaoConta {
+  contaId: string;
+  nomeConfirmacao: string;
+  excluirContrapartidasTransferencias?: boolean;
+  usuarioEmail?: string;
+}
+
+export interface ResultadoExclusaoConta {
+  sucesso: boolean;
+  conta_id: string;
+  conta_nome: string;
+  total_lancamentos_excluidos: number;
+  total_contrapartidas_excluidas: number;
+  total_lotes_excluidos: number;
+  total_regras_excluidas: number;
+  registros_folha_desvinculados: number;
+  backup_json?: string;
+  mensagem?: string;
+  lancamentosRemovidosAntesDaFalha?: number;
+}
+
+// ─── PARTE 18B: Limpeza de Histórico Órfão de Contas Bancárias ────────────────
+export interface TransferenciaOrfaInfo {
+  lancamento_orfao_id: string;
+  tipo_orfao: TipoLancamento;
+  valor: number;
+  data: string;
+  descricao: string;
+  conta_inexistente_id: string;
+  conta_existente_id: string;
+  conta_existente_nome: string;
+  lancamento_existente_id: string;
+  saldo_atual_conta_existente: number;
+  efeito_no_saldo: string;
+}
+
+export interface GrupoOrfao {
+  conta_id: string;
+  total_lancamentos: number;
+  data_mais_antiga: string;
+  data_mais_recente: string;
+  total_entradas: number;
+  total_saidas: number;
+  total_lotes_importacao: number;
+  total_regras_importacao: number;
+  transferencias_com_contas_existentes: TransferenciaOrfaInfo[];
+}
+
+export interface ContaExistenteImpactoOrfao {
+  conta_id: string;
+  conta_nome: string;
+  saldo_atual: number;
+  quantidade_transferencias: number;
+}
+
+export interface DryRunLimparOrfaos {
+  total_lancamentos_orfaos: number;
+  total_lotes_orfaos: number;
+  total_regras_orfaos: number;
+  total_transferencias_com_contas_existentes: number;
+  grupos: GrupoOrfao[];
+  contas_existentes_afetadas: ContaExistenteImpactoOrfao[];
+  tem_orfaos_para_limpar: boolean;
+}
+
+export interface ParamsLimparOrfaos {
+  textoConfirmacao: string; // Deve ser "LIMPAR"
+  removerOrfaosComTransferencia?: boolean; // Opção explícita para órfãos contrapartida de conta existente
+  usuarioEmail?: string;
+}
+
+export interface ResultadoLimparOrfaos {
+  sucesso: boolean;
+  total_lancamentos_excluidos: number;
+  total_lancamentos_preservados: number;
+  total_lotes_excluidos: number;
+  total_regras_excluidas: number;
+  total_contrapartidas_desvinculadas: number;
+  backup_json?: string;
+  mensagem: string;
+}
+
+
 

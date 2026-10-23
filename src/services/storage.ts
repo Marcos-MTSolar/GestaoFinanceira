@@ -67,6 +67,16 @@ import {
   ResultadoReinicioConta,
   ImpactoContaReinicio,
   ResumoSaldoContaPosReinicio,
+  ImpactoOutraContaExclusao,
+  DryRunExclusaoConta,
+  ParamsExclusaoConta,
+  ResultadoExclusaoConta,
+  TransferenciaOrfaInfo,
+  GrupoOrfao,
+  ContaExistenteImpactoOrfao,
+  DryRunLimparOrfaos,
+  ParamsLimparOrfaos,
+  ResultadoLimparOrfaos,
 } from '../types';
 import { calcularDescontosRecorrentes } from '../utils/descontos';
 import { CONFIG_QUINZENAL_PADRAO, dataDoDiaNaCompetencia, dividirQuinzenas } from '../utils/quinzena';
@@ -79,6 +89,12 @@ import {
   complementarObservacoesEnriquecimento,
   obterNomeBanco,
 } from '../utils/extrato/observacoesHelper';
+import {
+  contaTemLancamentosImportados,
+  calcularSaldoInicialPrimeiraImportacao,
+  converterDisponivelParaSaldoReal,
+  conferirSaldoFinal,
+} from '../utils/extrato/saldoInicialHelper';
 
 // Nomes das coleções do Firestore
 const FIRESTORE_COLLECTIONS = {
@@ -446,6 +462,14 @@ export const dbService = {
     notify('auth');
   },
 
+  isUsuarioAdmin(): boolean {
+    const u = this.getUsuarioAtual();
+    if (!u) {
+      return this.isModoDemonstracao();
+    }
+    return u.papel === 'administrador';
+  },
+
   // Usuários Autorizados
   getUsuariosAutorizados(): UsuarioAutorizado[] {
     return cacheUsuarios;
@@ -516,6 +540,15 @@ export const dbService = {
   },
 
   deleteContaBancaria(id: string): { sucesso: boolean; mensagem?: string } {
+    const temLancamentos = cacheLancamentos.some((l) => l.conta_id === id);
+    if (temLancamentos) {
+      return {
+        sucesso: false,
+        mensagem:
+          'A conta possui histórico de lançamentos. Para garantir que nada fique órfão, utilize a exclusão completa com simulação, backup e confirmação.',
+      };
+    }
+
     deleteDoc(doc(db, FIRESTORE_COLLECTIONS.CONTAS, id)).catch((e) =>
       console.warn('Erro async deleteContaBancaria:', e)
     );
@@ -743,8 +776,13 @@ export const dbService = {
     conta_id?: string;
     pagina?: number;
     limite?: number;
+    incluirOrfaos?: boolean;
   }): Lancamento[] {
-    let lista = [...cacheLancamentos];
+    // Parte 18A: Proteção contra lançamentos cujo conta_id não existe mais no sistema (relatórios, painel e totais)
+    const contasExistentesIds = new Set(cacheContas.map((c) => c.id));
+    let lista = filtros?.incluirOrfaos
+      ? [...cacheLancamentos]
+      : cacheLancamentos.filter((l) => contasExistentesIds.has(l.conta_id));
 
     if (filtros) {
       if (filtros.dataInicio) {
@@ -3261,22 +3299,8 @@ export const dbService = {
     const resumoAntes = this.calcularResumoConta(conta);
     const saldoAntes = resumoAntes.saldo_real;
 
-    // 1. Planejamento do ajuste de saldo inicial e data da conta (Parte 16C)
-    // ATENÇÃO: Nenhuma alteração é gravada ou aplicada à conta antes que todos os
-    // lançamentos sejam devidamente comitados e confirmados no Firestore!
-    let contaAtualizadaPlanejada: ContaBancaria | null = null;
-    if (params.saldoInicialAjustado) {
-      contaAtualizadaPlanejada = {
-        ...conta,
-        saldo_inicial: params.saldoInicialAjustado.novoSaldoInicial,
-        data_saldo_inicial: params.saldoInicialAjustado.novaDataSaldoInicial,
-      };
-    } else if (params.ajustarDataSaldoInicial && params.novaDataSaldoInicial) {
-      contaAtualizadaPlanejada = {
-        ...conta,
-        data_saldo_inicial: params.novaDataSaldoInicial,
-      };
-    }
+    // Parte 18C: Detecta se a conta bancária já possui lançamentos importados anteriores
+    const isPrimeiraImportacaoConta = !contaTemLancamentosImportados(params.contaId, cacheLancamentos);
 
     const totais = {
       lancadas: 0,
@@ -3727,10 +3751,60 @@ export const dbService = {
       throw new Error(msgDivergencia);
     }
 
-    // 8. SÓ AGORA aplicar o ajuste de saldo inicial e data na conta (com await e sem mutar cache)
-    if (contaAtualizadaPlanejada) {
+    // 8. PARTE 18C (REGRA ÚNICA):
+    // Aplicar o saldo inicial somente na PRIMEIRA importação da conta (conta sem lançamentos importados anteriores),
+    // no mesmo momento da gravação e DEPOIS de os lançamentos serem confirmados no servidor.
+    // Calcular a soma com dados deduplicados por ID.
+    let saldoInicialDefinido: { novoSaldoInicial: number; novaDataSaldoInicial: string } | undefined = undefined;
+
+    const infoSaldo = params.saldoInformado || params.saldoBanco;
+    let saldoRealInformado: number | undefined = undefined;
+    let dataSaldoInformado: string | undefined = undefined;
+
+    if (infoSaldo && infoSaldo.valor !== undefined) {
+      dataSaldoInformado = infoSaldo.data || params.periodo.fim || new Date().toISOString().split('T')[0];
+      if (params.saldoInformado?.isDisponivel) {
+        saldoRealInformado = converterDisponivelParaSaldoReal(infoSaldo.valor, conta.limite_cheque_especial);
+      } else {
+        saldoRealInformado = infoSaldo.valor;
+      }
+    }
+
+    if (isPrimeiraImportacaoConta && saldoRealInformado !== undefined && dataSaldoInformado) {
+      // Coleta todos os lançamentos pagos da conta pós-gravação (existentes + novos do lote + enriquecidos)
+      const todosLancsParaCalculo: Lancamento[] = [
+        ...cacheLancamentos.filter((l) => l.conta_id === params.contaId),
+        ...novosLancamentos.filter((l) => l.conta_id === params.contaId),
+        ...lancamentosAtualizados.filter((l) => l.conta_id === params.contaId),
+      ];
+
+      const calculo = calcularSaldoInicialPrimeiraImportacao({
+        saldoRealInformado,
+        dataSaldoInformado,
+        contaId: params.contaId,
+        todosLancamentosPagosConta: todosLancsParaCalculo,
+      });
+
+      const saldoInicialAnterior = conta.saldo_inicial;
+      const dataSaldoInicialAnterior = conta.data_saldo_inicial;
+
+      const contaAtualizada: ContaBancaria = {
+        ...conta,
+        saldo_inicial: calculo.novoSaldoInicial,
+        data_saldo_inicial: calculo.novaDataSaldoInicial,
+      };
+
       try {
-        await this.saveContaBancaria(contaAtualizadaPlanejada);
+        await this.saveContaBancaria(contaAtualizada);
+
+        saldoInicialDefinido = {
+          novoSaldoInicial: calculo.novoSaldoInicial,
+          novaDataSaldoInicial: calculo.novaDataSaldoInicial,
+        };
+
+        registroLote.saldoInicialAjustadoNesteLote = true;
+        registroLote.saldoInicialAnteriorConta = saldoInicialAnterior;
+        registroLote.dataSaldoInicialAnteriorConta = dataSaldoInicialAnterior;
       } catch (contaErr) {
         console.error('Falha ao atualizar dados de saldo inicial da conta:', contaErr);
         registroLote.totais = totais;
@@ -3759,8 +3833,19 @@ export const dbService = {
     const saldoDepois = resumoDepois.saldo_real;
 
     let diferencaConciliacao: number | undefined = undefined;
-    if (params.saldoBanco?.valor !== undefined) {
-      diferencaConciliacao = +(params.saldoBanco.valor - saldoDepois).toFixed(2);
+    if (saldoRealInformado !== undefined) {
+      diferencaConciliacao = +(saldoRealInformado - saldoDepois).toFixed(2);
+    }
+
+    // Conferência pós-gravação (Parte 18C - Requisito 5)
+    let erroConferenciaSaldo: string | undefined = undefined;
+    if (saldoRealInformado !== undefined) {
+      const conferencia = conferirSaldoFinal(saldoDepois, saldoRealInformado, 0.01);
+      if (!conferencia.confere) {
+        erroConferenciaSaldo = `Divergência de saldo após a gravação: Saldo Real apurado no App (R$ ${saldoDepois.toFixed(2)}) difere do Saldo Informado pelo Banco (R$ ${saldoRealInformado.toFixed(2)}) em R$ ${conferencia.diferenca.toFixed(2)}. Nenhuma correção automática foi aplicada.`;
+        avisos.push(erroConferenciaSaldo);
+        console.warn('[importarExtratoLote]', erroConferenciaSaldo);
+      }
     }
 
     const contasAfetadas: Array<{
@@ -3798,11 +3883,6 @@ export const dbService = {
     registroLote.saldo_sistema_depois = saldoDepois;
     registroLote.status = 'concluida';
     registroLote.snapshot_enriquecidos = snapshotsEnriquecidos;
-    if (params.saldoInicialAjustado) {
-      registroLote.saldoInicialAjustadoNesteLote = true;
-      registroLote.saldoInicialAnteriorConta = params.saldoInicialAjustado.saldoInicialAnterior;
-      registroLote.dataSaldoInicialAnteriorConta = params.saldoInicialAjustado.dataSaldoInicialAnterior;
-    }
     registroLote.atualizado_em = new Date().toISOString();
 
     await this.saveImportacao(registroLote);
@@ -3831,6 +3911,8 @@ export const dbService = {
       confirmadosServidor: totalConfirmadosServidor,
       avisos,
       statusLote: 'concluida',
+      saldoInicialDefinido,
+      erroConferenciaSaldo,
     };
   },
 
@@ -4581,6 +4663,829 @@ export const dbService = {
       saldos_finais: saldosFinais,
     };
   },
+
+  /**
+   * ─── PARTE 18A: SIMULAÇÃO (DRY-RUN) DE EXCLUSÃO COMPLETA DE CONTA ─────────────
+   * Avalia o impacto antes de excluir a conta bancária:
+   * 1. Quantos lançamentos da conta serão apagados (separando importados, manuais, pendentes, folha)
+   * 2. Transferências com OUTRAS contas (contas e valores afetados, saldo antes e depois)
+   * 3. Lotes da coleção 'importacoes' e regras com conta_id desta conta
+   * 4. Registros da folha que ficarão sem conta de pagamento
+   * 5. Bloqueio automático de exclusão caso haja transferências sem a opção explícita de contrapartida
+   */
+  simularExclusaoConta(
+    contaId: string,
+    opcoes?: { excluirContrapartidasTransferencias?: boolean }
+  ): DryRunExclusaoConta {
+    const conta = this.getContaById(contaId);
+    if (!conta) {
+      throw new Error(`Conta bancária com ID "${contaId}" não encontrada.`);
+    }
+
+    const excluirContrapartidas = !!opcoes?.excluirContrapartidasTransferencias;
+
+    // 1. Identificar todos os lançamentos que pertencem diretamente à conta
+    const lancamentosConta = cacheLancamentos.filter((l) => l.conta_id === contaId);
+    const idsLancamentosConta = new Set(lancamentosConta.map((l) => l.id));
+
+    // Discriminação dos lançamentos da conta
+    let countFolha = 0;
+    let countPendentes = 0;
+    let countImportados = 0;
+    let countTransferencias = 0;
+    let countManuais = 0;
+
+    for (const l of lancamentosConta) {
+      const isFolha = l.origem === 'folha' || !!l.folha_id || !!l.funcionario_id;
+      if (isFolha) {
+        countFolha++;
+        continue;
+      }
+
+      const isPendente = l.status === 'pendente';
+      if (isPendente) {
+        countPendentes++;
+        continue;
+      }
+
+      const isImportado =
+        l.origem === 'importacao' || l.origem === 'extrato' || !!l.origem_importacao;
+      if (isImportado) {
+        countImportados++;
+        continue;
+      }
+
+      const isTransf =
+        l.origem === 'transferencia' || !!l.transferencia_vinculada_id || !!l.conta_destino_id;
+      if (isTransf) {
+        countTransferencias++;
+        continue;
+      }
+
+      countManuais++;
+    }
+
+    // 2. Transferências com OUTRAS contas
+    const contrapartidasOutrasContasMap = new Map<string, Lancamento>();
+
+    // Checagem a: lançamentos da conta que apontam para contrapartidas fora
+    for (const l of lancamentosConta) {
+      if (l.transferencia_vinculada_id) {
+        const contra = cacheLancamentos.find((x) => x.id === l.transferencia_vinculada_id);
+        if (contra && contra.conta_id !== contaId) {
+          contrapartidasOutrasContasMap.set(contra.id, contra);
+        }
+      }
+    }
+
+    // Checagem b: lançamentos de outras contas que apontam para esta conta
+    for (const l of cacheLancamentos) {
+      if (l.conta_id !== contaId) {
+        if (l.transferencia_vinculada_id && idsLancamentosConta.has(l.transferencia_vinculada_id)) {
+          contrapartidasOutrasContasMap.set(l.id, l);
+        }
+      }
+    }
+
+    const contrapartidasLista = Array.from(contrapartidasOutrasContasMap.values());
+    const totalTransferenciasOutras = contrapartidasLista.length;
+
+    // Calcular impacto por conta afetada
+    const outrasContasMap = new Map<string, ImpactoOutraContaExclusao>();
+    for (const cp of contrapartidasLista) {
+      const outraId = cp.conta_id;
+      if (!outrasContasMap.has(outraId)) {
+        const contaInfo = this.getContaById(outraId);
+        const resumo = this.calcularResumoConta(outraId);
+        outrasContasMap.set(outraId, {
+          conta_id: outraId,
+          conta_nome: contaInfo ? contaInfo.nome : 'Conta Desconhecida',
+          saldo_antes: resumo.saldo_real,
+          saldo_depois: resumo.saldo_real,
+          diferenca: 0,
+          quantidade_transferencias: 0,
+          valores_transferencias: [],
+        });
+      }
+
+      const item = outrasContasMap.get(outraId)!;
+      item.quantidade_transferencias++;
+      item.valores_transferencias.push(cp.valor);
+
+      if (excluirContrapartidas) {
+        if (cp.status === 'pago') {
+          const impacto = cp.tipo === 'receita' ? -cp.valor : cp.valor;
+          item.saldo_depois = +(item.saldo_depois + impacto).toFixed(2);
+        }
+      }
+    }
+
+    for (const item of outrasContasMap.values()) {
+      item.diferenca = +(item.saldo_depois - item.saldo_antes).toFixed(2);
+    }
+
+    const outrasContasAfetadas = Array.from(outrasContasMap.values());
+
+    // 3. Lotes da coleção 'importacoes'
+    const totalLotes = cacheImportacoes.filter((i) => i.conta_id === contaId).length;
+
+    // 4. Regras de importação com conta_id === contaId
+    const totalRegras = cacheRegrasImportacao.filter((r) => r.conta_id === contaId).length;
+
+    // 5. Registros da folha de pagamento que ficarão sem conta de pagamento
+    const registrosFolhaAfetados = cacheLancamentosFolha.filter(
+      (f) => f.conta_id === contaId || (f.lancamento_id && idsLancamentosConta.has(f.lancamento_id))
+    );
+
+    // 6. Bloqueio por transferências
+    const temTransferenciasOutras = totalTransferenciasOutras > 0;
+    const bloqueado = temTransferenciasOutras && !excluirContrapartidas;
+    const motivoBloqueio = bloqueado
+      ? `A conta possui ${totalTransferenciasOutras} transferência(s) com ${outrasContasAfetadas.length} outra(s) conta(s). Por padrão, a exclusão está bloqueada para preservar os saldos das outras contas. Para prosseguir, autorize explicitamente a exclusão das contrapartidas.`
+      : undefined;
+
+    return {
+      conta,
+      total_lancamentos_conta: lancamentosConta.length,
+      discriminacao_lancamentos: {
+        importados: countImportados,
+        manuais: countManuais,
+        pendentes_pagar_receber: countPendentes,
+        folha: countFolha,
+        transferencias: countTransferencias,
+      },
+      total_transferencias_outras_contas: totalTransferenciasOutras,
+      outras_contas_afetadas: outrasContasAfetadas,
+      total_lotes_importacoes: totalLotes,
+      total_regras_importacao: totalRegras,
+      registros_folha_sem_conta: registrosFolhaAfetados.length,
+      bloqueado_por_transferencias: bloqueado,
+      motivo_bloqueio: motivoBloqueio,
+    };
+  },
+
+  /**
+   * ─── PARTE 18A: EXCLUSÃO COMPLETA E SEGURA DE CONTA BANCÁRIA ──────────────────
+   * Regra do usuário: ao excluir uma conta, todo o histórico dela some.
+   * 1. Apenas administrador pode executar
+   * 2. Exige digitação exata do nome da conta para confirmar
+   * 3. Bloqueia transferências sem opção explícita de contrapartida
+   * 4. Gera e dispara download de backup completo antes de qualquer exclusão
+   * 5. Exclui em lotes de até 490 (writeBatch) com await (lançamentos, lotes, regras e folha desvinculada)
+   * 6. Se qualquer lote falhar, NÃO apaga a conta e avisa quantos lançamentos já foram removidos
+   * 7. A conta bancária é apagada por último
+   * 8. Atualiza o cache por ID, notifica 'lancamentos', 'contas', 'importacoes', 'regras_importacao', 'folha'
+   * 9. Registra em RegistroAuditoria
+   */
+  async excluirContaBancariaCompleta(
+    params: ParamsExclusaoConta
+  ): Promise<ResultadoExclusaoConta> {
+    const { contaId, nomeConfirmacao, excluirContrapartidasTransferencias = false } = params;
+
+    // 1. Verificação de administrador
+    if (!this.isUsuarioAdmin()) {
+      throw new Error('Apenas administradores podem excluir contas bancárias.');
+    }
+
+    // 2. Busca e validação da conta
+    const conta = this.getContaById(contaId);
+    if (!conta) {
+      throw new Error(`Conta bancária com ID "${contaId}" não encontrada.`);
+    }
+
+    // 3. Validação do nome da conta digitado
+    if (nomeConfirmacao.trim().toLowerCase() !== conta.nome.trim().toLowerCase()) {
+      throw new Error(
+        `O nome digitado ("${nomeConfirmacao.trim()}") não confere com o nome da conta ("${conta.nome}").`
+      );
+    }
+
+    // 4. Executar simulação (dry-run)
+    const dryRun = this.simularExclusaoConta(contaId, {
+      excluirContrapartidasTransferencias,
+    });
+
+    if (dryRun.bloqueado_por_transferencias) {
+      throw new Error(
+        dryRun.motivo_bloqueio ||
+          'Exclusão bloqueada: existem transferências vinculadas a outras contas sem autorização explícita para remover as contrapartidas.'
+      );
+    }
+
+    // 5. Backup completo obrigatório antes de qualquer exclusão
+    const backupJson = this.exportarBackupCompletoJSON();
+    const backupTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const nomeArquivoBackup = `backup_antes_exclusao_${conta.nome.replace(/\s+/g, '_')}_${backupTimestamp}.json`;
+
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      try {
+        const blob = new Blob([backupJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = nomeArquivoBackup;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        console.warn('[excluirContaBancariaCompleta] Falha ao disparar download do backup:', e);
+      }
+    }
+
+    // 6. Preparar listas de IDs a serem excluídos/atualizados
+    const lancamentosConta = cacheLancamentos.filter((l) => l.conta_id === contaId);
+    const idsLancamentosConta = new Set(lancamentosConta.map((l) => l.id));
+
+    // Contrapartidas de transferências em outras contas (se autorizado)
+    const idsContrapartidasExcluir = new Set<string>();
+    if (excluirContrapartidasTransferencias) {
+      for (const l of lancamentosConta) {
+        if (l.transferencia_vinculada_id) {
+          const contra = cacheLancamentos.find((x) => x.id === l.transferencia_vinculada_id);
+          if (contra && contra.conta_id !== contaId) {
+            idsContrapartidasExcluir.add(contra.id);
+          }
+        }
+      }
+      for (const l of cacheLancamentos) {
+        if (l.conta_id !== contaId) {
+          if (l.transferencia_vinculada_id && idsLancamentosConta.has(l.transferencia_vinculada_id)) {
+            idsContrapartidasExcluir.add(l.id);
+          }
+        }
+      }
+    }
+
+    const todosLancamentosExcluirIds = new Set<string>([
+      ...idsLancamentosConta,
+      ...idsContrapartidasExcluir,
+    ]);
+
+    // Lotes de importação
+    const lotesExcluir = cacheImportacoes.filter((i) => i.conta_id === contaId);
+    const idsLotesExcluir = lotesExcluir.map((i) => i.id);
+
+    // Regras de importação
+    const regrasExcluir = cacheRegrasImportacao.filter((r) => r.conta_id === contaId);
+    const idsRegrasExcluir = regrasExcluir.map((r) => r.id);
+
+    // Registros de folha: desvincular conta_id e lancamento_id (sem apagar funcionário nem registro de folha)
+    const registrosFolhaDesvincular = cacheLancamentosFolha.filter(
+      (f) => f.conta_id === contaId || (f.lancamento_id && idsLancamentosConta.has(f.lancamento_id))
+    );
+    const idsFolhaDesvincular = registrosFolhaDesvincular.map((f) => f.id);
+
+    // 7. Montar fila de operações em lotes de até 490 (writeBatch)
+    type OperacaoBatch =
+      | { tipo: 'delete'; colecao: string; id: string; isLancamento?: boolean }
+      | { tipo: 'update'; colecao: string; id: string; dados: any };
+
+    const operacoes: OperacaoBatch[] = [];
+
+    // Adiciona deleções de lançamentos
+    for (const id of todosLancamentosExcluirIds) {
+      operacoes.push({
+        tipo: 'delete',
+        colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS,
+        id,
+        isLancamento: true,
+      });
+    }
+
+    // Adiciona deleções de lotes de importação
+    for (const id of idsLotesExcluir) {
+      operacoes.push({
+        tipo: 'delete',
+        colecao: FIRESTORE_COLLECTIONS.IMPORTOES,
+        id,
+      });
+    }
+
+    // Adiciona deleções de regras de importação
+    for (const id of idsRegrasExcluir) {
+      operacoes.push({
+        tipo: 'delete',
+        colecao: FIRESTORE_COLLECTIONS.REGRAS_IMPORTACAO,
+        id,
+      });
+    }
+
+    // Adiciona atualizações de desvinculação da folha
+    for (const f of registrosFolhaDesvincular) {
+      operacoes.push({
+        tipo: 'update',
+        colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS_FOLHA,
+        id: f.id,
+        dados: { conta_id: '', lancamento_id: '' },
+      });
+    }
+
+    const TAMANHO_MAX_BATCH = 490;
+    let lancamentosRemovidosAteAgora = 0;
+
+    for (let i = 0; i < operacoes.length; i += TAMANHO_MAX_BATCH) {
+      const fatia = operacoes.slice(i, i + TAMANHO_MAX_BATCH);
+      const batch = writeBatch(db);
+
+      for (const op of fatia) {
+        const ref = doc(db, op.colecao, op.id);
+        if (op.tipo === 'delete') {
+          batch.delete(ref);
+        } else if (op.tipo === 'update') {
+          batch.update(ref, op.dados);
+        }
+      }
+
+      try {
+        await batch.commit();
+        for (const op of fatia) {
+          if (op.tipo === 'delete' && op.isLancamento) {
+            lancamentosRemovidosAteAgora++;
+          }
+        }
+      } catch (e) {
+        console.error('[excluirContaBancariaCompleta] Falha no commit do lote:', e);
+        const erroMsg = traduzirErroFirestore(e);
+        throw new Error(
+          `Falha durante a exclusão em lotes no servidor: ${erroMsg}. ${lancamentosRemovidosAteAgora} lançamento(s) foram removidos antes da falha. A conta bancária "${conta.nome}" NÃO foi apagada.`
+        );
+      }
+    }
+
+    // 8. POR ÚLTIMO, apaga o documento da conta bancária
+    try {
+      await deleteDoc(doc(db, FIRESTORE_COLLECTIONS.CONTAS, contaId));
+    } catch (e) {
+      const erroMsg = traduzirErroFirestore(e);
+      throw new Error(
+        `Todos os lançamentos foram excluídos (${lancamentosRemovidosAteAgora}), mas ocorreu um erro ao apagar o registro da conta bancária no servidor: ${erroMsg}.`
+      );
+    }
+
+    // 9. Atualizar o cache em memória por ID (sem duplicar)
+    cacheLancamentos = cacheLancamentos.filter((l) => !todosLancamentosExcluirIds.has(l.id));
+    cacheImportacoes = cacheImportacoes.filter((i) => !idsLotesExcluir.includes(i.id));
+    cacheRegrasImportacao = cacheRegrasImportacao.filter((r) => !idsRegrasExcluir.includes(r.id));
+    cacheLancamentosFolha = cacheLancamentosFolha.map((f) => {
+      if (idsFolhaDesvincular.includes(f.id)) {
+        return { ...f, conta_id: '', lancamento_id: undefined };
+      }
+      return f;
+    });
+    cacheContas = cacheContas.filter((c) => c.id !== contaId);
+
+    // 10. Auditoria
+    const detalheAuditoria =
+      `Conta: ${conta.nome} (ID: ${contaId}). ` +
+      `Lançamentos da conta excluídos: ${lancamentosConta.length}. ` +
+      `Contrapartidas de transferências em outras contas excluídas: ${idsContrapartidasExcluir.size}. ` +
+      `Lotes de importação excluídos: ${idsLotesExcluir.length}. ` +
+      `Regras de importação excluídas: ${idsRegrasExcluir.length}. ` +
+      `Registros de folha desvinculados: ${idsFolhaDesvincular.length}. ` +
+      `Backup: ${nomeArquivoBackup}.`;
+
+    this.registrarAuditoria(
+      'contas',
+      'exclusao',
+      `Exclusão definitiva da conta bancária ${conta.nome}`,
+      detalheAuditoria
+    );
+
+    // 11. Notificar ouvintes reativos
+    notify('lancamentos');
+    notify('contas');
+    notify('importacoes');
+    notify('regras_importacao');
+    notify('folha');
+
+    return {
+      sucesso: true,
+      conta_id: contaId,
+      conta_nome: conta.nome,
+      total_lancamentos_excluidos: lancamentosConta.length,
+      total_contrapartidas_excluidas: idsContrapartidasExcluir.size,
+      total_lotes_excluidos: idsLotesExcluir.length,
+      total_regras_excluidas: idsRegrasExcluir.length,
+      registros_folha_desvinculados: idsFolhaDesvincular.length,
+      backup_json: backupJson,
+      mensagem: `Conta "${conta.nome}" e todo o seu histórico foram excluídos com sucesso. Backup completo salvo em ${nomeArquivoBackup}.`,
+    };
+  },
+
+  /**
+   * ─── PARTE 18B: SIMULAÇÃO (DRY-RUN) DE LIMPEZA DE HISTÓRICO ÓRFÃO ─────────────
+   * Identifica dados remanescentes cujas contas bancárias não existem mais no sistema:
+   * 1. Lançamentos com conta_id inexistente em cacheContas
+   * 2. Lotes de importação (coleção 'importacoes') com conta_id inexistente
+   * 3. Regras de importação específicas (conta_id !== '*') com conta_id inexistente
+   * 4. Identifica transferências cuja contrapartida está em conta existente e calcula impacto
+   * 5. Agrupa por conta_id inexistente (quantidade, período, entradas, saídas, lotes, regras)
+   */
+  simularLimpezaOrfaos(opcoes?: {
+    removerOrfaosComTransferencia?: boolean;
+  }): DryRunLimparOrfaos {
+    const contasExistentes = this.getContas();
+    const contasExistentesIds = new Set(contasExistentes.map((c) => c.id));
+    const contasExistentesMap = new Map(contasExistentes.map((c) => [c.id, c]));
+
+    // 1. Lançamentos órfãos
+    const lancamentosOrfaos = cacheLancamentos.filter(
+      (l) => !contasExistentesIds.has(l.conta_id)
+    );
+    const idsLancamentosOrfaos = new Set(lancamentosOrfaos.map((l) => l.id));
+
+    // 2. Lotes de importação órfãos
+    const lotesOrfaos = cacheImportacoes.filter(
+      (i) => !contasExistentesIds.has(i.conta_id)
+    );
+
+    // 3. Regras de importação órfãs (regras específicas de conta excluída)
+    const regrasOrfas = cacheRegrasImportacao.filter(
+      (r) => r.conta_id && r.conta_id !== '*' && !contasExistentesIds.has(r.conta_id)
+    );
+
+    // 4. Mapear transferências com contas existentes
+    const transferenciasMap = new Map<string, TransferenciaOrfaInfo>();
+
+    // Caso A: Lançamento órfão aponta para contrapartida em conta existente
+    for (const lOrfao of lancamentosOrfaos) {
+      if (lOrfao.transferencia_vinculada_id) {
+        const contra = cacheLancamentos.find((x) => x.id === lOrfao.transferencia_vinculada_id);
+        if (contra && contasExistentesIds.has(contra.conta_id)) {
+          const cExistente = contasExistentesMap.get(contra.conta_id);
+          const resumo = this.calcularResumoConta(contra.conta_id);
+          transferenciasMap.set(lOrfao.id, {
+            lancamento_orfao_id: lOrfao.id,
+            tipo_orfao: lOrfao.tipo,
+            valor: lOrfao.valor,
+            data: lOrfao.data_pagamento || lOrfao.data_vencimento,
+            descricao: lOrfao.descricao,
+            conta_inexistente_id: lOrfao.conta_id,
+            conta_existente_id: contra.conta_id,
+            conta_existente_nome: cExistente?.nome || 'Conta Existente',
+            lancamento_existente_id: contra.id,
+            saldo_atual_conta_existente: resumo.saldo_real,
+            efeito_no_saldo: 'Inalterado (o lançamento da conta existente nunca será apagado)',
+          });
+        }
+      }
+    }
+
+    // Caso B: Lançamento de conta existente aponta para lançamento órfão
+    for (const lExistente of cacheLancamentos) {
+      if (contasExistentesIds.has(lExistente.conta_id) && lExistente.transferencia_vinculada_id) {
+        if (idsLancamentosOrfaos.has(lExistente.transferencia_vinculada_id)) {
+          const lOrfao = lancamentosOrfaos.find(
+            (x) => x.id === lExistente.transferencia_vinculada_id
+          );
+          if (lOrfao && !transferenciasMap.has(lOrfao.id)) {
+            const cExistente = contasExistentesMap.get(lExistente.conta_id);
+            const resumo = this.calcularResumoConta(lExistente.conta_id);
+            transferenciasMap.set(lOrfao.id, {
+              lancamento_orfao_id: lOrfao.id,
+              tipo_orfao: lOrfao.tipo,
+              valor: lOrfao.valor,
+              data: lOrfao.data_pagamento || lOrfao.data_vencimento,
+              descricao: lOrfao.descricao,
+              conta_inexistente_id: lOrfao.conta_id,
+              conta_existente_id: lExistente.conta_id,
+              conta_existente_nome: cExistente?.nome || 'Conta Existente',
+              lancamento_existente_id: lExistente.id,
+              saldo_atual_conta_existente: resumo.saldo_real,
+              efeito_no_saldo: 'Inalterado (o lançamento da conta existente nunca será apagado)',
+            });
+          }
+        }
+      }
+    }
+
+    const transferenciasComContasExistentes = Array.from(transferenciasMap.values());
+
+    // 5. Agrupamento por conta_id inexistente
+    const contasInexistentesIds = new Set<string>();
+    for (const l of lancamentosOrfaos) contasInexistentesIds.add(l.conta_id);
+    for (const i of lotesOrfaos) contasInexistentesIds.add(i.conta_id);
+    for (const r of regrasOrfas) contasInexistentesIds.add(r.conta_id);
+
+    const grupos: GrupoOrfao[] = [];
+    for (const cId of contasInexistentesIds) {
+      const lancsDoGrupo = lancamentosOrfaos.filter((l) => l.conta_id === cId);
+      let totalEntradas = 0;
+      let totalSaidas = 0;
+      let dataMin = '';
+      let dataMax = '';
+
+      for (const l of lancsDoGrupo) {
+        if (l.tipo === 'receita') {
+          totalEntradas += l.valor;
+        } else if (l.tipo === 'despesa') {
+          totalSaidas += l.valor;
+        }
+        const dt = l.data_pagamento || l.data_vencimento;
+        if (dt) {
+          if (!dataMin || dt < dataMin) dataMin = dt;
+          if (!dataMax || dt > dataMax) dataMax = dt;
+        }
+      }
+
+      const lotesDoGrupo = lotesOrfaos.filter((i) => i.conta_id === cId);
+      const regrasDoGrupo = regrasOrfas.filter((r) => r.conta_id === cId);
+      const transfsDoGrupo = transferenciasComContasExistentes.filter(
+        (t) => t.conta_inexistente_id === cId
+      );
+
+      grupos.push({
+        conta_id: cId,
+        total_lancamentos: lancsDoGrupo.length,
+        data_mais_antiga: dataMin || 'N/A',
+        data_mais_recente: dataMax || 'N/A',
+        total_entradas: +totalEntradas.toFixed(2),
+        total_saidas: +totalSaidas.toFixed(2),
+        total_lotes_importacao: lotesDoGrupo.length,
+        total_regras_importacao: regrasDoGrupo.length,
+        transferencias_com_contas_existentes: transfsDoGrupo,
+      });
+    }
+
+    // Ordenar grupos por total de lançamentos decrescente
+    grupos.sort((a, b) => b.total_lancamentos - a.total_lancamentos);
+
+    // Contas existentes afetadas agrupadas
+    const contasAfetadasMap = new Map<string, ContaExistenteImpactoOrfao>();
+    for (const t of transferenciasComContasExistentes) {
+      if (!contasAfetadasMap.has(t.conta_existente_id)) {
+        contasAfetadasMap.set(t.conta_existente_id, {
+          conta_id: t.conta_existente_id,
+          conta_nome: t.conta_existente_nome,
+          saldo_atual: t.saldo_atual_conta_existente,
+          quantidade_transferencias: 0,
+        });
+      }
+      contasAfetadasMap.get(t.conta_existente_id)!.quantidade_transferencias++;
+    }
+    const contasExistentesAfetadas = Array.from(contasAfetadasMap.values());
+
+    return {
+      total_lancamentos_orfaos: lancamentosOrfaos.length,
+      total_lotes_orfaos: lotesOrfaos.length,
+      total_regras_orfaos: regrasOrfas.length,
+      total_transferencias_com_contas_existentes: transferenciasComContasExistentes.length,
+      grupos,
+      contas_existentes_afetadas: contasExistentesAfetadas,
+      tem_orfaos_para_limpar:
+        lancamentosOrfaos.length > 0 || lotesOrfaos.length > 0 || regrasOrfas.length > 0,
+    };
+  },
+
+  /**
+   * ─── PARTE 18B: LIMPEZA DEFINITIVA DE HISTÓRICO ÓRFÃO ───────────────────────────
+   * 1. Apenas administradores podem executar
+   * 2. Exige confirmação explícita digitando "LIMPAR"
+   * 3. Dispara download de backup JSON antes de qualquer alteração
+   * 4. Nunca apaga lançamentos de contas existentes
+   * 5. Se um lançamento órfão for contrapartida de transferência com conta existente,
+   *    não apaga sem escolha explícita (removerOrfaosComTransferencia: true)
+   * 6. Apaga em lotes de até 490 com await writeBatch
+   * 7. Atualiza caches em memória por ID (cacheLancamentos, cacheImportacoes, cacheRegrasImportacao)
+   * 8. Registra auditoria completa
+   * 9. Notifica ouvintes reativos
+   */
+  async limparHistoricoOrfao(
+    params: ParamsLimparOrfaos
+  ): Promise<ResultadoLimparOrfaos> {
+    // 1. Verificação de administrador
+    if (!this.isUsuarioAdmin()) {
+      throw new Error('Apenas administradores podem limpar o histórico órfão.');
+    }
+
+    // 2. Validação da palavra de confirmação
+    if (params.textoConfirmacao.trim().toUpperCase() !== 'LIMPAR') {
+      throw new Error(
+        'Confirmação inválida. Digite exatamente "LIMPAR" para autorizar a limpeza do histórico órfão.'
+      );
+    }
+
+    // 3. Executar dry-run para mapear órfãos atuais
+    const dryRun = this.simularLimpezaOrfaos({
+      removerOrfaosComTransferencia: params.removerOrfaosComTransferencia,
+    });
+
+    if (!dryRun.tem_orfaos_para_limpar) {
+      return {
+        sucesso: true,
+        total_lancamentos_excluidos: 0,
+        total_lancamentos_preservados: 0,
+        total_lotes_excluidos: 0,
+        total_regras_excluidas: 0,
+        total_contrapartidas_desvinculadas: 0,
+        mensagem: 'Nenhum lançamento ou registro órfão foi encontrado para limpeza.',
+      };
+    }
+
+    // 4. Backup completo obrigatório antes de qualquer exclusão
+    const backupJson = this.exportarBackupCompletoJSON();
+    const backupTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const nomeArquivoBackup = `backup_antes_limpeza_orfaos_${backupTimestamp}.json`;
+
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      try {
+        const blob = new Blob([backupJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = nomeArquivoBackup;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        console.warn('[limparHistoricoOrfao] Falha ao disparar download do backup:', e);
+      }
+    }
+
+    const contasExistentes = this.getContas();
+    const contasExistentesIds = new Set(contasExistentes.map((c) => c.id));
+
+    // Mapear IDs de órfãos vinculados a transferências com contas existentes
+    const idsOrfaosComTransf = new Set<string>();
+    const contrapartidasExistentesAtualizar = new Map<string, string>(); // idLancamentoExistente -> contaId
+
+    for (const g of dryRun.grupos) {
+      for (const t of g.transferencias_com_contas_existentes) {
+        idsOrfaosComTransf.add(t.lancamento_orfao_id);
+        if (t.lancamento_existente_id) {
+          contrapartidasExistentesAtualizar.set(t.lancamento_existente_id, t.conta_existente_id);
+        }
+      }
+    }
+
+    // 5. Determinar quais lançamentos órfãos serão apagados
+    const lancamentosOrfaos = cacheLancamentos.filter(
+      (l) => !contasExistentesIds.has(l.conta_id)
+    );
+
+    const lancamentosParaExcluir: Lancamento[] = [];
+    let totalPreservados = 0;
+
+    for (const l of lancamentosOrfaos) {
+      // Regra 3: Nunca apagar lançamentos de contas existentes!
+      if (contasExistentesIds.has(l.conta_id)) {
+        throw new Error(
+          `VIOLAÇÃO CRÍTICA: Lançamento de conta bancária existente ("${l.conta_id}") jamais pode ser excluído!`
+        );
+      }
+
+      const ehOrfaoComTransf = idsOrfaosComTransf.has(l.id);
+      if (ehOrfaoComTransf && !params.removerOrfaosComTransferencia) {
+        // Sem escolha explícita, preserva o lançamento órfão para manter o vínculo
+        totalPreservados++;
+      } else {
+        lancamentosParaExcluir.push(l);
+      }
+    }
+
+    // Lotes de importação órfãos a excluir
+    const lotesParaExcluir = cacheImportacoes.filter(
+      (i) => !contasExistentesIds.has(i.conta_id)
+    );
+
+    // Regras de importação órfãs a excluir
+    const regrasParaExcluir = cacheRegrasImportacao.filter(
+      (r) => r.conta_id && r.conta_id !== '*' && !contasExistentesIds.has(r.conta_id)
+    );
+
+    // 6. Montar operações de lote no Firestore (writeBatch, até 490 operações por lote)
+    type OperacaoBatch =
+      | { tipo: 'delete'; colecao: string; id: string }
+      | { tipo: 'update'; colecao: string; id: string; dados: any };
+
+    const operacoes: OperacaoBatch[] = [];
+
+    // Exclusão de lançamentos órfãos aprovados
+    for (const l of lancamentosParaExcluir) {
+      operacoes.push({
+        tipo: 'delete',
+        colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS,
+        id: l.id,
+      });
+    }
+
+    // Exclusão de lotes órfãos
+    for (const lot of lotesParaExcluir) {
+      operacoes.push({
+        tipo: 'delete',
+        colecao: FIRESTORE_COLLECTIONS.IMPORTOES,
+        id: lot.id,
+      });
+    }
+
+    // Exclusão de regras órfãs
+    for (const reg of regrasParaExcluir) {
+      operacoes.push({
+        tipo: 'delete',
+        colecao: FIRESTORE_COLLECTIONS.REGRAS_IMPORTACAO,
+        id: reg.id,
+      });
+    }
+
+    // Se o usuário optou por remover órfãos com transferências, desvincula a contrapartida na conta existente
+    const idsContrapartidasDesvinculadas = new Set<string>();
+    if (params.removerOrfaosComTransferencia) {
+      for (const [idLancExistente] of contrapartidasExistentesAtualizar) {
+        idsContrapartidasDesvinculadas.add(idLancExistente);
+        operacoes.push({
+          tipo: 'update',
+          colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS,
+          id: idLancExistente,
+          dados: { transferencia_vinculada_id: '' },
+        });
+      }
+    }
+
+    const TAMANHO_MAX_BATCH = 490;
+    for (let i = 0; i < operacoes.length; i += TAMANHO_MAX_BATCH) {
+      const fatia = operacoes.slice(i, i + TAMANHO_MAX_BATCH);
+      const batch = writeBatch(db);
+
+      for (const op of fatia) {
+        const ref = doc(db, op.colecao, op.id);
+        if (op.tipo === 'delete') {
+          batch.delete(ref);
+        } else if (op.tipo === 'update') {
+          batch.update(ref, op.dados);
+        }
+      }
+
+      try {
+        await batch.commit();
+      } catch (e) {
+        console.error('[limparHistoricoOrfao] Falha no commit do lote no Firestore:', e);
+        const erroMsg = traduzirErroFirestore(e);
+        throw new Error(`Falha durante a limpeza de dados órfãos no servidor: ${erroMsg}`);
+      }
+    }
+
+    // 7. Atualizar o cache em memória por ID
+    const idsLancamentosExcluidos = new Set(lancamentosParaExcluir.map((l) => l.id));
+    const idsLotesExcluidos = new Set(lotesParaExcluir.map((lot) => lot.id));
+    const idsRegrasExcluidas = new Set(regrasParaExcluir.map((reg) => reg.id));
+
+    cacheLancamentos = cacheLancamentos.filter((l) => !idsLancamentosExcluidos.has(l.id));
+    cacheImportacoes = cacheImportacoes.filter((i) => !idsLotesExcluidos.has(i.id));
+    cacheRegrasImportacao = cacheRegrasImportacao.filter((r) => !idsRegrasExcluidas.has(r.id));
+
+    if (idsContrapartidasDesvinculadas.size > 0) {
+      cacheLancamentos = cacheLancamentos.map((l) => {
+        if (idsContrapartidasDesvinculadas.has(l.id)) {
+          return { ...l, transferencia_vinculada_id: undefined };
+        }
+        return l;
+      });
+    }
+
+    // 8. Auditoria
+    const detalheAuditoria =
+      `Limpeza de histórico órfão realizada com sucesso. ` +
+      `Lançamentos órfãos excluídos: ${lancamentosParaExcluir.length}. ` +
+      `Lançamentos órfãos preservados (transferências sem escolha explícita): ${totalPreservados}. ` +
+      `Lotes de importação excluídos: ${lotesParaExcluir.length}. ` +
+      `Regras de importação excluídas: ${regrasParaExcluir.length}. ` +
+      `Contrapartidas em contas existentes desvinculadas: ${idsContrapartidasDesvinculadas.size}. ` +
+      `Backup completo salvo: ${nomeArquivoBackup}.`;
+
+    this.registrarAuditoria(
+      'contas',
+      'exclusao',
+      `Limpeza de histórico órfão (${lancamentosParaExcluir.length} excluídos)`,
+      detalheAuditoria
+    );
+
+    // 9. Notificar ouvintes reativos
+    notify('lancamentos');
+    notify('importacoes');
+    notify('regras_importacao');
+    notify('contas');
+
+    return {
+      sucesso: true,
+      total_lancamentos_excluidos: lancamentosParaExcluir.length,
+      total_lancamentos_preservados: totalPreservados,
+      total_lotes_excluidos: lotesParaExcluir.length,
+      total_regras_excluidas: regrasParaExcluir.length,
+      total_contrapartidas_desvinculadas: idsContrapartidasDesvinculadas.size,
+      backup_json: backupJson,
+      mensagem:
+        `Limpeza concluída com sucesso: ${lancamentosParaExcluir.length} lançamento(s) órfão(s) excluído(s)` +
+        (totalPreservados > 0
+          ? `, ${totalPreservados} preservado(s) por vínculo com conta existente`
+          : '') +
+        (lotesParaExcluir.length > 0 ? `, ${lotesParaExcluir.length} lote(s) removido(s)` : '') +
+        (regrasParaExcluir.length > 0 ? `, ${regrasParaExcluir.length} regra(s) removida(s)` : '') +
+        `. Backup gerado em ${nomeArquivoBackup}.`,
+    };
+  },
+
 };
 
 // Exportar alias storage para compatibilidade total

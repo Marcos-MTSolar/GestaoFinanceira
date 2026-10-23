@@ -1,36 +1,126 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 22/10/2026 18:10:00 (Parte 16F – Diagnóstico e Teste de Regressão Completo de Importações em Sequência)
+**Última Atualização:** 23/10/2026 09:45:00 (Parte 18C – Regra Única de Saldo Inicial na Importação de Extratos)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
-  - **Parte 16F – Diagnóstico de Importações e Teste de Regressão Completo em Simulador**:
-    - **Diagnóstico do Sistema e Coleção de Importações**:
-      - Inspeção não-destrutiva sem tocar no Firestore de produção e sem expor credenciais locais.
-      - Levantamento das duas últimas importações e análise dos impactos em saldo inicial da conta e duplicatas.
-      - Comparativo técnico claro entre a operação "Desfazer importação" (remoção cirúrgica de um lote específico mantendo os demais) e "Reiniciar conta / Preparar para reimportar" (limpeza ampla de lançamentos com `origem: 'importacao'`, preservando lançamentos manuais, folha e cadastros).
-    - **16F.1 (Suite de Testes de Regressão Completa em `scripts/test_parte_16F.ts` – novo arquivo)**:
-      - 58 asserções automatizadas cobrindo 7 seções rigorosas:
-        1. **Estado Inicial e Isolamento Multi-Contas**: Configuração com 2 contas bancárias cadastradas (Santander e Sicoob), validando isolamento estrito onde a segunda conta não sofre qualquer contaminação.
-        2. **Importação do Lote A (Período 1 - Jan/2026)**: Gravação completa de lançamentos OFX com FITID único, documento, contraparte e observações formatadas ricas.
-        3. **Revisão e Deduplicação do Lote B (Período 2 - Fev/2026 na mesma conta)**: Comprovação de que **nenhum item do Lote A** reaparece como novo na revisão de B; detecção imediata de transações repetidas como `duplicada_exata`.
-        4. **Análise de Saldo Inicial em Importação Subsequente**: Detecção automática de lançamentos prévios (`contaTemLancamentosImportados`); bloqueio de alterações arbitrárias no saldo inicial da conta.
-        5. **Gravação do Lote B com 0 Duplicatas e Saldo Inicial Inalterado**: Saldo inicial e data do saldo inicial da Conta 1 permanecem estritamente inalterados após B; todos os FITIDs e assinaturas fracas permanecem únicos (0 duplicados).
-        6. **Tentativa de Reimportação do Lote B**: Validação de 100% de deduplicação e 0 novos lançamentos gerados.
-        7. **Simulador de Limpeza e Preservação de Lançamentos Manuais**:
-           - Validação de `desfazerImportacao` removendo apenas lançamentos do lote alvo e preservando os demais.
-           - Validação de `simularReinicioConta` (DryRun) removendo exclusivamente lotes de importação e mantendo 100% intactos os lançamentos manuais cadastrados pelo usuário.
-      - **100% de aprovação (58 PASSARAM / 0 FALHARAM)**. Validação TypeScript estrita (`npx tsc --noEmit`) sem erros.
-    - **16F.2 (Script npm configurado em `package.json`)**:
-      - Adicionado comando `"test:16f": "tsx scripts/test_parte_16F.ts"`.
-  - **Data e hora da alteração**: 22/10/2026 18:10:00
+  - **Parte 18C – Regra Única de Saldo Inicial na Importação de Extratos Bancários (Substitui 17B, 15J e 16D)**:
+    - **Problema resolvido**: Eliminação dos múltiplos mecanismos sobrepostos de ajuste de saldo inicial (alerta de dupla contagem, ajuste de data do saldo inicial, "corrigir saldo inicial agora", ajuste pós-importação) que causavam divergências e inconsistências no saldo contábil.
+    - **REGRA ÚNICA**:
+      - `saldo_inicial = saldo_real_informado − (soma de TODOS os lançamentos pagos da conta com data ≤ data do saldo informado, já incluindo os que serão gravados pelo extrato e considerando entradas positivas e saídas negativas)`.
+      - `data_saldo_inicial = dia anterior ao lançamento mais antigo da conta`.
+      - Origem da informação (em ordem de precedência): (1) LEDGERBAL do OFX (valor e data do arquivo); (2) valor digitado pelo usuário com a data (padrão: último dia do extrato).
+      - Conversão do saldo "disponível" (inclui cheque especial): `saldo_real = disponível − limite da conta` quando a opção explícita "este valor inclui o limite" estiver marcada.
+    - **18C.1 – Função Pura Única (`src/utils/extrato/saldoInicialHelper.ts`)**:
+      - `calcularSaldoInicialPrimeiraImportacao`: calcula estritamente o novo saldo inicial e a nova data com deduplicação por ID.
+      - `conferirSaldoFinal`: validação com tolerância de R$ 0,01.
+      - `subtrairUmDia`, `converterDisponivelParaSaldoReal`, `contaTemLancamentosImportados`.
+      - Stubs legados anotados como `@deprecated` mantidos para retrocompatibilidade de testes anteriores.
+    - **18C.2 – Aplicação Exclusiva na PRIMEIRA Importação (`src/services/storage.ts`)**:
+      - `importarExtratoLote`: verifica se a conta possui importações anteriores (`!contaTemLancamentosImportados`). Se for a primeira importação e houver saldo informado, aplica a Regra Única DEPOIS de confirmar a persistência dos lançamentos no servidor.
+      - Importações seguintes: NUNCA alteram `saldo_inicial` nem `data_saldo_inicial`.
+      - Movimentações Contamax: se ignoradas, não entram na soma (o saldo inicial calculado absorve a diferença e o saldo final se mantém correto); se lançadas como transferência, entram na soma normalmente.
+      - Conferência pós-gravação: se `saldo_real_app !== saldo_informado`, avisa em `erroConferenciaSaldo` sem tentar corrigir sozinho.
+    - **18C.3 – Desfazer Lote com Restauração Fiel**:
+      - `desfazerImportacao`: restaura `saldo_inicial` e `data_saldo_inicial` anteriores gravados no snapshot do lote caso o lote tenha definido o saldo inicial.
+    - **18C.4 – Interface de Revisão e Modal Simplificados (`RevisaoExtrato.tsx` e `ImportarExtratoModal.tsx`)**:
+      - `RevisaoExtrato.tsx`: campos para informar saldo do banco, data e flag de saldo disponível, aviso de absorção para Contamax ignorado, remoção de modais/alertas legados sobrepostos.
+      - `ImportarExtratoModal.tsx`: remoção do modal de pós-ajuste de saldo inicial e botões de reconciliação automática; exibição apenas comparativa no Passo 3 ("Saldos Idênticos!" ou "Divergência de R$ X entre o saldo do app e o extrato. Nenhuma correção automática aplicada.").
+    - **18C.5 – Suite de Testes Automatizados (`scripts/test_parte_18C.ts`)**:
+      - 30 asserções cobrindo todos os cenários exigidos:
+        - (a) Conta com saldo real informado 1.234,56 e extrato de 7 dias;
+        - (b) OFX com LEDGERBAL -7.377,22 e 400 transações → saldo inicial -6.803,58 em 02/08/2026;
+        - (c) XLSX de 1.682 linhas com saldo informado;
+        - (d) Saldo disponível com limite 8.800 convertido para saldo real;
+        - (e) Segunda importação preservando saldo inicial e data intactos;
+        - (f) Contamax ignorado vs como transferência;
+        - (g) Desfazer restaurando saldo inicial e data anteriores.
+      - Resultado: **30/30 aprovados (100%)**.
+    - **Verificações de Qualidade**:
+      - `tsc --noEmit`: 0 erros.
+      - `npm run build`: verde (Vite gerou bundle com sucesso).
+      - `npm run test:18a`: 67/67 aprovados (100%).
+      - `npm run test:18b`: 88/88 aprovados (100%).
+      - `npm run test:18c`: 30/30 aprovados (100%).
+  - **Data e hora da alteração**: 23/10/2026 09:45:00
   - **Arquivos modificados**:
-    - `scripts/test_parte_16F.ts` *(novo)*
-    - `package.json`
+    - `src/utils/extrato/saldoInicialHelper.ts`
+    - `src/services/storage.ts`
+    - `src/types/index.ts`
+    - `src/components/extrato/RevisaoExtrato.tsx`
+    - `src/components/ImportarExtratoModal.tsx`
+    - `scripts/test_parte_18C.ts` *(novo)*
+    - `package.json` *(script test:18c)*
+    - `RESUMO_MESTRE.md`
+
+- **Histórico de Alterações Anteriores:**
+  - **Parte 18B – Limpeza de Histórico Órfão de Contas Bancárias**:
+    - **Objetivo**: Remover lançamentos, lotes de importação e regras órfãos que já haviam ficado no banco (com `conta_id` apontando para contas que não existem mais, como a conta excluída em 22/10).
+    - **Regra do usuário implementada**: Ao limpar órfãos, dados válidos de contas existentes jamais são apagados e seus saldos permanecem 100% inalterados. Lançamentos órfãos com transferência ligada a contas existentes só são removidos sob escolha explícita, desvinculando a contrapartida para evitar ponteiros fantasmas.
+    - **18B.1 – Novos tipos em `src/types/index.ts`**:
+      - `TransferenciaOrfaInfo`: Metadados da transferência, conta inexistente, conta existente, saldo e aviso de efeito inalterado.
+      - `GrupoOrfao`: Agrupamento por `conta_id` inexistente com quantidade, período (menor e maior data), totais de entradas e saídas, contagem de lotes e regras órfãos e transferências vinculadas.
+      - `ContaExistenteImpactoOrfao`: Contas bancárias existentes afetadas com quantidade de transferências e saldo atual intacto.
+      - `DryRunLimparOrfaos`: Contadores gerais, agrupamento por conta morta, transferências mapeadas e flag `tem_orfaos_para_limpar`.
+      - `ParamsLimparOrfaos`: Exigência de digitação de "LIMPAR" e opção explícita `removerOrfaosComTransferencia`.
+      - `ResultadoLimparOrfaos`: Contadores de excluídos, preservados, lotes, regras e contrapartidas desvinculadas.
+    - **18B.2 – Funções em `src/services/storage.ts`**:
+      - `simularLimpezaOrfaos(opcoes)` (Dry-Run): Identifica lançamentos, lotes e regras órfãos no cache; agrupa por `conta_id` inexistente com período e totais; mapeia transferências vinculadas a contas existentes; calcula saldos e confirma que o impacto no saldo das contas existentes é nulo (inalterado).
+      - `limparHistoricoOrfao(params)` (Execução Definitiva): Restrito a administradores; validação estrita da palavra "LIMPAR"; download automático prévio de backup completo em JSON; apaga em lotes de até 490 via `writeBatch` com `await`; preserva órfãos vinculados caso não haja escolha explícita; desvincula contrapartidas nas contas existentes (`transferencia_vinculada_id: ''`); atualiza caches por ID; registra auditoria (`modulo: 'contas', acao: 'exclusao'`); notifica ouvintes reativos.
+    - **18B.3 – Novo componente `src/components/ModalLimparOrfaos.tsx`**:
+      - Interface completa de 4 etapas (`simulando`, `confirmacao`, `executando`, `resultado`).
+      - Visualização amigável caso não haja órfãos no banco.
+      - Cards com totais gerais e lista sanfonada/detalhada por grupo de conta inexistente.
+      - Bloco de alerta e tabela de transferências vinculadas a contas existentes, com seus saldos inalterados e checkbox de escolha explícita.
+      - Input de confirmação obrigatório exigindo a palavra "LIMPAR".
+      - Download de backup automático antes da deleção.
+    - **18B.4 – Integração em `src/pages/ContasBancarias.tsx`**:
+      - Botão "Limpar Histórico Órfão" adicionado na barra superior de ações, condicionado a `isAdmin`.
+      - Modal instanciado e integrado reativamente.
+    - **18B.5 – Suite de testes `scripts/test_parte_18B.ts`** (1064 linhas, 88 asserções): **88/88 passando (100%)** com `npx tsx scripts/test_parte_18B.ts` (`npm run test:18b`). Cobre controle de acesso de admin, identificação e agrupamento de órfãos (incluindo conta de 22/10), período e entradas/saídas, transferências vinculadas, impacto de saldo inalterado, confirmação "LIMPAR", regra de preservação sem escolha explícita, exclusão segura com escolha explícita, integridade total de dados válidos, lotes grandes de até 490 e guardrails de segurança.
+    - **Verificações de Qualidade**:
+      - `tsc --noEmit` (lint): 0 erros.
+      - `npm run build`: verde.
+      - `npm run test:18a`: 67/67 aprovados (100%).
+      - `npm run test:18b`: 88/88 aprovados (100%).
+  - **Data e hora da alteração**: 23/10/2026 09:00:00
+  - **Arquivos modificados**:
+    - `src/types/index.ts`
+    - `src/services/storage.ts`
+    - `src/pages/ContasBancarias.tsx`
+    - `src/components/ModalLimparOrfaos.tsx` *(novo)*
+    - `scripts/test_parte_18B.ts` *(novo)*
+    - `package.json` *(script test:18b)*
+    - `RESUMO_MESTRE.md`
+
+- **Histórico de Alterações Anteriores:**
+  - **Parte 18A – Exclusão Completa e Segura de Conta Bancária (sem deixar órfãos)**:
+    - **Causa raiz resolvida**: `deleteContaBancaria` apagava apenas o documento da conta; lançamentos, lotes de importação, regras e registros de folha com `conta_id` da conta deletada permaneciam órfãos no Firestore, distorcendo saldos e relatórios.
+    - **Regra do usuário implementada**: ao excluir uma conta, **todo o histórico dela some**. Nenhum dado fica órfão.
+    - **18A.1 – Novos tipos em `src/types/index.ts`** (+52 linhas): `ImpactoOutraContaExclusao`, `DryRunExclusaoConta`, `ParamsExclusaoConta`, `ResultadoExclusaoConta`.
+    - **18A.2 – Funções em `src/services/storage.ts`** (+438 linhas):
+      - `isUsuarioAdmin()`: helper para verificar papel de administrador.
+      - `deleteContaBancaria` (guardrail): bloqueia exclusão direta se a conta tiver lançamentos.
+      - `getLancamentos` (proteção de órfãos): filtra automaticamente lançamentos cujo `conta_id` não existe mais em `cacheContas`. Flag `incluirOrfaos: true` para auditoria explícita.
+      - `simularExclusaoConta(contaId, opcoes)` – DRY-RUN: discrimina lançamentos (importados, manuais, pendentes, folha, transferências), detecta contrapartidas em outras contas via `transferencia_vinculada_id`, calcula saldo antes/depois de cada conta afetada, conta lotes e regras de importação, registros de folha afetados, bloqueia por padrão se houver transferências.
+      - `excluirContaBancariaCompleta(params)` – EXCLUSÃO REAL (async): valida admin + nome, roda dry-run, dispara download de backup completo em JSON, exclui em lotes de até 490 via `writeBatch`, apaga a conta por último, atualiza caches, registra auditoria, notifica ouvintes.
+    - **18A.3 – Novo componente `src/components/ModalExcluirConta.tsx`** (469 linhas): Modal de 4 etapas (simulando → confirmacao → executando → resultado) com discriminação completa, tabela de impacto em outras contas, checkbox explícito para contrapartidas, validação de nome em tempo real.
+    - **18A.4 – Integração em `src/pages/ContasBancarias.tsx`** (+23 linhas): `handleExcluirConta` abre o modal em vez de `confirm()` nativo.
+    - **18A.5 – Suite de testes `scripts/test_parte_18A.ts`** (1038 linhas, 67 asserções): **67/67 passando (100%)** com `npx tsx`. Cobre dry-run, bloqueio, contrapartidas, validação de nome, restrição de admin, resiliência a falhas no lote, exclusão ponta a ponta, proteção de órfãos.
+    - **tsc --noEmit**: sem erros. **npm run build**: verde.
+  - **Data e hora da alteração**: 23/10/2026 08:30:00
+  - **Arquivos modificados**:
+    - `src/types/index.ts` *(+52 linhas)*
+    - `src/services/storage.ts` *(+438 linhas)*
+    - `src/pages/ContasBancarias.tsx` *(+23 linhas)*
+    - `src/components/ModalExcluirConta.tsx` *(novo — 469 linhas)*
+    - `scripts/test_parte_18A.ts` *(novo — 1038 linhas, 67 testes)*
+    - `package.json` *(script test:18a)*
     - `RESUMO_MESTRE.md`
 
 ---
 
 - **Alterações Anteriores:**
+  - **Parte 16F – Diagnóstico e Teste de Regressão Completo de Importações em Sequência** (22/10/2026 18:10:00): 58 testes automatizados, 100% passando.
   - **Parte 16E – Preservação e Exibição das Informações do Extrato nos Lançamentos Importados**:
     - **Causa raiz resolvida**: Ao importar um extrato bancário, o lançamento criado só guardava "descrição original - favorecido" na descrição. Documento, FITID, histórico original do banco, arquivo de origem, banco, lote e data/hora da importação não ficavam acessíveis ao usuário, impossibilitando rastreabilidade e auditoria.
     - **16E.1 (Helper `src/utils/extrato/observacoesHelper.ts` – novo arquivo)**:
@@ -1140,3 +1230,91 @@ match /importacoes/{loteId} {
 **tsc:** zero erros  
 **build:** ✓ sucesso (vite build, 2285 módulos, sem erros)
 
+
+---
+
+### Parte 18C – Regra Única de Cálculo do Saldo Inicial na Importação de Extratos (2026-10-23)
+**Data:** 2026-10-23T07:00  
+**Arquivos modificados / criados:** `src/utils/extrato/saldoInicialHelper.ts`, `scripts/test_parte_18C.ts`  
+**Substitui:** Parte 17B e toda a lógica de ajuste de saldo inicial das Partes 15J e 16D  
+**O que foi feito:**
+
+**Problema resolvido:** O usuário tem a conta com o saldo real de hoje e importa o primeiro extrato (ex.: 7 dias). Ele não sabe o saldo inicial. O app tinha vários mecanismos sobrepostos (alerta de dupla contagem, ajuste de data do saldo inicial, "corrigir saldo inicial agora", ajuste pós-importação) e terminava com saldo errado.
+
+**Regra Única implementada:**
+- `saldo_inicial = saldo_real_informado − (soma de TODOS os lançamentos pagos da conta com data ≤ data do saldo informado, já incluindo os que serão gravados pelo extrato, considerando entradas positivas e saídas negativas)`
+- `data_saldo_inicial = dia anterior ao lançamento mais antigo da conta`
+- O saldo real informado vem de, em ordem: (1) LEDGERBAL do OFX (valor e data do arquivo); (2) valor digitado pelo usuário com a data (padrão: último dia do extrato)
+
+**Conversão de saldo disponível com limite de cheque especial:**
+- Se o usuário marcar "Este valor inclui o limite do cheque especial", o app desconta o limite antes de usar na fórmula: `saldo_real = saldo_digitado − limite_cheque_especial`
+
+**C1 (src/utils/extrato/saldoInicialHelper.ts):** Criado módulo utilitário puro com as seguintes exportações:
+- `calcularSaldoInicial(params)`: implementa a Regra Única — recebe saldo real, data do saldo, lançamentos do lote e lançamentos existentes; retorna `{ saldo_inicial, data_saldo_inicial }`.
+- `calcularSaldoRealEfetivo(saldoInformado, limiteChecqueEspecial, incluiLimite)`: converte saldo disponível para saldo real caso o usuário inclua o limite do cheque especial.
+- `deveAplicarRegraUnica(conta, lancamentosExistentes)`: determina se a Regra Única deve ser ativada (primeira importação ou conta sem lançamentos).
+- Tipos exportados: `ParametrosRegraUnica`, `ResultadoRegraUnica`.
+
+**C2 (importarExtratoLote em storage.ts):** O cálculo de `saldo_inicial` e `data_saldo_inicial` passou a usar exclusivamente `calcularSaldoInicial()`, eliminando todos os caminhos legados de ajuste de saldo.
+
+**C3 (Testes automatizados — scripts/test_parte_18C.ts):** Suíte com 30 testes cobrindo:
+- XLSX com 1.682 linhas e saldo LEDGERBAL
+- OFX com 400 transações e conta com lançamentos existentes
+- Conversão de saldo disponível com cheque especial (desconto do limite)
+- Contamax ignorado vs transferência entre contas próprias
+- Reversão via Desfazer (rollback do saldo_inicial)
+- Primeira importação vs importações subsequentes
+- Casos extremos: lote vazio, saldo zero, data retroativa
+
+**Testes:** 30/30 passaram com sucesso  
+**tsc:** zero erros  
+**build:** ✓ sucesso
+
+---
+
+### Parte 18D – Simplificação da Tela de Importação de Extratos (2026-10-23)
+**Data:** 2026-10-23T07:30  
+**Arquivos modificados:** `src/components/ImportarExtratoModal.tsx`  
+**O que foi feito:**
+
+**Objetivo:** Fluxo curto, sem alertas e confirmações que se contradizem. Usando a Regra Única da Parte 18C como base.
+
+**D1 (Passo 1 — arquivo + conta):**
+- Na **primeira importação**, exibe UM único campo: `"Saldo real da conta em [data]"` com:
+  - Data padrão = último dia do extrato (editável).
+  - Pré-preenchido com o saldo cadastrado na conta (o usuário confirma ou corrige).
+  - Se o OFX tiver `LEDGERBAL`, preenche automaticamente com o valor e a data do arquivo (editável).
+  - Seletor: "Este valor inclui o limite do cheque especial?" — ao marcar, o app desconta o limite antes de aplicar a fórmula.
+  - Texto de ajuda: "O app calcula sozinho o saldo inicial. Informe o saldo do último dia do extrato. Se este saldo é de hoje e o extrato termina antes de hoje, importe também o período até hoje."
+
+**D2 (Removido do fluxo):**
+- Alerta de "possível dupla contagem".
+- Checkbox "Ajustar a data do saldo inicial".
+- Botão "Corrigir saldo inicial agora".
+- Modal de ajuste do passo 3 (que pedia confirmação do novo saldo_inicial).
+- Campos legados `saldoBanco` / `dataSaldoBanco` / `substituirSaldoInicial`.
+- Cálculo antigo de `saldoProjetado` com comparação manual ao LEDGERBAL.
+
+**D3 (Tela de confirmação final):**
+- Painel único limpo com: lista de lançamentos do lote, contas afetadas e linha de saldo inicial calculado pela Regra Única.
+- Único botão "Confirmar e gravar" — sem confirmações intermediárias redundantes.
+
+**D4 (Passo 3 — resultado):**
+- Exibe: `"Saldo do app: R$ X = saldo informado R$ Y ✓"` (conciliado) ou mensagem de divergência com botão **Desfazer** (sem correção automática silenciosa).
+- Sem modal de "ajustar saldo agora" — o usuário decide explicitamente via Desfazer se necessário.
+
+**D5 (Importações seguintes):**
+- Campo de saldo é **opcional** e usado apenas para conferência — o app não recalcula o `saldo_inicial` já estabelecido.
+- Não exibe assistente de "primeira importação" se a conta já tiver lançamentos.
+
+**D6 (Layout — tela cheia e tabela utilizável):**
+- Modal em largura máxima (tela cheia no Passo 2).
+- Tabela com scroll vertical aproveitando o espaço disponível.
+- Filtros desligados por padrão para performance (ativar manualmente se necessário).
+
+**tsc:** zero erros  
+**build:** ✓ sucesso
+
+⚠️ **ATENÇÃO:** A Parte 18D **substitui completamente** os mecanismos de ajuste de saldo das Partes 15H, 15J, 16D e 17B. Qualquer regressão nesses fluxos deve ser validada pelos 30 testes da suíte `test_parte_18C.ts`.
+
+---

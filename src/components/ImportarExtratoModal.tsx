@@ -25,7 +25,7 @@ import {
   Info
 } from 'lucide-react';
 import { Modal } from './Modal';
-import { ContaBancaria, RegraImportacao, ResultadoAjusteSaldoInicialLedgerbal } from '../types';
+import { ContaBancaria, RegraImportacao } from '../types';
 import {
   lerExtrato,
   ExtratoLido,
@@ -87,14 +87,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
   } | null>(null);
 
   // Estados de Conciliação na Tela Final
-  const [conciliadoSucesso, setConciliadoSucesso] = useState(false);
   const [saldoDigitadoConciliacao, setSaldoDigitadoConciliacao] = useState('');
-  const [pediuReconciliarPasso3, setPediuReconciliarPasso3] = useState(false);
-
-  // Estados de Ajuste de Saldo Inicial (Requisito 2 - Parte 15H)
-  const [modalAjusteAberto, setModalAjusteAberto] = useState(false);
-  const [ajustandoSaldoInicial, setAjustandoSaldoInicial] = useState(false);
-  const [resultadoAjuste, setResultadoAjuste] = useState<ResultadoAjusteSaldoInicialLedgerbal | null>(null);
 
   // Estados de Desfazer Importação
   const [modalDesfazerAberto, setModalDesfazerAberto] = useState(false);
@@ -104,8 +97,12 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
     restaurados: number;
   } | null>(null);
 
-  // Assistente de Primeira Importação (Parte 15J)
-  const [confirmacaoSubstituirSaldoInicial, setConfirmacaoSubstituirSaldoInicial] = useState<Record<string, boolean>>({});
+  // Saldos Informados no Passo 1 (Parte 18D - REGRA ÚNICA)
+  const [saldosInformadosPasso1, setSaldosInformadosPasso1] = useState<Record<string, {
+    valor: string;
+    data: string;
+    incluiLimiteChequeEspecial: boolean;
+  }>>({});
 
   const [copiadoLote, setCopiadoLote] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -114,21 +111,17 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
   useEffect(() => {
     if (!isOpen) {
       setArquivos([]);
+      setSaldosInformadosPasso1({});
       setPasso(1);
       setGravando(false);
       setErroGravacao(null);
       setResultadoLote(null);
       setArquivoProcessadoFinal(null);
-      setConciliadoSucesso(false);
       setSaldoDigitadoConciliacao('');
-      setModalAjusteAberto(false);
-      setAjustandoSaldoInicial(false);
-      setResultadoAjuste(null);
       setModalDesfazerAberto(false);
       setDesfazendo(false);
       setStatusDesfeito(null);
       setCopiadoLote(false);
-      setPediuReconciliarPasso3(false);
     }
   }, [isOpen]);
 
@@ -173,6 +166,24 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
         } else if (contaPreSelecionadaId) {
           contaInicialId = contaPreSelecionadaId;
         }
+
+        const contaEscolhida = contas.find(c => c.id === contaInicialId);
+        const dataPadrao = extrato.saldoFinal?.data || extrato.periodo.fim || new Date().toISOString().split('T')[0];
+        let valorPadrao = '';
+        if (extrato.saldoFinal?.valor !== undefined && extrato.saldoFinal.valor !== null) {
+          valorPadrao = String(extrato.saldoFinal.valor);
+        } else if (contaEscolhida?.saldo_inicial !== undefined && contaEscolhida.saldo_inicial !== null) {
+          valorPadrao = String(contaEscolhida.saldo_inicial);
+        }
+
+        setSaldosInformadosPasso1(prev => ({
+          ...prev,
+          [item.id]: {
+            valor: valorPadrao,
+            data: dataPadrao,
+            incluiLimiteChequeEspecial: false
+          }
+        }));
 
         setArquivos(prev =>
           prev.map(a =>
@@ -220,6 +231,11 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
 
   const removerArquivo = (id: string) => {
     setArquivos(prev => prev.filter(a => a.id !== id));
+    setSaldosInformadosPasso1(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
 
   const selecionarContaArquivo = (idArquivo: string, contaId: string) => {
@@ -234,6 +250,27 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
           : a
       )
     );
+
+    const novaConta = contas.find(c => c.id === contaId);
+    setSaldosInformadosPasso1(prev => {
+      const atual = prev[idArquivo];
+      const itemArq = arquivos.find(a => a.id === idArquivo);
+      let novoValor = atual?.valor || '';
+      // Se o arquivo tiver LEDGERBAL, sempre prevalece o LEDGERBAL do OFX
+      if (itemArq?.extrato?.saldoFinal?.valor !== undefined && itemArq.extrato.saldoFinal.valor !== null) {
+        novoValor = String(itemArq.extrato.saldoFinal.valor);
+      } else if (novaConta?.saldo_inicial !== undefined && novaConta.saldo_inicial !== null) {
+        novoValor = String(novaConta.saldo_inicial);
+      }
+      return {
+        ...prev,
+        [idArquivo]: {
+          valor: novoValor,
+          data: atual?.data || itemArq?.extrato?.saldoFinal?.data || itemArq?.extrato?.periodo.fim || new Date().toISOString().split('T')[0],
+          incluiLimiteChequeEspecial: atual?.incluiLimiteChequeEspecial || false
+        }
+      };
+    });
   };
 
   const toggleConfirmacaoOutroBanco = (idArquivo: string) => {
@@ -276,27 +313,41 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
 
   const arquivosValidosParaRevisao = arquivos
     .filter((a) => a.extrato && a.contaSelecionadaId)
-    .map((a) => ({
-      extrato: a.extrato!,
-      contaId: a.contaSelecionadaId!,
-      bancoCodigo: a.extrato!.bancoCodigo || '033',
-      formato: a.extrato!.formato
-    }));
+    .map((a) => {
+      const saldoInfo = saldosInformadosPasso1[a.id];
+      const valorNum = saldoInfo?.valor !== undefined && saldoInfo.valor.trim() !== ''
+        ? Number(saldoInfo.valor.replace(',', '.'))
+        : undefined;
+      const temValorValido = valorNum !== undefined && !isNaN(valorNum);
+
+      return {
+        extrato: a.extrato!,
+        contaId: a.contaSelecionadaId!,
+        bancoCodigo: a.extrato!.bancoCodigo || '033',
+        formato: a.extrato!.formato,
+        saldoInformado: temValorValido ? {
+          valor: valorNum,
+          data: saldoInfo.data || a.extrato!.saldoFinal?.data || a.extrato!.periodo.fim || new Date().toISOString().split('T')[0],
+          isDisponivel: saldoInfo.incluiLimiteChequeEspecial,
+          origem: a.extrato!.saldoFinal?.valor !== undefined && valorNum === a.extrato!.saldoFinal.valor
+            ? ('ofx_ledgerbal' as const)
+            : ('usuario' as const)
+        } : undefined
+      };
+    });
 
   const handleExecutarGravacaoLote = async (dados: {
     itens: ItemRevisaoExtrato[];
     regrasACriar: Array<Omit<RegraImportacao, 'id'>>;
     saldoBanco?: { valor: number; data: string };
-    ajustarDataSaldoInicial?: boolean;
-    novaDataSaldoInicial?: string;
     /** Conta de aplicação selecionada explicitamente pelo usuário para Contamax */
     contaDestinoId?: string;
-    /** Ajuste de saldo inicial para prevenir dupla contagem e conciliar com LEDGERBAL (Parte 15J) */
-    saldoInicialAjustado?: {
-      novoSaldoInicial: number;
-      novaDataSaldoInicial: string;
-      saldoInicialAnterior: number;
-      dataSaldoInicialAnterior: string;
+    /** Saldo informado para REGRA ÚNICA (Parte 18C) */
+    saldoInformado?: {
+      valor: number;
+      data: string;
+      isDisponivel?: boolean;
+      origem?: 'ofx_ledgerbal' | 'usuario';
     };
   }) => {
     setGravando(true);
@@ -314,21 +365,21 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
     const contaAssociada = contas.find(c => c.id === arquivoAtivo.contaId);
     const loteId = `lote-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 
-    let saldoBancoFinal: { valor: number; data: string } | undefined = dados.saldoBanco;
-    if (!saldoBancoFinal && arquivoAtivo.extrato.saldoFinal?.valor !== undefined) {
-      saldoBancoFinal = {
-        valor: arquivoAtivo.extrato.saldoFinal.valor,
-        data: arquivoAtivo.extrato.saldoFinal.data || arquivoAtivo.extrato.periodo.fim || new Date().toISOString().split('T')[0]
-      };
-    }
+    // Saldo do banco final para exibição na conciliação pós-gravação
+    const saldoEfetivo = dados.saldoInformado?.valor !== undefined
+      ? { valor: dados.saldoInformado.valor, data: dados.saldoInformado.data }
+      : dados.saldoBanco || (arquivoAtivo.extrato.saldoFinal?.valor !== undefined ? {
+          valor: arquivoAtivo.extrato.saldoFinal.valor,
+          data: arquivoAtivo.extrato.saldoFinal.data || arquivoAtivo.extrato.periodo.fim || new Date().toISOString().split('T')[0]
+        } : undefined);
 
     setArquivoProcessadoFinal({
       nomeArquivo: nomeArquivoReal,
       bancoNome: arquivoAtivo.extrato.bancoNome || 'Banco',
       contaNome: contaAssociada?.nome || 'Conta Bancária',
       contaId: arquivoAtivo.contaId,
-      saldoBancoInformado: saldoBancoFinal?.valor,
-      dataSaldoBanco: saldoBancoFinal?.data
+      saldoBancoInformado: saldoEfetivo?.valor,
+      dataSaldoBanco: saldoEfetivo?.data
     });
 
     try {
@@ -343,14 +394,17 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
         itens: dados.itens,
         regrasACriar: dados.regrasACriar,
         usuario: usuario?.email || 'Administrador',
-        saldoBanco: saldoBancoFinal,
-        ajustarDataSaldoInicial: dados.ajustarDataSaldoInicial,
-        novaDataSaldoInicial: dados.novaDataSaldoInicial,
+        saldoBanco: saldoEfetivo,
         // Conta de aplicação Contamax escolhida explicitamente pelo usuário (nunca automático)
         contaDestinoId: dados.contaDestinoId,
-        // Ajuste de saldo inicial para prevenir dupla contagem e conciliar com LEDGERBAL (Parte 15J)
-        saldoInicialAjustado: dados.saldoInicialAjustado
+        // Saldo informado para REGRA ÚNICA (Parte 18C)
+        saldoInformado: dados.saldoInformado || arquivoAtivo.saldoInformado
       });
+
+      // Exibir erro de conferência pós-gravação (Parte 18C) sem tentar corrigir
+      if (res.erroConferenciaSaldo) {
+        setErroGravacao(res.erroConferenciaSaldo);
+      }
 
       setResultadoLote(res);
       setPasso(3);
@@ -363,27 +417,6 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
     }
   };
 
-  const handleConciliarDiferenca = (valorSaldoBanco: number) => {
-    if (!resultadoLote || !arquivoProcessadoFinal) return;
-    const contaId = arquivosValidosParaRevisao[0]?.contaId;
-    if (!contaId) return;
-
-    const res = dbService.conciliarSaldoConta({
-      contaId,
-      novoSaldoReal: valorSaldoBanco,
-      dataConciliacao: arquivoProcessadoFinal.dataSaldoBanco || new Date().toISOString().split('T')[0],
-      observacoes: `Conciliação após importação do lote ${resultadoLote.loteId} (${arquivoProcessadoFinal.nomeArquivo})`
-    });
-
-    if (res.sucesso) {
-      setConciliadoSucesso(true);
-      setResultadoLote(prev => prev ? {
-        ...prev,
-        saldoDepois: valorSaldoBanco,
-        diferencaConciliacao: 0
-      } : null);
-    }
-  };
 
   const handleDesfazerLote = async () => {
     if (!resultadoLote) return;
@@ -800,115 +833,36 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Saldos conciliados perfeitamente ou ajuste já realizado */}
+                    {/* Saldos conciliados perfeitamente (Requisito 4 - Parte 18D) */}
                     {Math.abs(resultadoLote.diferencaConciliacao || 0) < 0.01 ? (
-                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center gap-2.5">
+                      <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center gap-2.5">
                         <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
                         <div>
-                          <p className="font-bold">Saldos Idênticos!</p>
-                          <p className="text-[11px] text-emerald-700">
-                            O saldo calculado pelo app ({formatarMoeda(resultadoLote.saldoDepois)}) coincide com o LEDGERBAL do banco ({formatarMoeda(arquivoProcessadoFinal.saldoBancoInformado)} em {formatarDataBR(arquivoProcessadoFinal.dataSaldoBanco || '')}).
+                          <p className="font-bold text-emerald-950 text-xs sm:text-sm">
+                            Saldo do app: {formatarMoeda(resultadoLote.saldoDepois)} = saldo informado {formatarMoeda(arquivoProcessadoFinal.saldoBancoInformado)} ✓
                           </p>
-                        </div>
-                      </div>
-                    ) : resultadoAjuste ? (
-                      /* Exibe resultado do ajuste de saldo inicial */
-                      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-start gap-2.5">
-                        <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-                        <div className="space-y-1">
-                          <p className="font-bold">Saldo Inicial Ajustado com Sucesso!</p>
-                          <p className="text-[11px] text-emerald-700">
-                            Saldo inicial alterado de <strong className="font-num">{formatarMoeda(resultadoAjuste.saldoInicialAnterior)}</strong> para <strong className="font-num">{formatarMoeda(resultadoAjuste.saldoInicialNovo)}</strong> (data: {formatarDataBR(resultadoAjuste.dataSaldoInicialNova)}).
-                          </p>
-                          <p className="text-[11px] text-emerald-700">
-                            Saldo final calculado agora: <strong className="font-num">{formatarMoeda(resultadoAjuste.saldoFinalAposAjuste)}</strong>.
-                            {Math.abs(resultadoAjuste.diferenca) < 0.01
-                              ? ' ✓ Perfeita coincidência com o banco.'
-                              : ` Diferença residual: ${formatarMoeda(resultadoAjuste.diferenca)}.`}
-                          </p>
-                          <p className="text-[10px] text-emerald-600 italic">
-                            ⚠ Nenhum lançamento de ajuste foi criado. Apenas o campo "Saldo Inicial" da conta foi alterado.
-                          </p>
+                          {resultadoLote.saldoInicialDefinido && (
+                            <p className="text-[11px] text-emerald-800 font-semibold mt-1">
+                              ✓ Saldo inicial da conta configurado na 1ª importação: {formatarMoeda(resultadoLote.saldoInicialDefinido.novoSaldoInicial)} (data: {formatarDataBR(resultadoLote.saldoInicialDefinido.novaDataSaldoInicial)}).
+                            </p>
+                          )}
                         </div>
                       </div>
                     ) : (
-                      /* Diferença de Conciliação (Parte 16D) */
-                      (() => {
-                        const contaId = arquivoProcessadoFinal?.contaId;
-                        const contaTeveOutrosLotes = contaId
-                          ? dbService.getLancamentos().some(
-                              (l) =>
-                                l.conta_id === contaId &&
-                                l.origem === 'importacao' &&
-                                l.origem_importacao?.lote_id !== resultadoLote.loteId
-                            )
-                          : false;
-
-                        // Caso 1: Importação subsequente e usuário ainda NÃO pediu explicitamente reconciliar
-                        if (contaTeveOutrosLotes && !pediuReconciliarPasso3) {
-                          return (
-                            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-2.5 animate-in fade-in">
-                              <div className="flex items-start gap-2">
-                                <Info className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
-                                <div>
-                                  <p className="font-bold text-slate-800">
-                                    Conciliação: diferença de {formatarMoeda(Math.abs(resultadoLote.diferencaConciliacao || 0))} entre o app e o banco
-                                  </p>
-                                  <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
-                                    Esta não é a 1ª importação desta conta. O saldo inicial permanece intacto e <strong>não é alterado automaticamente</strong> para preservar o histórico contábil de períodos anteriores.
-                                  </p>
-                                </div>
-                              </div>
-                              <div className="pt-2 border-t border-slate-200 flex items-center justify-between flex-wrap gap-2">
-                                <span className="text-[11px] text-slate-500">
-                                  Deseja alinhar o saldo inicial com o extrato bancário agora?
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => setPediuReconciliarPasso3(true)}
-                                  className="px-3 py-1.5 bg-[#003064] hover:bg-[#00204A] text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
-                                >
-                                  Reconciliar com o banco
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        }
-
-                        // Caso 2: 1ª importação OU usuário pediu explicitamente reconciliar com o banco
-                        return (
-                          <div className="p-3.5 bg-amber-50/80 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-3 animate-in fade-in">
-                            <div className="flex items-start gap-2">
-                              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                              <div>
-                                <p className="font-bold text-amber-900">
-                                  Diferença de {formatarMoeda(Math.abs(resultadoLote.diferencaConciliacao || 0))} entre o app e o extrato bancário.
-                                </p>
-                                <p className="text-[11px] text-amber-800 mt-0.5">
-                                  {contaTeveOutrosLotes
-                                    ? 'Reconciliação com o banco solicitada: você pode recalcular o saldo inicial para igualar exatamente o LEDGERBAL.'
-                                    : 'Isso ocorre quando o saldo inicial da conta está diferente do saldo real antes do primeiro lançamento importado (ex.: lançamentos Contamax ignorados, histórico anterior ao período importado, etc.).'}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="pt-2 border-t border-amber-200/80">
-                              <p className="text-[11px] text-amber-800 mb-2">
-                                <strong>Ação disponível:</strong> Ajustar o saldo inicial da conta para que o saldo calculado pelo app coincida exatamente com o LEDGERBAL do banco.<br />
-                                <span className="text-amber-700">Isso altera SÓ o campo "Saldo Inicial" da conta. Nenhum lançamento de ajuste é criado.</span>
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => setModalAjusteAberto(true)}
-                                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#003064] hover:bg-[#00204A] text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer"
-                              >
-                                <DollarSign className="w-3.5 h-3.5" />
-                                Ajustar saldo inicial para bater com o banco
-                              </button>
-                            </div>
+                      /* Divergência de saldo: exibe apenas os números e botão Desfazer, SEM proposta de correção automática */
+                      <div className="p-3.5 bg-amber-50/80 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-2 animate-in fade-in">
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                          <div className="space-y-1">
+                            <p className="font-bold text-amber-950 text-xs sm:text-sm">
+                              Divergência entre o saldo do app ({formatarMoeda(resultadoLote.saldoDepois)}) e o saldo informado ({formatarMoeda(arquivoProcessadoFinal.saldoBancoInformado)}): diferença de {formatarMoeda(Math.abs(resultadoLote.diferencaConciliacao || 0))}
+                            </p>
+                            <p className="text-[11px] text-amber-800 leading-relaxed">
+                              Nenhuma correção automática foi realizada. Se desejar anular os lançamentos gravados neste lote, clique em "Desfazer Importação deste Lote" abaixo.
+                            </p>
                           </div>
-                        );
-                      })()
+                        </div>
+                      </div>
                     )}
                   </>
                 ) : (
@@ -1197,47 +1151,164 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                               )}
                             </div>
 
-                            {/* Assistente de Primeira Importação (Requisito 1 - Parte 15J) */}
-                            {contaEscolhida && !contaTemLancamentosImportados(contaEscolhida.id, dbService.getLancamentos()) && (
-                              <div className="p-3 bg-blue-50/90 border border-blue-200 rounded-xl text-xs space-y-1.5 text-blue-950">
-                                <div className="flex items-start gap-2">
-                                  <Info className="w-4 h-4 text-[#1A4A85] shrink-0 mt-0.5" />
-                                  <div className="space-y-0.5">
-                                    <p className="font-bold text-[#003064]">
-                                      Primeira importação desta conta
-                                    </p>
-                                    <p className="text-[11px] text-blue-900 leading-relaxed">
-                                      O saldo inicial NÃO precisa ser informado e será calculado com o saldo final do banco.<br />
-                                      O movimento do período será consolidado com precisão e segurança.
-                                    </p>
-                                  </div>
-                                </div>
+                            {/* Parte 18D: Passo 1 - Assistente Simplificado de Saldo (Regra Única da 18C) */}
+                            {contaEscolhida && (() => {
+                              const ehPrimeira = !contaTemLancamentosImportados(contaEscolhida.id, dbService.getLancamentos());
+                              const saldoInfo = saldosInformadosPasso1[item.id] || {
+                                valor: '',
+                                data: item.extrato?.saldoFinal?.data || item.extrato?.periodo.fim || '',
+                                incluiLimiteChequeEspecial: false
+                              };
 
-                                {contaEscolhida.saldo_inicial !== 0 && (
-                                  <div className="mt-2 pt-2 border-t border-blue-200 bg-white/80 p-2.5 rounded-lg text-[11px] text-slate-800 space-y-1.5">
-                                    <p className="text-slate-700">
-                                      A conta possui saldo inicial de <strong className="font-num text-slate-900">{formatarMoeda(contaEscolhida.saldo_inicial)}</strong> cadastrado.
-                                      <br />
-                                      <span className="font-semibold text-slate-900">Este valor é o saldo de hoje/final?</span> Se sim, ele será substituído pelo saldo calculado retroativo para prevenir contagem em dobro.
-                                    </p>
-                                    <label className="flex items-center gap-2 font-semibold text-blue-950 cursor-pointer pt-0.5">
+                              if (ehPrimeira) {
+                                return (
+                                  <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl space-y-2.5 text-xs text-blue-950">
+                                    <div className="flex items-start gap-2">
+                                      <Info className="w-4 h-4 text-[#1A4A85] shrink-0 mt-0.5" />
+                                      <div className="flex-1 space-y-1">
+                                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                                          <p className="font-bold text-[#003064]">
+                                            Primeira importação desta conta
+                                          </p>
+                                          {item.extrato?.saldoFinal?.valor !== undefined && (
+                                            <span className="text-[10px] bg-blue-100 text-[#003064] font-semibold px-2 py-0.5 rounded-md">
+                                              LEDGERBAL do OFX detectado
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="text-[11px] text-blue-900 leading-snug">
+                                          O app calcula sozinho o saldo inicial. Informe o saldo do último dia do extrato.<br />
+                                          Se este saldo é de hoje e o extrato termina antes de hoje, importe também o período até hoje.
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    <div className="bg-white/95 p-3 rounded-xl border border-blue-200/70 space-y-2.5">
+                                      <div>
+                                        <label className="block text-[11px] font-bold text-slate-800 mb-1">
+                                          Saldo real da conta em {saldoInfo.data ? formatarDataBR(saldoInfo.data) : 'data do extrato'}:
+                                        </label>
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                          <div className="relative">
+                                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">
+                                              R$
+                                            </span>
+                                            <input
+                                              type="number"
+                                              step="0.01"
+                                              placeholder="0,00"
+                                              value={saldoInfo.valor}
+                                              onChange={(e) =>
+                                                setSaldosInformadosPasso1(prev => ({
+                                                  ...prev,
+                                                  [item.id]: {
+                                                    ...saldoInfo,
+                                                    valor: e.target.value
+                                                  }
+                                                }))
+                                              }
+                                              className="w-full pl-8 pr-3 py-1.5 text-xs font-num font-semibold border border-slate-300 rounded-lg focus:border-[#003064] focus:ring-1 focus:ring-[#003064] bg-white text-slate-900"
+                                            />
+                                          </div>
+                                          <div>
+                                            <input
+                                              type="date"
+                                              value={saldoInfo.data}
+                                              onChange={(e) =>
+                                                setSaldosInformadosPasso1(prev => ({
+                                                  ...prev,
+                                                  [item.id]: {
+                                                    ...saldoInfo,
+                                                    data: e.target.value
+                                                  }
+                                                }))
+                                              }
+                                              className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:border-[#003064] focus:ring-1 focus:ring-[#003064] bg-white text-slate-800"
+                                            />
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <label className="flex items-center gap-2 pt-1 border-t border-slate-100 text-[11px] font-semibold text-slate-700 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={saldoInfo.incluiLimiteChequeEspecial}
+                                          onChange={(e) =>
+                                            setSaldosInformadosPasso1(prev => ({
+                                              ...prev,
+                                              [item.id]: {
+                                                ...saldoInfo,
+                                                incluiLimiteChequeEspecial: e.target.checked
+                                              }
+                                            }))
+                                          }
+                                          className="rounded border-slate-300 text-[#003064] focus:ring-[#003064] cursor-pointer"
+                                        />
+                                        <span>Este valor inclui o limite do cheque especial?</span>
+                                      </label>
+                                    </div>
+                                  </div>
+                                );
+                              }
+
+                              // Importações seguintes: saldo opcional apenas para conferência
+                              return (
+                                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs text-slate-700">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-semibold text-slate-800 text-[11px]">
+                                      Saldo do banco para conferência (opcional)
+                                    </span>
+                                    {item.extrato?.saldoFinal?.valor !== undefined && (
+                                      <span className="text-[10px] bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded">
+                                        Do arquivo OFX
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <div className="relative">
+                                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">
+                                        R$
+                                      </span>
                                       <input
-                                        type="checkbox"
-                                        checked={Boolean(confirmacaoSubstituirSaldoInicial[item.id])}
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="Opcional (ex.: 1500.00)"
+                                        value={saldoInfo.valor}
                                         onChange={(e) =>
-                                          setConfirmacaoSubstituirSaldoInicial(prev => ({
+                                          setSaldosInformadosPasso1(prev => ({
                                             ...prev,
-                                            [item.id]: e.target.checked
+                                            [item.id]: {
+                                              ...saldoInfo,
+                                              valor: e.target.value
+                                            }
                                           }))
                                         }
-                                        className="rounded border-blue-400 text-[#003064] focus:ring-[#003064] cursor-pointer"
+                                        className="w-full pl-8 pr-3 py-1.5 text-xs font-num border border-slate-300 rounded-lg bg-white text-slate-900"
                                       />
-                                      <span>Sim, este valor é o saldo de hoje/final. Substituir pelo saldo calculado.</span>
-                                    </label>
+                                    </div>
+                                    <div>
+                                      <input
+                                        type="date"
+                                        value={saldoInfo.data}
+                                        onChange={(e) =>
+                                          setSaldosInformadosPasso1(prev => ({
+                                            ...prev,
+                                            [item.id]: {
+                                              ...saldoInfo,
+                                              data: e.target.value
+                                            }
+                                          }))
+                                        }
+                                        className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-slate-800"
+                                      />
+                                    </div>
                                   </div>
-                                )}
-                              </div>
-                            )}
+                                  <p className="text-[10px] text-slate-500">
+                                    Esta conta já possui importações anteriores. O saldo inicial não será alterado; o valor acima é usado apenas para conferir diferenças ao final.
+                                  </p>
+                                </div>
+                              );
+                            })()}
 
                             {/* Alerta de Banco Divergente e Confirmação Explícita */}
                             {bancoDivergente && (
@@ -1304,102 +1375,6 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
     </Modal>
       )}
 
-      {/* MODAL DE CONFIRMAÇÃO PARA AJUSTE DE SALDO INICIAL (Item 2 - Parte 15H) */}
-      {modalAjusteAberto && resultadoLote && arquivoProcessadoFinal?.saldoBancoInformado !== undefined && (
-        <Modal
-          isOpen={modalAjusteAberto}
-          onClose={() => !ajustandoSaldoInicial && setModalAjusteAberto(false)}
-          title="Ajustar Saldo Inicial da Conta"
-          subtitle="Altera SOMENTE o campo 'Saldo Inicial' — nenhum lançamento é criado"
-          maxWidth="md"
-        >
-          <div className="space-y-4">
-            <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 flex items-start gap-2.5">
-              <AlertCircle className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <p className="font-bold">O que será feito:</p>
-                <p className="leading-relaxed">
-                  O campo <strong>Saldo Inicial</strong> da conta <strong>{arquivoProcessadoFinal.contaNome}</strong> será recalculado
-                  para que o saldo calculado pelo app coincida exatamente com o LEDGERBAL informado pelo banco.
-                </p>
-                <p className="text-[11px] text-blue-700 pt-1 border-t border-blue-200">
-                  Fórmula: <code className="font-mono">saldo_inicial_novo = LEDGERBAL − soma(lançamentos pagos até {formatarDataBR(arquivoProcessadoFinal.dataSaldoBanco || '')})</code>
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 text-center">
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                <span className="text-[10px] font-bold uppercase text-slate-500 block mb-1">Saldo Calculado pelo App</span>
-                <span className={`font-num font-bold text-sm ${resultadoLote.saldoDepois >= 0 ? 'text-[#003064]' : 'text-red-700'}`}>
-                  {formatarMoeda(resultadoLote.saldoDepois)}
-                </span>
-              </div>
-              <div className="bg-amber-50 p-3 rounded-xl border border-amber-200">
-                <span className="text-[10px] font-bold uppercase text-slate-500 block mb-1">LEDGERBAL do Banco</span>
-                <span className={`font-num font-bold text-sm ${arquivoProcessadoFinal.saldoBancoInformado >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                  {formatarMoeda(arquivoProcessadoFinal.saldoBancoInformado)}
-                </span>
-              </div>
-            </div>
-
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-700">
-              <p className="font-semibold mb-1">⚠ O que NÃO será feito:</p>
-              <ul className="list-disc list-inside space-y-0.5 text-slate-600">
-                <li>Nenhum lançamento de ajuste será criado</li>
-                <li>Nenhuma outra conta será alterada</li>
-                <li>Os lançamentos já importados permanecem intactos</li>
-              </ul>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                disabled={ajustandoSaldoInicial}
-                onClick={() => setModalAjusteAberto(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-              >
-                Cancelar
-              </button>
-
-              <button
-                type="button"
-                disabled={ajustandoSaldoInicial}
-                onClick={async () => {
-                  if (!arquivosValidosParaRevisao[0]?.contaId) return;
-                  setAjustandoSaldoInicial(true);
-                  try {
-                    const res = await dbService.ajustarSaldoInicialPorLedgerbal({
-                      contaId: arquivosValidosParaRevisao[0].contaId,
-                      saldoLedgerbal: arquivoProcessadoFinal.saldoBancoInformado!,
-                      dataLedgerbal: arquivoProcessadoFinal.dataSaldoBanco || new Date().toISOString().split('T')[0],
-                    });
-                    setResultadoAjuste(res);
-                    setModalAjusteAberto(false);
-                  } catch (err) {
-                    alert('Erro ao ajustar saldo inicial: ' + (err instanceof Error ? err.message : String(err)));
-                  } finally {
-                    setAjustandoSaldoInicial(false);
-                  }
-                }}
-                className="flex items-center gap-1.5 px-5 py-2 text-xs font-semibold bg-[#003064] hover:bg-[#00204A] text-white rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
-              >
-                {ajustandoSaldoInicial ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Ajustando...</span>
-                  </>
-                ) : (
-                  <>
-                    <DollarSign className="w-4 h-4" />
-                    <span>Confirmar Ajuste de Saldo Inicial</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
 
       {/* MODAL DE CONFIRMAÇÃO PARA DESFAZER IMPORTAÇÃO */}
       <Modal

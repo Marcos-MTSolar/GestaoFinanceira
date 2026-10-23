@@ -10,6 +10,8 @@ import { ConciliacaoModal } from '../components/ConciliacaoModal';
 import { Modal } from '../components/Modal';
 import { ImportarExtratoModal } from '../components/ImportarExtratoModal';
 import { ModalReinicioConta } from '../components/ModalReinicioConta';
+import { ModalExcluirConta } from '../components/ModalExcluirConta';
+import { ModalLimparOrfaos } from '../components/ModalLimparOrfaos';
 import { BANCOS_REGISTRADOS, SugestaoCadastroConta } from '../utils/extrato';
 import { HistoricoImportacoes, GerenciadorRegras } from '../components/extrato';
 import {
@@ -63,6 +65,12 @@ export const ContasBancarias: React.FC = () => {
 
   // Modal Reinício de conta (Parte 15I)
   const [contaParaReiniciar, setContaParaReiniciar] = useState<ContaBancaria | null>(null);
+
+  // Modal Exclusão Completa e Segura de Conta (Parte 18A)
+  const [contaExcluindo, setContaExcluindo] = useState<ContaBancaria | null>(null);
+
+  // Modal Limpeza de Histórico Órfão (Parte 18B)
+  const [modalLimparOrfaosAberto, setModalLimparOrfaosAberto] = useState(false);
 
   // Mensagens
   const [mensagemAlerta, setMensagemAlerta] = useState<string | null>(null);
@@ -215,16 +223,7 @@ export const ContasBancarias: React.FC = () => {
 
   const handleExcluirConta = (c: ContaBancaria) => {
     if (!isAdmin) return;
-
-    if (!confirm(`Tem certeza que deseja excluir a conta bancária "${c.nome}"?`)) {
-      return;
-    }
-
-    const res = dbService.deleteConta(c.id);
-    if (!res.sucesso && res.mensagem) {
-      setMensagemAlerta(res.mensagem);
-      setTimeout(() => setMensagemAlerta(null), 7000);
-    }
+    setContaExcluindo(c);
   };
 
   // Handlers Ações de Extrato, Transferência e Conciliação
@@ -312,6 +311,16 @@ export const ContasBancarias: React.FC = () => {
               >
                 <ArrowRightLeft className="w-4 h-4 text-[#1A4A85]" />
                 <span>Transferência</span>
+              </button>
+
+              <button
+                onClick={() => setModalLimparOrfaosAberto(true)}
+                type="button"
+                className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-red-50 text-slate-700 hover:text-red-700 text-xs font-semibold rounded-xl border border-slate-200 transition-colors cursor-pointer"
+                title="Limpar lançamentos, lotes e regras órfãos cujas contas foram excluídas"
+              >
+                <Trash2 className="w-4 h-4 text-slate-500 hover:text-red-600" />
+                <span>Limpar Histórico Órfão</span>
               </button>
 
               <button
@@ -806,6 +815,22 @@ export const ContasBancarias: React.FC = () => {
         <ModalReinicioConta
           conta={contaParaReiniciar}
           onFechar={() => setContaParaReiniciar(null)}
+        />
+      )}
+
+      {/* MODAL 7: EXCLUSÃO COMPLETA E SEGURA DE CONTA BANCÁRIA (Parte 18A) */}
+      {contaExcluindo && isAdmin && (
+        <ModalExcluirConta
+          conta={contaExcluindo}
+          onFechar={() => setContaExcluindo(null)}
+        />
+      )}
+
+      {/* MODAL 8: LIMPEZA DE HISTÓRICO ÓRFÃO (Parte 18B) */}
+      {modalLimparOrfaosAberto && isAdmin && (
+        <ModalLimparOrfaos
+          isOpen={modalLimparOrfaosAberto}
+          onFechar={() => setModalLimparOrfaosAberto(false)}
         />
       )}
 
