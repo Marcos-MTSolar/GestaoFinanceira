@@ -92,6 +92,7 @@ import {
 import {
   contaTemLancamentosImportados,
   calcularSaldoInicialPrimeiraImportacao,
+  recalcularSaldoInicialConta,
   converterDisponivelParaSaldoReal,
   conferirSaldoFinal,
 } from '../utils/extrato/saldoInicialHelper';
@@ -3751,25 +3752,55 @@ export const dbService = {
       throw new Error(msgDivergencia);
     }
 
-    // 8. PARTE 18C (REGRA ÚNICA):
-    // Aplicar o saldo inicial somente na PRIMEIRA importação da conta (conta sem lançamentos importados anteriores),
-    // no mesmo momento da gravação e DEPOIS de os lançamentos serem confirmados no servidor.
-    // Calcular a soma com dados deduplicados por ID.
+    // 8. PARTE 21B (SUBSTITUI A REGRA "SÓ NA PRIMEIRA IMPORTAÇÃO" DA PARTE 18C):
+    // O usuário nunca informa saldo inicial. O app guarda o último saldo real conhecido do banco (saldo_referencia)
+    // e recalcula o saldo inicial automaticamente depois de cada importação (e depois de Desfazer), em qualquer ordem.
     let saldoInicialDefinido: { novoSaldoInicial: number; novaDataSaldoInicial: string } | undefined = undefined;
+    let saldoInicialPendente = false;
 
     const infoSaldo = params.saldoInformado || params.saldoBanco;
     let saldoRealInformado: number | undefined = undefined;
     let dataSaldoInformado: string | undefined = undefined;
+    let origemSaldoInformado: 'ofx_ledgerbal' | 'usuario' | undefined = undefined;
 
     if (infoSaldo && infoSaldo.valor !== undefined) {
       dataSaldoInformado = infoSaldo.data || params.periodo.fim || new Date().toISOString().split('T')[0];
-      // PARTE 21A: a conversão disponível→real é feita SOMENTE na tela (RevisaoExtrato).
-      // O storage recebe SEMPRE o saldo real já convertido; isDisponivel aqui é sempre false.
-      // Não aplicar converterDisponivelParaSaldoReal aqui.
       saldoRealInformado = infoSaldo.valor;
+      origemSaldoInformado = (infoSaldo as any).origem === 'ofx_ledgerbal' || params.formato === 'ofx'
+        ? 'ofx_ledgerbal'
+        : 'usuario';
+
+      // Persiste o saldo do banco trazido por este lote
+      registroLote.saldo_banco = {
+        valor: saldoRealInformado,
+        data: dataSaldoInformado,
+        origem: origemSaldoInformado,
+      };
+
+      // Se o lote traz saldo e a data dele é igual ou mais recente que a do saldo_referencia atual (ou não existe referência),
+      // atualizamos a referência na conta bancária.
+      const referenciaAtual = conta.saldo_referencia;
+      const deveAtualizarRef = !referenciaAtual || dataSaldoInformado >= referenciaAtual.data;
+
+      if (deveAtualizarRef) {
+        if (!referenciaAtual) {
+          // Primeira vez que define referência: armazena saldo inicial original da conta para caso tudo seja desfeito
+          registroLote.saldoInicialAnteriorConta = conta.saldo_inicial;
+          registroLote.dataSaldoInicialAnteriorConta = conta.data_saldo_inicial;
+          registroLote.saldoInicialAjustadoNesteLote = true;
+        }
+
+        conta.saldo_referencia = {
+          valor: saldoRealInformado,
+          data: dataSaldoInformado,
+          origem: origemSaldoInformado,
+          lote_id: params.loteId,
+        };
+      }
     }
 
-    if (isPrimeiraImportacaoConta && saldoRealInformado !== undefined && dataSaldoInformado) {
+    // Em seguida, SE existir referência ativa na conta (atualizada agora ou pré-existente mais recente):
+    if (conta.saldo_referencia) {
       // Coleta todos os lançamentos pagos da conta pós-gravação (existentes + novos do lote + enriquecidos)
       const todosLancsParaCalculo: Lancamento[] = [
         ...cacheLancamentos.filter((l) => l.conta_id === params.contaId),
@@ -3777,15 +3808,14 @@ export const dbService = {
         ...lancamentosAtualizados.filter((l) => l.conta_id === params.contaId),
       ];
 
-      const calculo = calcularSaldoInicialPrimeiraImportacao({
-        saldoRealInformado,
-        dataSaldoInformado,
+      const calculo = recalcularSaldoInicialConta({
+        saldoReferencia: {
+          valor: conta.saldo_referencia.valor,
+          data: conta.saldo_referencia.data,
+        },
         contaId: params.contaId,
         todosLancamentosPagosConta: todosLancsParaCalculo,
       });
-
-      const saldoInicialAnterior = conta.saldo_inicial;
-      const dataSaldoInicialAnterior = conta.data_saldo_inicial;
 
       const contaAtualizada: ContaBancaria = {
         ...conta,
@@ -3800,10 +3830,6 @@ export const dbService = {
           novoSaldoInicial: calculo.novoSaldoInicial,
           novaDataSaldoInicial: calculo.novaDataSaldoInicial,
         };
-
-        registroLote.saldoInicialAjustadoNesteLote = true;
-        registroLote.saldoInicialAnteriorConta = saldoInicialAnterior;
-        registroLote.dataSaldoInicialAnteriorConta = dataSaldoInicialAnterior;
       } catch (contaErr) {
         console.error('Falha ao atualizar dados de saldo inicial da conta:', contaErr);
         registroLote.totais = totais;
@@ -3812,6 +3838,10 @@ export const dbService = {
         await setDoc(doc(db, FIRESTORE_COLLECTIONS.IMPORTOES, params.loteId), registroLote, { merge: true }).catch(() => {});
         throw new Error(`Lançamentos foram gravados, mas houve falha ao atualizar a conta bancária: ${traduzirErroFirestore(contaErr)}`);
       }
+    } else {
+      // 3) Se não existir nenhuma referência (ex.: XLSX importado antes de qualquer OFX e sem saldo digitado),
+      // não alterar o saldo inicial e sinalizar que o saldo inicial está pendente
+      saldoInicialPendente = true;
     }
 
     // 9. PARTE 21A: atualização atômica do cache sinâcrono — upsert por id
@@ -3929,6 +3959,8 @@ export const dbService = {
       avisos,
       statusLote: 'concluida',
       saldoInicialDefinido,
+      saldoInicialPendente,
+      saldoReferenciaConta: contaFinal.saldo_referencia,
       erroConferenciaSaldo,
     };
   },
@@ -4028,14 +4060,81 @@ export const dbService = {
       }
     }
 
-    // Se o saldo inicial foi alterado neste lote pelo assistente, restaura o saldo original da conta (Parte 15J)
-    if (lote.saldoInicialAjustadoNesteLote && lote.saldoInicialAnteriorConta !== undefined) {
-      const contaLote = this.getContaById(lote.conta_id);
-      if (contaLote) {
-        contaLote.saldo_inicial = lote.saldoInicialAnteriorConta;
-        if (lote.dataSaldoInicialAnteriorConta) {
-          contaLote.data_saldo_inicial = lote.dataSaldoInicialAnteriorConta;
+    // PARTE 21B: Desfazer com recálculo automático de referência e saldo inicial
+    const contaLote = this.getContaById(lote.conta_id);
+    if (contaLote) {
+      const referenciaVeioDesteLote = contaLote.saldo_referencia?.lote_id === loteId;
+
+      if (referenciaVeioDesteLote) {
+        // Remove a referência trazida por este lote desfeito
+        delete contaLote.saldo_referencia;
+
+        // Procura entre os outros lotes ativos da mesma conta (status !== 'desfeita') que tenham saldo de banco
+        const outrosLotesAtivosComSaldo = cacheImportacoes.filter(
+          (imp) =>
+            imp.id !== loteId &&
+            imp.conta_id === lote.conta_id &&
+            imp.status !== 'desfeita' &&
+            imp.saldo_banco?.valor !== undefined &&
+            imp.saldo_banco?.data
+        );
+
+        if (outrosLotesAtivosComSaldo.length > 0) {
+          // Ordena pelo saldo mais recente (por data desc, e desempate por criado_em desc)
+          outrosLotesAtivosComSaldo.sort((a, b) => {
+            const dataComp = b.saldo_banco!.data.localeCompare(a.saldo_banco!.data);
+            if (dataComp !== 0) return dataComp;
+            return (b.criado_em || '').localeCompare(a.criado_em || '');
+          });
+
+          const loteMaisRecente = outrosLotesAtivosComSaldo[0];
+          contaLote.saldo_referencia = {
+            valor: loteMaisRecente.saldo_banco!.valor,
+            data: loteMaisRecente.saldo_banco!.data,
+            origem: loteMaisRecente.saldo_banco!.origem || 'ofx_ledgerbal',
+            lote_id: loteMaisRecente.id,
+          };
+
+          // Recalcula o saldo inicial com os lançamentos pagos restantes da conta (data <= saldo_referencia.data)
+          const lancsRestantesConta = cacheLancamentos.filter((l) => l.conta_id === contaLote.id);
+          const calculo = recalcularSaldoInicialConta({
+            saldoReferencia: {
+              valor: contaLote.saldo_referencia.valor,
+              data: contaLote.saldo_referencia.data,
+            },
+            contaId: contaLote.id,
+            todosLancamentosPagosConta: lancsRestantesConta,
+          });
+
+          contaLote.saldo_inicial = calculo.novoSaldoInicial;
+          contaLote.data_saldo_inicial = calculo.novaDataSaldoInicial;
+          await this.saveContaBancaria(contaLote);
+        } else {
+          // Se não restar nenhuma referência em outros lotes, restaura o saldo inicial anterior à primeira importação
+          const saldoAnterior = lote.saldoInicialAnteriorConta !== undefined
+            ? lote.saldoInicialAnteriorConta
+            : 0;
+          contaLote.saldo_inicial = saldoAnterior;
+          if (lote.dataSaldoInicialAnteriorConta) {
+            contaLote.data_saldo_inicial = lote.dataSaldoInicialAnteriorConta;
+          }
+          await this.saveContaBancaria(contaLote);
         }
+      } else if (contaLote.saldo_referencia) {
+        // O lote desfeito não era o lote da referência atual (ex: desfez um lote anterior enquanto havia um lote mais recente ativo),
+        // mas a conta possui saldo_referencia ativo. Como lançamentos foram excluídos, o saldo inicial precisa ser recalculado!
+        const lancsRestantesConta = cacheLancamentos.filter((l) => l.conta_id === contaLote.id);
+        const calculo = recalcularSaldoInicialConta({
+          saldoReferencia: {
+            valor: contaLote.saldo_referencia.valor,
+            data: contaLote.saldo_referencia.data,
+          },
+          contaId: contaLote.id,
+          todosLancamentosPagosConta: lancsRestantesConta,
+        });
+
+        contaLote.saldo_inicial = calculo.novoSaldoInicial;
+        contaLote.data_saldo_inicial = calculo.novaDataSaldoInicial;
         await this.saveContaBancaria(contaLote);
       }
     }

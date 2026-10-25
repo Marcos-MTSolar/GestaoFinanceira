@@ -256,11 +256,9 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
       const atual = prev[idArquivo];
       const itemArq = arquivos.find(a => a.id === idArquivo);
       let novoValor = atual?.valor || '';
-      // Se o arquivo tiver LEDGERBAL, sempre prevalece o LEDGERBAL do OFX
+      // Se o arquivo tiver LEDGERBAL (OFX), puxa automaticamente o LEDGERBAL
       if (itemArq?.extrato?.saldoFinal?.valor !== undefined && itemArq.extrato.saldoFinal.valor !== null) {
         novoValor = String(itemArq.extrato.saldoFinal.valor);
-      } else if (novaConta?.saldo_inicial !== undefined && novaConta.saldo_inicial !== null) {
-        novoValor = String(novaConta.saldo_inicial);
       }
       return {
         ...prev,
@@ -799,7 +797,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                 </div>
               )}
 
-              {/* Painel de Conciliação Bancária — Requisitos 2 e 3 da Parte 15H */}
+              {/* Painel de Conciliação Bancária — Regra Parte 21B */}
               <div className="p-4 rounded-2xl border transition-all bg-white shadow-2xs border-slate-200 space-y-3">
                 <div className="flex items-center gap-2">
                   <Scale className="w-4 h-4 text-[#003064]" />
@@ -808,8 +806,18 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                   </h4>
                 </div>
 
-                {/* Tabela comparativa: saldo calculado × LEDGERBAL × diferença (Item 3) */}
-                {arquivoProcessadoFinal?.saldoBancoInformado !== undefined ? (
+                {/* Se não existir nenhuma referência (ex.: XLSX sem saldo importado antes de qualquer OFX) */}
+                {resultadoLote.saldoInicialPendente || (arquivoProcessadoFinal?.saldoBancoInformado === undefined && !resultadoLote.saldoReferenciaConta) ? (
+                  <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl text-xs text-blue-950 space-y-1">
+                    <p className="font-bold text-[#003064] text-xs sm:text-sm flex items-center gap-2">
+                      <Info className="w-4 h-4 text-[#1A4A85] shrink-0" />
+                      Saldo inicial pendente: importe um OFX ou informe o saldo do banco para o app calcular
+                    </p>
+                    <p className="text-[11px] text-blue-800 leading-relaxed">
+                      Os lançamentos foram gravados com sucesso. Quando você importar um extrato OFX (que traz o saldo do banco) ou informar o saldo, o saldo inicial será recalculado retroativamente em qualquer ordem.
+                    </p>
+                  </div>
+                ) : (
                   <>
                     <div className="grid grid-cols-3 gap-2 text-center">
                       <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
@@ -822,12 +830,12 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                       </div>
                       <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                         <span className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
-                          LEDGERBAL do Banco ({formatarDataBR(arquivoProcessadoFinal.dataSaldoBanco || '')})
+                          Saldo do Banco ({formatarDataBR(arquivoProcessadoFinal?.dataSaldoBanco || resultadoLote.saldoReferenciaConta?.data || '')})
                         </span>
                         <span className={`font-num font-bold text-sm ${
-                          arquivoProcessadoFinal.saldoBancoInformado >= 0 ? 'text-emerald-700' : 'text-red-700'
+                          (arquivoProcessadoFinal?.saldoBancoInformado ?? resultadoLote.saldoReferenciaConta?.valor ?? 0) >= 0 ? 'text-emerald-700' : 'text-red-700'
                         }`}>
-                          {formatarMoeda(arquivoProcessadoFinal.saldoBancoInformado)}
+                          {formatarMoeda(arquivoProcessadoFinal?.saldoBancoInformado ?? resultadoLote.saldoReferenciaConta?.valor ?? 0)}
                         </span>
                       </div>
                       <div className={`p-3 rounded-xl border ${
@@ -849,29 +857,29 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Saldos conciliados perfeitamente (Requisito 4 - Parte 18D) */}
+                    {/* Saldos conciliados perfeitamente (Requisito 7 - Parte 21B) */}
                     {Math.abs(resultadoLote.diferencaConciliacao || 0) < 0.01 ? (
                       <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center gap-2.5">
                         <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
                         <div>
                           <p className="font-bold text-emerald-950 text-xs sm:text-sm">
-                            Saldo do app: {formatarMoeda(resultadoLote.saldoDepois)} = saldo informado {formatarMoeda(arquivoProcessadoFinal.saldoBancoInformado)} ✓
+                            Saldo do app: {formatarMoeda(resultadoLote.saldoDepois)} = saldo do banco em {formatarDataBR(arquivoProcessadoFinal?.dataSaldoBanco || resultadoLote.saldoReferenciaConta?.data || '')}: {formatarMoeda(arquivoProcessadoFinal?.saldoBancoInformado ?? resultadoLote.saldoReferenciaConta?.valor ?? 0)} ✓
                           </p>
                           {resultadoLote.saldoInicialDefinido && (
                             <p className="text-[11px] text-emerald-800 font-semibold mt-1">
-                              ✓ Saldo inicial da conta configurado na 1ª importação: {formatarMoeda(resultadoLote.saldoInicialDefinido.novoSaldoInicial)} (data: {formatarDataBR(resultadoLote.saldoInicialDefinido.novaDataSaldoInicial)}).
+                              ✓ Saldo inicial recalculado automaticamente: {formatarMoeda(resultadoLote.saldoInicialDefinido.novoSaldoInicial)} (data: {formatarDataBR(resultadoLote.saldoInicialDefinido.novaDataSaldoInicial)}).
                             </p>
                           )}
                         </div>
                       </div>
                     ) : (
-                      /* Divergência de saldo: exibe apenas os números e botão Desfazer, SEM proposta de correção automática */
+                      /* Divergência de saldo: exibe apenas os números e botão Desfazer, SEM proposta de correção automática nem modais */
                       <div className="p-3.5 bg-amber-50/80 border border-amber-300 rounded-xl text-xs text-amber-950 space-y-2 animate-in fade-in">
                         <div className="flex items-start gap-2">
                           <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                           <div className="space-y-1">
                             <p className="font-bold text-amber-950 text-xs sm:text-sm">
-                              Divergência entre o saldo do app ({formatarMoeda(resultadoLote.saldoDepois)}) e o saldo informado ({formatarMoeda(arquivoProcessadoFinal.saldoBancoInformado)}): diferença de {formatarMoeda(Math.abs(resultadoLote.diferencaConciliacao || 0))}
+                              Divergência entre o saldo do app ({formatarMoeda(resultadoLote.saldoDepois)}) e o saldo do banco ({formatarMoeda(arquivoProcessadoFinal?.saldoBancoInformado ?? resultadoLote.saldoReferenciaConta?.valor ?? 0)}): diferença de {formatarMoeda(Math.abs(resultadoLote.diferencaConciliacao || 0))}
                             </p>
                             <p className="text-[11px] text-amber-800 leading-relaxed">
                               Nenhuma correção automática foi realizada. Se desejar anular os lançamentos gravados neste lote, clique em "Desfazer Importação deste Lote" abaixo.
@@ -881,41 +889,6 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                       </div>
                     )}
                   </>
-                ) : (
-                  /* Sem LEDGERBAL: permite digitar para conferência */
-                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-2">
-                    <p className="text-slate-700">
-                      O arquivo importado não continha saldo final explícito (LEDGERBAL). Deseja informar o saldo fornecido pelo banco para conferência?
-                    </p>
-                    <div className="flex items-center gap-2 max-w-sm">
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="Ex.: -7377.22"
-                        value={saldoDigitadoConciliacao}
-                        onChange={(e) => setSaldoDigitadoConciliacao(e.target.value)}
-                        className="px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg flex-1"
-                      />
-                      <button
-                        type="button"
-                        disabled={!saldoDigitadoConciliacao.trim()}
-                        onClick={() => {
-                          const val = Number(saldoDigitadoConciliacao.replace(',', '.'));
-                          if (!isNaN(val)) {
-                            // Apenas armazena para exibição — sem conciliar automaticamente
-                            setArquivoProcessadoFinal(prev => prev ? {
-                              ...prev,
-                              saldoBancoInformado: val,
-                              dataSaldoBanco: prev.dataSaldoBanco || new Date().toISOString().split('T')[0]
-                            } : null);
-                          }
-                        }}
-                        className="px-3 py-1.5 bg-[#003064] hover:bg-[#00204A] disabled:bg-slate-300 text-white rounded-lg text-xs font-semibold cursor-pointer"
-                      >
-                        Comparar
-                      </button>
-                    </div>
-                  </div>
                 )}
               </div>
 
@@ -1167,134 +1140,60 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                               )}
                             </div>
 
-                            {/* Parte 18D: Passo 1 - Assistente Simplificado de Saldo (Regra Única da 18C) */}
+                            {/* PARTE 21B: Assistente Automático de Saldo de Referência */}
                             {contaEscolhida && (() => {
-                              const ehPrimeira = !contaTemLancamentosImportados(contaEscolhida.id, dbService.getLancamentos());
+                              const ehOfx = item.extrato?.formato === 'ofx' || item.extrato?.saldoFinal?.valor !== undefined;
                               const saldoInfo = saldosInformadosPasso1[item.id] || {
                                 valor: '',
                                 data: item.extrato?.saldoFinal?.data || item.extrato?.periodo.fim || '',
                                 incluiLimiteChequeEspecial: false
                               };
 
-                              if (ehPrimeira) {
+                              if (ehOfx) {
+                                // Para OFX: o saldo vem diretamente do arquivo (LEDGERBAL), sem seletor de limite
                                 return (
-                                  <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl space-y-2.5 text-xs text-blue-950">
-                                    <div className="flex items-start gap-2">
-                                      <Info className="w-4 h-4 text-[#1A4A85] shrink-0 mt-0.5" />
-                                      <div className="flex-1 space-y-1">
-                                        <div className="flex items-center justify-between gap-2 flex-wrap">
-                                          <p className="font-bold text-[#003064]">
-                                            Primeira importação desta conta
-                                          </p>
-                                          {item.extrato?.saldoFinal?.valor !== undefined && (
-                                            <span className="text-[10px] bg-blue-100 text-[#003064] font-semibold px-2 py-0.5 rounded-md">
-                                              LEDGERBAL do OFX detectado
-                                            </span>
-                                          )}
-                                        </div>
-                                        <p className="text-[11px] text-blue-900 leading-snug">
-                                          O app calcula sozinho o saldo inicial. Informe o saldo do último dia do extrato.<br />
-                                          Se este saldo é de hoje e o extrato termina antes de hoje, importe também o período até hoje.
-                                        </p>
-                                      </div>
+                                  <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-xl space-y-1.5 text-xs text-blue-950">
+                                    <div className="flex items-center justify-between">
+                                      <span className="font-bold text-[#003064] text-[11px] flex items-center gap-1.5">
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
+                                        Saldo do arquivo OFX (LEDGERBAL detectado)
+                                      </span>
+                                      <span className="text-[10px] bg-blue-100 text-[#003064] font-semibold px-2 py-0.5 rounded-md">
+                                        Automático
+                                      </span>
                                     </div>
-
-                                    <div className="bg-white/95 p-3 rounded-xl border border-blue-200/70 space-y-2.5">
-                                      <div>
-                                        <label className="block text-[11px] font-bold text-slate-800 mb-1">
-                                          Saldo real da conta em {saldoInfo.data ? formatarDataBR(saldoInfo.data) : 'data do extrato'}:
-                                        </label>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                          <div className="relative">
-                                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">
-                                              R$
-                                            </span>
-                                            <input
-                                              type="number"
-                                              step="0.01"
-                                              placeholder="0,00"
-                                              value={saldoInfo.valor}
-                                              onChange={(e) =>
-                                                setSaldosInformadosPasso1(prev => ({
-                                                  ...prev,
-                                                  [item.id]: {
-                                                    ...saldoInfo,
-                                                    valor: e.target.value
-                                                  }
-                                                }))
-                                              }
-                                              className="w-full pl-8 pr-3 py-1.5 text-xs font-num font-semibold border border-slate-300 rounded-lg focus:border-[#003064] focus:ring-1 focus:ring-[#003064] bg-white text-slate-900"
-                                            />
-                                          </div>
-                                          <div>
-                                            <input
-                                              type="date"
-                                              value={saldoInfo.data}
-                                              onChange={(e) =>
-                                                setSaldosInformadosPasso1(prev => ({
-                                                  ...prev,
-                                                  [item.id]: {
-                                                    ...saldoInfo,
-                                                    data: e.target.value
-                                                  }
-                                                }))
-                                              }
-                                              className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:border-[#003064] focus:ring-1 focus:ring-[#003064] bg-white text-slate-800"
-                                            />
-                                          </div>
-                                        </div>
-                                      </div>
-
-                                      {/* PARTE 21A: Se o saldo vier do LEDGERBAL do OFX, esconde o seletor "inclui o limite" e nunca converte (já é saldo em conta) */}
-                                      {item.extrato?.saldoFinal?.valor === undefined && (
-                                        <div className="pt-2 border-t border-slate-100 space-y-1.5">
-                                          <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700 cursor-pointer">
-                                            <input
-                                              type="checkbox"
-                                              checked={saldoInfo.incluiLimiteChequeEspecial}
-                                              onChange={(e) =>
-                                                setSaldosInformadosPasso1(prev => ({
-                                                  ...prev,
-                                                  [item.id]: {
-                                                    ...saldoInfo,
-                                                    incluiLimiteChequeEspecial: e.target.checked
-                                                  }
-                                                }))
-                                              }
-                                              className="rounded border-slate-300 text-[#003064] focus:ring-[#003064] cursor-pointer"
-                                            />
-                                            <span>Este valor inclui o limite do cheque especial?</span>
-                                          </label>
-                                          {saldoInfo.incluiLimiteChequeEspecial && (() => {
-                                            const informadoY = Number(saldoInfo.valor) || 0;
-                                            const limiteZ = contaEscolhida.limite_cheque_especial || 0;
-                                            const saldoRealX = informadoY - limiteZ;
-                                            return (
-                                              <p className="text-[11px] font-medium text-blue-900 bg-blue-100/70 p-2 rounded-lg border border-blue-200">
-                                                Saldo real considerado: <strong>{formatarMoeda(saldoRealX)}</strong> (informado {formatarMoeda(informadoY)} − limite {formatarMoeda(limiteZ)})
-                                              </p>
-                                            );
-                                          })()}
-                                        </div>
+                                    <div className="flex items-center gap-2 font-num">
+                                      <span className="text-slate-600">Saldo em conta:</span>
+                                      <strong className="text-[#003064] text-sm">
+                                        {item.extrato?.saldoFinal?.valor !== undefined
+                                          ? formatarMoeda(item.extrato.saldoFinal.valor)
+                                          : '0,00'}
+                                      </strong>
+                                      {item.extrato?.saldoFinal?.data && (
+                                        <span className="text-slate-500 text-[11px]">
+                                          em {formatarDataBR(item.extrato.saldoFinal.data)}
+                                        </span>
                                       )}
                                     </div>
+                                    <p className="text-[10px] text-blue-800 leading-snug">
+                                      O app guarda este saldo e recalcula o saldo inicial automaticamente. Sem necessidade de digitar limite ou valor manual.
+                                    </p>
                                   </div>
                                 );
                               }
 
-                              // Importações seguintes: saldo opcional apenas para conferência
+                              // Para XLSX: o campo de saldo é OPCIONAL
                               return (
-                                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs text-slate-700">
-                                  <div className="flex items-center justify-between">
-                                    <span className="font-semibold text-slate-800 text-[11px]">
-                                      Saldo do banco para conferência (opcional)
-                                    </span>
-                                    {item.extrato?.saldoFinal?.valor !== undefined && (
-                                      <span className="text-[10px] bg-slate-200/80 text-slate-700 px-2 py-0.5 rounded">
-                                        Do arquivo OFX
-                                      </span>
-                                    )}
+                                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5 text-xs text-slate-800">
+                                  <div className="space-y-1">
+                                    <label className="block text-[11px] font-bold text-slate-800">
+                                      Saldo do banco em {saldoInfo.data ? formatarDataBR(saldoInfo.data) : 'data do extrato'} (opcional):
+                                    </label>
+                                    <p className="text-[11px] text-slate-600 leading-snug">
+                                      Se você não souber, deixe em branco: o app calcula depois com o saldo de um OFX.
+                                    </p>
                                   </div>
+
                                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                     <div className="relative">
                                       <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-400">
@@ -1303,7 +1202,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                                       <input
                                         type="number"
                                         step="0.01"
-                                        placeholder="Opcional (ex.: 1500.00)"
+                                        placeholder="Opcional (deixe em branco)"
                                         value={saldoInfo.valor}
                                         onChange={(e) =>
                                           setSaldosInformadosPasso1(prev => ({
@@ -1314,7 +1213,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                                             }
                                           }))
                                         }
-                                        className="w-full pl-8 pr-3 py-1.5 text-xs font-num border border-slate-300 rounded-lg bg-white text-slate-900"
+                                        className="w-full pl-8 pr-3 py-1.5 text-xs font-num font-semibold border border-slate-300 rounded-lg focus:border-[#003064] focus:ring-1 focus:ring-[#003064] bg-white text-slate-900"
                                       />
                                     </div>
                                     <div>
@@ -1330,13 +1229,42 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                                             }
                                           }))
                                         }
-                                        className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg bg-white text-slate-800"
+                                        className="w-full px-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:border-[#003064] focus:ring-1 focus:ring-[#003064] bg-white text-slate-800"
                                       />
                                     </div>
                                   </div>
-                                  <p className="text-[10px] text-slate-500">
-                                    Esta conta já possui importações anteriores. O saldo inicial não será alterado; o valor acima é usado apenas para conferir diferenças ao final.
-                                  </p>
+
+                                  {saldoInfo.valor.trim() !== '' && (
+                                    <div className="pt-2 border-t border-slate-200 space-y-1.5">
+                                      <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={saldoInfo.incluiLimiteChequeEspecial}
+                                          onChange={(e) =>
+                                            setSaldosInformadosPasso1(prev => ({
+                                              ...prev,
+                                              [item.id]: {
+                                                ...saldoInfo,
+                                                incluiLimiteChequeEspecial: e.target.checked
+                                              }
+                                            }))
+                                          }
+                                          className="rounded border-slate-300 text-[#003064] focus:ring-[#003064] cursor-pointer"
+                                        />
+                                        <span>Este valor inclui o limite do cheque especial?</span>
+                                      </label>
+                                      {saldoInfo.incluiLimiteChequeEspecial && (() => {
+                                        const informadoY = Number(saldoInfo.valor) || 0;
+                                        const limiteZ = contaEscolhida.limite_cheque_especial || 0;
+                                        const saldoRealX = informadoY - limiteZ;
+                                        return (
+                                          <p className="text-[11px] font-medium text-blue-900 bg-blue-100/70 p-2 rounded-lg border border-blue-200">
+                                            Saldo real considerado: <strong>{formatarMoeda(saldoRealX)}</strong> (informado {formatarMoeda(informadoY)} − limite {formatarMoeda(limiteZ)})
+                                          </p>
+                                        );
+                                      })()}
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })()}

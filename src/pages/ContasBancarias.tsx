@@ -640,7 +640,7 @@ export const ContasBancarias: React.FC = () => {
                 type="text"
                 value={agencia}
                 onChange={(e) => setAgencia(e.target.value)}
-                placeholder="Ex: 3749"
+                placeholder="Ex: 0001"
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
               />
               <span className="text-[10px] text-slate-400">Usado para associar extratos OFX</span>
@@ -654,7 +654,7 @@ export const ContasBancarias: React.FC = () => {
                 type="text"
                 value={numeroConta}
                 onChange={(e) => setNumeroConta(e.target.value)}
-                placeholder="Ex: 13004696-4"
+                placeholder="Ex: 99999999-9"
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-[#003064] focus:outline-hidden"
               />
               <span className="text-[10px] text-slate-400">Necessário para identificar o extrato</span>

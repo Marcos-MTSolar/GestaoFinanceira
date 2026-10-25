@@ -56,7 +56,7 @@ export function normalizarTexto(texto?: string | null): string {
 /**
  * Verifica se os dados de número de conta conferem entre o extrato e a conta cadastrada.
  * Trata o caso do Santander e outros bancos onde o ACCTID traz a agência colada na conta
- * (Ex: ACCTID 3749130046964 ≡ agência 3749 + conta 13004696-4).
+ * (Ex: ACCTID 0001999999999 ≡ agência 0001 + conta 99999999-9).
  */
 export function verificarNumeroContaBate(extrato: ExtratoLido, conta: ContaBancaria): boolean {
   const contaCadDigitos = apenasDigitos(conta.numero_conta);

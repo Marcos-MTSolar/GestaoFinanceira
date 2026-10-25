@@ -59,7 +59,7 @@ function mockConta(dados: Partial<ContaBancaria>): ContaBancaria {
     tipo: 'corrente' as const,
     saldo_inicial: 0,
     data_saldo_inicial: '2026-01-01',
-    limite_cheque_especial: 8800.0,
+    limite_cheque_especial: 5000.0,
     taxa_juros_cheque_especial_mensal: 8.0,
     cor: '#003064',
     ativa: true,
@@ -282,10 +282,10 @@ function gerar26Transacoes(contaId: string): Lancamento[] {
   return transacoes;
 }
 
-secao('Cenário 1: OFX 17-24/10/2026 com LEDGERBAL -8.545,77 (Limite 8.800, Soma -1.168,55)');
+secao('Cenário 1: OFX com LEDGERBAL -4.321,10 (Limite 5.000, Soma -1.168,55)');
 {
   const sim = new SimuladorStorage21A();
-  const conta = mockConta({ id: 'cc-santander', limite_cheque_especial: 8800.0, saldo_inicial: 0 });
+  const conta = mockConta({ id: 'cc-santander', limite_cheque_especial: 5000.0, saldo_inicial: 0 });
   sim.cacheContas.push(conta);
 
   const transacoes = gerar26Transacoes(conta.id);
@@ -294,7 +294,7 @@ secao('Cenário 1: OFX 17-24/10/2026 com LEDGERBAL -8.545,77 (Limite 8.800, Soma
   asserir(soma === -1168.55, `Soma das transações é -1.168,55 (obtido: ${soma})`);
 
   // OFX com LEDGERBAL: a tela detecta LEDGERBAL e NUNCA converte (isDisponivel=false)
-  const ledgerbal = -8545.77;
+  const ledgerbal = -4321.10;
   const saldoInformadoTela = {
     valor: ledgerbal, // Saldo real direto do LEDGERBAL
     data: '2026-10-24',
@@ -310,27 +310,27 @@ secao('Cenário 1: OFX 17-24/10/2026 com LEDGERBAL -8.545,77 (Limite 8.800, Soma
   });
 
   asserir(res.saldoInicialDefinido !== undefined, 'Saldo inicial definido na primeira importação');
-  asserir(res.saldoInicialDefinido?.novoSaldoInicial === -7377.22, `Saldo inicial é -7.377,22 (obtido: ${res.saldoInicialDefinido?.novoSaldoInicial})`);
-  asserir(res.saldoDepois === -8545.77, `Saldo real no App é exatamente -8.545,77 (obtido: ${res.saldoDepois})`);
+  asserir(res.saldoInicialDefinido?.novoSaldoInicial === -3152.55, `Saldo inicial é -3.152,55 (obtido: ${res.saldoInicialDefinido?.novoSaldoInicial})`);
+  asserir(res.saldoDepois === -4321.10, `Saldo real no App é exatamente -4.321,10 (obtido: ${res.saldoDepois})`);
   
   const resumo = sim.calcularResumoConta(conta.id);
-  asserir(resumo.saldo_disponivel_total === 254.23, `Saldo disponível com limite é +254,23 (obtido: ${resumo.saldo_disponivel_total})`);
+  asserir(resumo.saldo_disponivel_total === 678.90, `Saldo disponível com limite é +678,90 (obtido: ${resumo.saldo_disponivel_total})`);
   asserir(res.erroConferenciaSaldo === undefined, 'Conferência de saldo final confere com 100% de exatidão');
 }
 
-secao('Cenário 2: Usuário digitando 254,23 com seletor "inclui limite" ativado');
+secao('Cenário 2: Usuário digitando 678,90 com seletor "inclui limite" ativado');
 {
   const sim = new SimuladorStorage21A();
-  const conta = mockConta({ id: 'cc-santander-2', limite_cheque_especial: 8800.0, saldo_inicial: 0 });
+  const conta = mockConta({ id: 'cc-santander-2', limite_cheque_especial: 5000.0, saldo_inicial: 0 });
   sim.cacheContas.push(conta);
 
   const transacoes = gerar26Transacoes(conta.id);
 
-  // Na tela (Passo 1 / Revisão): usuário digitou 254.23 com checkbox ativado
-  const informadoUsuario = 254.23;
+  // Na tela (Passo 1 / Revisão): usuário digitou 678.90 com checkbox ativado
+  const informadoUsuario = 678.90;
   const limite = conta.limite_cheque_especial;
   const saldoRealConvertidoNaTela = converterDisponivelParaSaldoReal(informadoUsuario, limite);
-  asserir(saldoRealConvertidoNaTela === -8545.77, `Tela converte 254,23 - 8.800,00 para -8.545,77 (obtido: ${saldoRealConvertidoNaTela})`);
+  asserir(saldoRealConvertidoNaTela === -4321.10, `Tela converte 678,90 - 5.000,00 para -4.321,10 (obtido: ${saldoRealConvertidoNaTela})`);
 
   // A tela repassa ao storage o valor REAL e isDisponivel=false
   const saldoInformadoParam = {
@@ -347,8 +347,8 @@ secao('Cenário 2: Usuário digitando 254,23 com seletor "inclui limite" ativado
     saldoInformado: saldoInformadoParam,
   });
 
-  asserir(res.saldoInicialDefinido?.novoSaldoInicial === -7377.22, `Saldo inicial é -7.377,22 (obtido: ${res.saldoInicialDefinido?.novoSaldoInicial})`);
-  asserir(res.saldoDepois === -8545.77, `Saldo real no App é -8.545,77 (não desconta limite 2x) (obtido: ${res.saldoDepois})`);
+  asserir(res.saldoInicialDefinido?.novoSaldoInicial === -3152.55, `Saldo inicial é -3.152,55 (obtido: ${res.saldoInicialDefinido?.novoSaldoInicial})`);
+  asserir(res.saldoDepois === -4321.10, `Saldo real no App é -4.321,10 (não desconta limite 2x) (obtido: ${res.saldoDepois})`);
   asserir(res.erroConferenciaSaldo === undefined, 'Conferência independente confirmou saldo idêntico sem divergência');
 }
 
@@ -358,32 +358,32 @@ secao('Cenário 3: Comprovação de que NENHUMA combinação subtrai o limite ma
   // 1. OFX (origem ofx_ledgerbal)
   // 2. Manual com checkbox marcado (origem usuario, convertido na tela)
   // 3. Manual com checkbox desmarcado (saldo real já digitado)
-  const conta = mockConta({ limite_cheque_especial: 8800 });
+  const conta = mockConta({ limite_cheque_especial: 5000 });
 
   // 1. OFX
-  const ofxSaldoReal = -8545.77;
-  asserir(ofxSaldoReal === -8545.77, 'OFX LEDGERBAL direto: saldo real -8.545,77');
+  const ofxSaldoReal = -4321.10;
+  asserir(ofxSaldoReal === -4321.10, 'OFX LEDGERBAL direto: saldo real -4.321,10');
 
   // 2. Manual com "inclui limite"
-  const manualComLimite = 254.23;
+  const manualComLimite = 678.90;
   const convertidoTela = converterDisponivelParaSaldoReal(manualComLimite, conta.limite_cheque_especial);
-  asserir(convertidoTela === -8545.77, 'Manual com limite: convertido 1x na tela = -8.545,77');
+  asserir(convertidoTela === -4321.10, 'Manual com limite: convertido 1x na tela = -4.321,10');
 
-  // 3. Manual digitando já o saldo real -8545.77 (checkbox desligado)
-  const manualSaldoReal = -8545.77;
-  asserir(manualSaldoReal === -8545.77, 'Manual direto: saldo real -8.545,77');
+  // 3. Manual digitando já o saldo real -4321.10 (checkbox desligado)
+  const manualSaldoReal = -4321.10;
+  asserir(manualSaldoReal === -4321.10, 'Manual direto: saldo real -4.321,10');
 
-  // Em todos os casos, o storage recebe -8545.77 e nunca faz converterDisponivelParaSaldoReal novamente.
+  // Em todos os casos, o storage recebe -4321.10 e nunca faz converterDisponivelParaSaldoReal novamente.
   // Se fizesse a conversão novamente no storage (o bug anterior):
   const bugAnterior = converterDisponivelParaSaldoReal(convertidoTela, conta.limite_cheque_especial);
-  asserir(bugAnterior === -17345.77, `Bug anterior gerava -17.345,77 (dupla subtração de 8.800)`);
+  asserir(bugAnterior === -9321.10, `Bug anterior gerava -9.321,10 (dupla subtração de 5.000)`);
   asserir(convertidoTela !== bugAnterior, 'Código atual blindado contra a dupla subtração');
 }
 
 secao('Cenário 4: Memória Duplicada — onSnapshot concorrente e Upsert por ID');
 {
   const sim = new SimuladorStorage21A();
-  const conta = mockConta({ id: 'cc-memoria', limite_cheque_especial: 8800.0 });
+  const conta = mockConta({ id: 'cc-memoria', limite_cheque_especial: 5000.0 });
   sim.cacheContas.push(conta);
 
   const transacoes = gerar26Transacoes(conta.id);
@@ -393,18 +393,18 @@ secao('Cenário 4: Memória Duplicada — onSnapshot concorrente e Upsert por ID
     loteId: 'lote-mem-1',
     contaId: conta.id,
     novosLancamentos: transacoes,
-    saldoInformado: { valor: -8545.77, data: '2026-10-24', isDisponivel: false },
+    saldoInformado: { valor: -4321.10, data: '2026-10-24', isDisponivel: false },
     simularEntregaOnSnapshotAntes: true, // onSnapshot já entregou os 26 lançamentos
   });
 
   asserir(res.totalLancamentosEmMemoria === 26, `Memória tem exatamente 26 lançamentos (sem duplicatas por push cego) (obtido: ${res.totalLancamentosEmMemoria})`);
-  asserir(res.saldoDepois === -8545.77, `Saldo real calculado corretamente com dados deduplicados: -8.545,77 (obtido: ${res.saldoDepois})`);
+  asserir(res.saldoDepois === -4321.10, `Saldo real calculado corretamente com dados deduplicados: -4.321,10 (obtido: ${res.saldoDepois})`);
 }
 
 secao('Cenário 5: Reimportar o mesmo extrato gera 0 novas transações');
 {
   const sim = new SimuladorStorage21A();
-  const conta = mockConta({ id: 'cc-reimportar', limite_cheque_especial: 8800.0 });
+  const conta = mockConta({ id: 'cc-reimportar', limite_cheque_especial: 5000.0 });
   sim.cacheContas.push(conta);
 
   const transacoes = gerar26Transacoes(conta.id);
@@ -414,7 +414,7 @@ secao('Cenário 5: Reimportar o mesmo extrato gera 0 novas transações');
     loteId: 'lote-reimp-1',
     contaId: conta.id,
     novosLancamentos: transacoes,
-    saldoInformado: { valor: -8545.77, data: '2026-10-24', isDisponivel: false },
+    saldoInformado: { valor: -4321.10, data: '2026-10-24', isDisponivel: false },
   });
 
   const saldoAntesReimport = sim.calcularResumoConta(conta.id).saldo_real;
@@ -425,7 +425,7 @@ secao('Cenário 5: Reimportar o mesmo extrato gera 0 novas transações');
     loteId: 'lote-reimp-2',
     contaId: conta.id,
     novosLancamentos: novasTransacoesParaGravar,
-    saldoInformado: { valor: -8545.77, data: '2026-10-24', isDisponivel: false },
+    saldoInformado: { valor: -4321.10, data: '2026-10-24', isDisponivel: false },
   });
 
   asserir(resReimport.totalLancamentosGravados === 0, 'Reimportar gerou 0 novas transações gravadas');
@@ -436,7 +436,7 @@ secao('Cenário 5: Reimportar o mesmo extrato gera 0 novas transações');
 secao('Cenário 6: Saldos iguais antes e depois de recarregar');
 {
   const sim = new SimuladorStorage21A();
-  const conta = mockConta({ id: 'cc-recarregar', limite_cheque_especial: 8800.0 });
+  const conta = mockConta({ id: 'cc-recarregar', limite_cheque_especial: 5000.0 });
   sim.cacheContas.push(conta);
 
   const transacoes = gerar26Transacoes(conta.id);
@@ -445,7 +445,7 @@ secao('Cenário 6: Saldos iguais antes e depois de recarregar');
     loteId: 'lote-recarregar-1',
     contaId: conta.id,
     novosLancamentos: transacoes,
-    saldoInformado: { valor: -8545.77, data: '2026-10-24', isDisponivel: false },
+    saldoInformado: { valor: -4321.10, data: '2026-10-24', isDisponivel: false },
   });
 
   const saldoAntesRecarregar = sim.calcularResumoConta(conta.id);
@@ -478,13 +478,13 @@ secao('Cenário 6: Saldos iguais antes e depois de recarregar');
 secao('Cenário 7: Conferência Independente — Alerta quando saldo divergir');
 {
   const sim = new SimuladorStorage21A();
-  const conta = mockConta({ id: 'cc-divergencia', limite_cheque_especial: 8800.0 });
+  const conta = mockConta({ id: 'cc-divergencia', limite_cheque_especial: 5000.0 });
   sim.cacheContas.push(conta);
 
   const transacoes = gerar26Transacoes(conta.id);
 
   // Simula usuário informando um saldo divergente de propósito (ex: 1000 reais a mais)
-  const saldoDivergente = -7545.77; // R$ 1.000 de diferença do real (-8545.77)
+  const saldoDivergente = -3321.10; // R$ 1.000 de diferença do real (-4321.10)
   const res = sim.importarExtratoLote({
     loteId: 'lote-divergencia-1',
     contaId: conta.id,

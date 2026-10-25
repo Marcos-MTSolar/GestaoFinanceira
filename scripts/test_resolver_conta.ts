@@ -24,8 +24,8 @@ async function executarTestes(): Promise<void> {
   console.log(' INICIANDO TESTES DE RESOLUÇÃO DE CONTA BANCÁRIA (PARTE 15B)');
   console.log('================================================================\n');
 
-  const caminhoOfx = path.resolve('src/exemplos_extratos/extrato-pj-16_10_2026_19h22m20s.ofx');
-  const caminhoXlsx = path.resolve('src/exemplos_extratos/excel_export1792140356207.xlsx');
+  const caminhoOfx = path.resolve('scripts/fixtures/extrato_sintetico_santander.ofx');
+  const caminhoXlsx = path.resolve('scripts/fixtures/extrato_sintetico_santander.xlsx');
 
   const bufferOfxNode = fs.readFileSync(caminhoOfx);
   const arrayBufferOfx = bufferOfxNode.buffer.slice(
@@ -48,8 +48,8 @@ async function executarTestes(): Promise<void> {
     nome: 'Santander PJ Operacional',
     banco: 'Santander',
     banco_codigo: '033',
-    agencia: '3749',
-    numero_conta: '13004696-4',
+    agencia: '0001',
+    numero_conta: '99999999-9',
     tipo: 'corrente',
     saldo_inicial: 10000,
     data_saldo_inicial: '2026-01-01',
@@ -128,7 +128,7 @@ async function executarTestes(): Promise<void> {
     id: 'conta-santander-legada',
     banco_codigo: undefined, // não tem código preenchido
     banco: 'Santander',
-    numero_conta: '13004696-4'
+    numero_conta: '99999999-9'
   };
 
   const resLegada = resolverConta(extratoOfx, [contaSicoob, contaSantanderLegada]);
@@ -181,8 +181,8 @@ async function executarTestes(): Promise<void> {
   if (resNenhuma.tipo === 'nenhuma') {
     asserir(resNenhuma.sugestao.banco_codigo === '033', `Sugestão banco_codigo: ${resNenhuma.sugestao.banco_codigo}`);
     asserir(resNenhuma.sugestao.banco_nome === 'Santander', `Sugestão banco_nome: ${resNenhuma.sugestao.banco_nome}`);
-    asserir(resNenhuma.sugestao.agencia === '3749', `Sugestão agência: ${resNenhuma.sugestao.agencia}`);
-    asserir(resNenhuma.sugestao.numero_conta === '130046964', `Sugestão conta: ${resNenhuma.sugestao.numero_conta}`);
+    asserir(resNenhuma.sugestao.agencia === '0001', `Sugestão agência: ${resNenhuma.sugestao.agencia}`);
+    asserir(resNenhuma.sugestao.numero_conta === '999999999', `Sugestão conta: ${resNenhuma.sugestao.numero_conta}`);
   }
 
   console.log('\n================================================================');

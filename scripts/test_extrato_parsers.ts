@@ -30,13 +30,13 @@ async function executarTestes(): Promise<void> {
   console.log(' INICIANDO TESTES DO MÓDULO DE EXTRATOS (PARTE 15A)');
   console.log('================================================================\n');
 
-  const caminhoOfx = path.resolve('src/exemplos_extratos/extrato-pj-16_10_2026_19h22m20s.ofx');
-  const caminhoXlsx = path.resolve('src/exemplos_extratos/excel_export1792140356207.xlsx');
+  const caminhoOfx = path.resolve('scripts/fixtures/extrato_sintetico_santander.ofx');
+  const caminhoXlsx = path.resolve('scripts/fixtures/extrato_sintetico_santander.xlsx');
 
   // -------------------------------------------------------------
-  // TESTE 1: Parser OFX Santander Real
+  // TESTE 1: Parser OFX Santander Sintético
   // -------------------------------------------------------------
-  console.log('--- TESTE 1: Arquivo OFX Real (Santander 033) ---');
+  console.log('--- TESTE 1: Arquivo OFX Sintético (Santander 033) ---');
   if (!fs.existsSync(caminhoOfx)) {
     console.error(`Arquivo OFX não encontrado em: ${caminhoOfx}`);
     falhou++;
@@ -53,22 +53,22 @@ async function executarTestes(): Promise<void> {
     asserir(extratoOfx.formato === 'ofx', 'Formato detectado como "ofx"');
     asserir(extratoOfx.bancoCodigo === '033', 'Código do banco é "033" (Santander)');
     asserir(extratoOfx.bancoNome === 'Santander', 'Nome do banco é "Santander"');
-    asserir(extratoOfx.agencia === '3749', `Agência Santander extraída: "${extratoOfx.agencia}" (esperado: "3749")`);
-    asserir(extratoOfx.conta === '130046964', `Conta extraída (só dígitos): "${extratoOfx.conta}" (esperado: "130046964")`);
-    asserir(extratoOfx.acctIdBruto === '3749130046964', `acctIdBruto preservado: "${extratoOfx.acctIdBruto}"`);
+    asserir(extratoOfx.agencia === '0001', `Agência Santander extraída: "${extratoOfx.agencia}" (esperado: "0001")`);
+    asserir(extratoOfx.conta === '999999999', `Conta extraída (só dígitos): "${extratoOfx.conta}" (esperado: "999999999")`);
+    asserir(extratoOfx.acctIdBruto === '0001999999999', `acctIdBruto preservado: "${extratoOfx.acctIdBruto}"`);
 
     // Quantidade de transações
-    asserir(extratoOfx.transacoes.length === 400, `Exatamente 400 transações no OFX (obtido: ${extratoOfx.transacoes.length})`);
+    asserir(extratoOfx.transacoes.length === 30, `Exatamente 30 transações no OFX sintético (obtido: ${extratoOfx.transacoes.length})`);
 
-    // 400 FITIDs únicos
+    // 30 FITIDs únicos
     const fitids = extratoOfx.transacoes.map(t => t.fitid).filter(Boolean);
     const fitidsUnicos = new Set(fitids);
-    asserir(fitids.length === 400 && fitidsUnicos.size === 400, `400 FITIDs válidos e únicos (únicos: ${fitidsUnicos.size})`);
+    asserir(fitids.length === 30 && fitidsUnicos.size === 30, `30 FITIDs válidos e únicos (únicos: ${fitidsUnicos.size})`);
 
-    // LEDGERBAL -7377,22
+    // LEDGERBAL -5432,10
     asserir(
-      extratoOfx.saldoFinal !== undefined && extratoOfx.saldoFinal.valor === -7377.22,
-      `LEDGERBAL extraído com precisão: ${extratoOfx.saldoFinal?.valor} (esperado: -7377.22)`
+      extratoOfx.saldoFinal !== undefined && extratoOfx.saldoFinal.valor === -5432.10,
+      `LEDGERBAL extraído com precisão: ${extratoOfx.saldoFinal?.valor} (esperado: -5432.10)`
     );
     asserir(
       extratoOfx.saldoFinal?.data === '2026-10-16',
@@ -77,7 +77,7 @@ async function executarTestes(): Promise<void> {
 
     // Datas (YYYY-MM-DD, 8 primeiros dígitos sem converter fuso)
     const datasValidas = extratoOfx.transacoes.every(t => /^\d{4}-\d{2}-\d{2}$/.test(t.data));
-    asserir(datasValidas, 'Todas as 400 datas estão no formato estrito "YYYY-MM-DD"');
+    asserir(datasValidas, 'Todas as 30 datas estão no formato estrito "YYYY-MM-DD"');
     asserir(extratoOfx.transacoes[0].data === '2026-08-03', `Data da 1ª transação: "${extratoOfx.transacoes[0].data}" (esperado: "2026-08-03")`);
 
     // Vírgula decimal e valores positivos
@@ -89,22 +89,22 @@ async function executarTestes(): Promise<void> {
     asserir(transacaoDebito.tipo === 'debito', 'Tipo da 2ª transação é "debito"');
     asserir(transacaoDebito.valor === 20.17, `Valor de débito é sempre positivo: ${transacaoDebito.valor} (esperado: 20.17)`);
 
-    // Favorecido / Contraparte ("Pix Enviado GIRLANE SANTOS BRAINER")
-    const transacaoGirlane = extratoOfx.transacoes.find(t => t.descricaoOriginal.includes('GIRLANE SANTOS BRAINER'));
+    // Favorecido / Contraparte ("Pix Enviado SILVANA COSTA PEREIRA")
+    const transacaoSilvana = extratoOfx.transacoes.find(t => t.descricaoOriginal.includes('SILVANA COSTA PEREIRA'));
     asserir(
-      transacaoGirlane?.contraparte === 'GIRLANE SANTOS BRAINER',
-      `Contraparte extraída sem prefixo: "${transacaoGirlane?.contraparte}" (esperado: "GIRLANE SANTOS BRAINER")`
+      transacaoSilvana?.contraparte === 'SILVANA COSTA PEREIRA',
+      `Contraparte extraída sem prefixo: "${transacaoSilvana?.contraparte}" (esperado: "SILVANA COSTA PEREIRA")`
     );
 
     // Valores com 2 casas decimais
     const todas2Casas = extratoOfx.transacoes.every(t => t.valor > 0 && Math.round(t.valor * 100) / 100 === t.valor);
-    asserir(todas2Casas, 'Todos os valores das 400 transações são positivos e têm exatamente 2 casas decimais');
+    asserir(todas2Casas, 'Todos os valores das 30 transações são positivos e têm exatamente 2 casas decimais');
   }
 
   // -------------------------------------------------------------
-  // TESTE 2: Parser XLSX Santander Real
+  // TESTE 2: Parser XLSX Santander Sintético
   // -------------------------------------------------------------
-  console.log('\n--- TESTE 2: Arquivo XLSX Real (Santander 033) ---');
+  console.log('\n--- TESTE 2: Arquivo XLSX Sintético (Santander 033) ---');
   if (!fs.existsSync(caminhoXlsx)) {
     console.error(`Arquivo XLSX não encontrado em: ${caminhoXlsx}`);
     falhou++;
@@ -122,17 +122,17 @@ async function executarTestes(): Promise<void> {
     asserir(extratoXlsx.bancoCodigo === '033', 'Código do banco é "033" (Santander)');
     asserir(extratoXlsx.bancoNome === 'Santander', 'Nome do banco é "Santander"');
     asserir(
-      extratoXlsx.titular === 'MT SOLUCOES EM ENERGIA, ENGENHARIA E CON',
+      extratoXlsx.titular === 'EMPRESA FICTICIA EXEMPLO LTDA',
       `Titular extraído: "${extratoXlsx.titular}"`
     );
-    asserir(extratoXlsx.conta === '130046964', `Conta extraída (só dígitos): "${extratoXlsx.conta}" (esperado: "130046964")`);
+    asserir(extratoXlsx.conta === '999999999', `Conta extraída (só dígitos): "${extratoXlsx.conta}" (esperado: "999999999")`);
     asserir(
-      extratoXlsx.periodo.inicio === '2026-01-01' && extratoXlsx.periodo.fim === '2026-10-16',
+      extratoXlsx.periodo.inicio === '2026-01-01' && extratoXlsx.periodo.fim === '2026-10-15',
       `Período extraído: ${extratoXlsx.periodo.inicio} até ${extratoXlsx.periodo.fim}`
     );
 
-    // Total de transações (~1.680 linhas, exatamente 1682 transações válidas sem a linha TOTAL)
-    asserir(extratoXlsx.transacoes.length === 1682, `Quantidade de transações: ${extratoXlsx.transacoes.length} (esperado: 1682)`);
+    // Total de transações válidas sem a linha TOTAL
+    asserir(extratoXlsx.transacoes.length === 37, `Quantidade de transações: ${extratoXlsx.transacoes.length} (esperado: 37)`);
 
     // Linha TOTAL ignorada
     const temLinhaTotal = extratoXlsx.transacoes.some(t => t.descricaoOriginal.toUpperCase() === 'TOTAL');
@@ -157,12 +157,11 @@ async function executarTestes(): Promise<void> {
       asserir(boletos108[1].ordemNoDia === 1, `2º boleto de 108.39 tem ordemNoDia: ${boletos108[1].ordemNoDia} (esperado: 1)`);
     }
 
-    // Datas em ordem do mais recente ao mais antigo
-    asserir(extratoXlsx.transacoes[0].data === '2026-10-15', `Primeira transação é de 2026-10-15 ("${extratoXlsx.transacoes[0].data}")`);
-    asserir(
-      extratoXlsx.transacoes[extratoXlsx.transacoes.length - 1].data === '2026-01-05',
-      `Última transação é de 2026-01-05 ("${extratoXlsx.transacoes[extratoXlsx.transacoes.length - 1].data}")`
-    );
+    // Datas contendo período completo
+    const primeiraData = extratoXlsx.transacoes[0].data;
+    const ultimaData = extratoXlsx.transacoes[extratoXlsx.transacoes.length - 1].data;
+    asserir(primeiraData === '2026-01-05', `Primeira transação é de 2026-01-05 ("${primeiraData}")`);
+    asserir(ultimaData === '2026-10-15', `Última transação é de 2026-10-15 ("${ultimaData}")`);
   }
 
   // -------------------------------------------------------------
@@ -181,15 +180,15 @@ async function executarTestes(): Promise<void> {
   // -------------------------------------------------------------
   console.log('\n--- TESTE 4: Normalização de Descrição ---');
   asserir(
-    normalizarDescricao('Pix Enviado GIRLANE SANTOS BRAINER') === 'PIX ENVIADO GIRLANE SANTOS BRAINER',
+    normalizarDescricao('Pix Enviado SILVANA COSTA PEREIRA') === 'PIX ENVIADO SILVANA COSTA PEREIRA',
     'Remove acentos e maiúsculas'
   );
   asserir(
-    normalizarDescricao('Cr Cob Bloq Comp Conf Recebimento 3749/000535965') === 'CR COB BLOQ COMP CONF RECEBIMENTO',
-    'Remove códigos variáveis tipo 3749/000535965'
+    normalizarDescricao('Cr Cob Bloq Comp Conf Recebimento 0001/000123456') === 'CR COB BLOQ COMP CONF RECEBIMENTO',
+    'Remove códigos variáveis tipo 0001/000123456'
   );
   asserir(
-    normalizarDescricao('Compra Cartao Deb Mc 05/08 ECO POSTO VITORIA C') === 'COMPRA CARTAO DEB MC ECO POSTO VITORIA C',
+    normalizarDescricao('Compra Cartao Deb Mc 05/08 AUTO POSTO EXEMPLO') === 'COMPRA CARTAO DEB MC AUTO POSTO EXEMPLO',
     'Remove datas parciais 05/08'
   );
   asserir(
@@ -208,7 +207,7 @@ async function executarTestes(): Promise<void> {
   asserir(parsearValorOfx('-4703,31') === -4703.31, '-4703,31 -> -4703.31');
   asserir(parsearValorOfx('6803,58') === 6803.58, '6803,58 -> 6803.58');
   asserir(parsearValorOfx('1.234,56') === 1234.56, '1.234,56 -> 1234.56');
-  asserir(parsearValorOfx('-7377,22') === -7377.22, '-7377,22 -> -7377.22');
+  asserir(parsearValorOfx('-5432,10') === -5432.10, '-5432,10 -> -5432.10');
 
   // -------------------------------------------------------------
   // TESTE 6: Tratamento de Banco/Formato Desconhecido

@@ -13,6 +13,8 @@ src/exemplos_extratos/
 *.ofx
 *.qfx
 *.xlsx
+!scripts/fixtures/**
+
 
 # Backups e temporários
 *.bak

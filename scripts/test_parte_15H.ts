@@ -55,8 +55,8 @@ class Simulador15H {
         nome: "Santander Corrente MT Solar",
         banco: "Santander",
         banco_codigo: "033",
-        agencia: "3749",
-        numero_conta: "13004696-4",
+        agencia: "0001",
+        numero_conta: "99999999-9",
         tipo: "corrente",
         saldo_inicial: 0.0,
         data_saldo_inicial: "2026-07-17",
@@ -229,7 +229,7 @@ class Simulador15H {
   }
 }
 
-const LEDGERBAL = -7377.22;
+const LEDGERBAL = -5432.10;
 const DATA_LEDGERBAL = "2026-10-16";
 const LOTE1 = "lote-15H-001";
 const LOTE2 = "lote-15H-002";
@@ -287,7 +287,7 @@ async function run(): Promise<void> {
   const nLancAntes = sim.lancamentos.length;
   asserir(sim.calcularSaldoReal("conta-santander") === 100.0, "2.1 — Saldo antes do ajuste = 100,00");
   const aj = sim.ajustarSaldoInicialPorLedgerbal({ contaId: "conta-santander", saldoLedgerbal: LEDGERBAL, dataLedgerbal: DATA_LEDGERBAL });
-  asserir(Math.abs(aj.saldoInicialNovo - (-7477.22)) < 0.01, "2.2 — Novo saldo inicial = -7.477,22", "got=" + aj.saldoInicialNovo);
+  asserir(Math.abs(aj.saldoInicialNovo - (-5532.10)) < 0.01, "2.2 — Novo saldo inicial = -5.532,10", "got=" + aj.saldoInicialNovo);
   asserir(Math.abs(aj.saldoFinalAposAjuste - LEDGERBAL) < 0.01, "2.3 — Saldo final = LEDGERBAL", "got=" + aj.saldoFinalAposAjuste);
   asserir(Math.abs(aj.diferenca) < 0.01, "2.4 — Diferença residual ≈ 0", "dif=" + aj.diferenca);
   asserir(sim.lancamentos.length === nLancAntes, "2.5 — Nenhum lançamento de ajuste foi criado");
@@ -298,7 +298,7 @@ async function run(): Promise<void> {
   sim.reset();
   const r3 = await sim.importarExtratoLote({ loteId: LOTE1, bancoCodigo: "033", contaId: "conta-santander", nomeArquivo: "t.ofx", formato: "ofx", periodo: { inicio: "2026-07-18", fim: DATA_LEDGERBAL }, itens: ITENS_COMUNS, regrasACriar: [], usuario: "t", saldoBanco: { valor: LEDGERBAL, data: DATA_LEDGERBAL } });
   asserir(r3.diferencaConciliacao !== undefined, "3.1 — diferencaConciliacao presente");
-  asserir(Math.abs((r3.diferencaConciliacao ?? 0) - (-7477.22)) < 0.01, "3.2 — Diferença exata = -7.477,22", "got=" + r3.diferencaConciliacao);
+  asserir(Math.abs((r3.diferencaConciliacao ?? 0) - (-5532.10)) < 0.01, "3.2 — Diferença exata = -5.532,10", "got=" + r3.diferencaConciliacao);
   asserir(r3.saldoDepois === 100.0, "3.3 — Saldo calculado = 100,00");
 
   // 4: Rollback

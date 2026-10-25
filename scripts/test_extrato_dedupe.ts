@@ -83,8 +83,8 @@ async function executarTestes(): Promise<void> {
   console.log(' INICIANDO TESTES DE DEDUPLICAÇÃO E ENRIQUECIMENTO (PARTE 15C)');
   console.log('================================================================\n');
 
-  const caminhoOfx = path.resolve('src/exemplos_extratos/extrato-pj-16_10_2026_19h22m20s.ofx');
-  const caminhoXlsx = path.resolve('src/exemplos_extratos/excel_export1792140356207.xlsx');
+  const caminhoOfx = path.resolve('scripts/fixtures/extrato_sintetico_santander.ofx');
+  const caminhoXlsx = path.resolve('scripts/fixtures/extrato_sintetico_santander.xlsx');
 
   const bufferOfxNode = fs.readFileSync(caminhoOfx);
   const arrayBufferOfx = bufferOfxNode.buffer.slice(
@@ -103,7 +103,7 @@ async function executarTestes(): Promise<void> {
 
   const CONTA_ID = 'conta-santander-pj';
   const BANCO_CODIGO = '033';
-  const CONTA_NUMERO = '130046964';
+  const CONTA_NUMERO = '999999999';
 
   const contexto = {
     contaId: CONTA_ID,
@@ -125,20 +125,20 @@ async function executarTestes(): Promise<void> {
 
   const novasXlsx1 = classifXlsx1.filter(c => c.status === 'nova');
   asserir(
-    novasXlsx1.length === 1682,
-    `XLSX em base vazia: 1682 novas transações (obtido: ${novasXlsx1.length})`
+    novasXlsx1.length === 37,
+    `XLSX em base vazia: 37 novas transações (obtido: ${novasXlsx1.length})`
   );
   asserir(
     classifXlsx1.filter(c => c.status !== 'nova').length === 0,
     'Zero duplicadas na primeira importação do XLSX'
   );
 
-  // Simular gravação das 1682 transações do XLSX com categoria personalizada
+  // Simular gravação das 37 transações do XLSX com categoria personalizada
   baseLancamentosOrdem1 = extratoXlsx.transacoes.map(t =>
     converterTransacaoEmLancamento(t, CONTA_ID, BANCO_CODIGO, 'lote-xlsx-1', 'xlsx', 'cat-escolhida-usuario')
   );
   asserir(
-    baseLancamentosOrdem1.length === 1682,
+    baseLancamentosOrdem1.length === 37,
     `Base simulada populada com ${baseLancamentosOrdem1.length} lançamentos do XLSX`
   );
 
@@ -153,34 +153,34 @@ async function executarTestes(): Promise<void> {
   const duplicadasOfx1 = classifOfx1.filter(c => c.status === 'duplicada_exata');
 
   asserir(
-    enriquecerOfx1.length === 395,
-    `OFX casou com XLSX existente: 395 transações marcadas como 'enriquecer_existente' (obtido: ${enriquecerOfx1.length})`
+    enriquecerOfx1.length === 27,
+    `OFX casou com XLSX existente: 27 transações marcadas como 'enriquecer_existente' (obtido: ${enriquecerOfx1.length})`
   );
   asserir(
-    novasOfx1.length === 5,
-    `OFX trouxe 5 transações novas de 16/10 não presentes no XLSX (obtido: ${novasOfx1.length})`
+    novasOfx1.length === 3,
+    `OFX trouxe 3 transações novas de 16/10 não presentes no XLSX (obtido: ${novasOfx1.length})`
   );
   asserir(
     duplicadasOfx1.length === 0,
     `Nenhuma duplicata exata no primeiro cruzamento OFX x XLSX (obtido: ${duplicadasOfx1.length})`
   );
 
-  // Validar enriquecimento de um lançamento específico: Girlane Santos Brainer
-  const matchGirlane = enriquecerOfx1.find(c => c.transacao.descricaoOriginal.includes('GIRLANE SANTOS BRAINER'));
+  // Validar enriquecimento de um lançamento específico: Silvana Costa Pereira
+  const matchSilvana = enriquecerOfx1.find(c => c.transacao.descricaoOriginal.includes('SILVANA COSTA PEREIRA'));
   asserir(
-    matchGirlane !== undefined && matchGirlane.idDoLancamentoRelacionado !== undefined,
-    'Transação da Girlane identificada para enriquecimento'
+    matchSilvana !== undefined && matchSilvana.idDoLancamentoRelacionado !== undefined,
+    'Transação da Silvana identificada para enriquecimento'
   );
 
-  if (matchGirlane && matchGirlane.idDoLancamentoRelacionado) {
-    const lancAntigo = baseLancamentosOrdem1.find(l => l.id === matchGirlane.idDoLancamentoRelacionado)!;
+  if (matchSilvana && matchSilvana.idDoLancamentoRelacionado) {
+    const lancAntigo = baseLancamentosOrdem1.find(l => l.id === matchSilvana.idDoLancamentoRelacionado)!;
     const lancEnriquecido = enriquecerLancamento(
       lancAntigo,
-      matchGirlane.transacao,
+      matchSilvana.transacao,
       'lote-ofx-1',
       BANCO_CODIGO,
       CONTA_ID,
-      matchGirlane.assinaturaFraca
+      matchSilvana.assinaturaFraca
     );
 
     asserir(
@@ -188,20 +188,20 @@ async function executarTestes(): Promise<void> {
       'Enriquecimento preservou a categoria previamente escolhida pelo usuário'
     );
     asserir(
-      lancEnriquecido.origem_importacao?.fitid === matchGirlane.transacao.fitid,
+      lancEnriquecido.origem_importacao?.fitid === matchSilvana.transacao.fitid,
       `Enriquecimento completou o FITID: ${lancEnriquecido.origem_importacao?.fitid}`
     );
     asserir(
-      lancEnriquecido.descricao === matchGirlane.transacao.descricaoOriginal,
+      lancEnriquecido.descricao === matchSilvana.transacao.descricaoOriginal,
       `Enriquecimento completou a descrição rica: "${lancEnriquecido.descricao}"`
     );
     asserir(
-      lancEnriquecido.observacoes?.includes('GIRLANE SANTOS BRAINER') === true,
+      lancEnriquecido.observacoes?.includes('SILVANA COSTA PEREIRA') === true,
       `Enriquecimento completou a contraparte: "${lancEnriquecido.observacoes}"`
     );
   }
 
-  // Simular união final: atualizar os 395 enriquecidos e adicionar as 5 novas
+  // Simular união final: atualizar os 27 enriquecidos e adicionar as 3 novas
   for (const item of enriquecerOfx1) {
     const idx = baseLancamentosOrdem1.findIndex(l => l.id === item.idDoLancamentoRelacionado);
     if (idx !== -1) {
@@ -223,8 +223,8 @@ async function executarTestes(): Promise<void> {
 
   const totalUniao1 = baseLancamentosOrdem1.length;
   asserir(
-    totalUniao1 === 1687,
-    `União final da Ordem 1: exatamente 1687 lançamentos (1682 XLSX + 5 novas OFX). Obtido: ${totalUniao1}`
+    totalUniao1 === 40,
+    `União final da Ordem 1: exatamente 40 lançamentos (37 XLSX + 3 novas OFX). Obtido: ${totalUniao1}`
   );
 
   // -------------------------------------------------------------
@@ -239,16 +239,16 @@ async function executarTestes(): Promise<void> {
     loteId: 'lote-ofx-2'
   });
   asserir(
-    classifOfx2.filter(c => c.status === 'nova').length === 400,
-    'OFX em base vazia: todas as 400 transações classificadas como nova'
+    classifOfx2.filter(c => c.status === 'nova').length === 30,
+    'OFX em base vazia: todas as 30 transações classificadas como nova'
   );
 
-  // Salvar as 400 do OFX na base
+  // Salvar as 30 do OFX na base
   baseLancamentosOrdem2 = extratoOfx.transacoes.map(t =>
     converterTransacaoEmLancamento(t, CONTA_ID, BANCO_CODIGO, 'lote-ofx-2', 'ofx')
   );
   asserir(
-    baseLancamentosOrdem2.length === 400,
+    baseLancamentosOrdem2.length === 30,
     `Base simulada populada com ${baseLancamentosOrdem2.length} lançamentos do OFX`
   );
 
@@ -262,15 +262,15 @@ async function executarTestes(): Promise<void> {
   const novasXlsx2 = classifXlsx2.filter(c => c.status === 'nova');
 
   asserir(
-    duplicadasXlsx2.length === 395,
-    `As 395 transações do XLSX já existentes no OFX foram marcadas como 'duplicada_exata' (obtido: ${duplicadasXlsx2.length})`
+    duplicadasXlsx2.length === 27,
+    `As 27 transações do XLSX já existentes no OFX foram marcadas como 'duplicada_exata' (obtido: ${duplicadasXlsx2.length})`
   );
   asserir(
-    novasXlsx2.length === 1287,
-    `XLSX identificou as 1287 transações anteriores ao período do OFX como 'nova' (obtido: ${novasXlsx2.length})`
+    novasXlsx2.length === 10,
+    `XLSX identificou as 10 transações anteriores ao período do OFX como 'nova' (obtido: ${novasXlsx2.length})`
   );
 
-  // Adicionar apenas as 1287 novas do XLSX
+  // Adicionar apenas as 10 novas do XLSX
   for (const item of novasXlsx2) {
     baseLancamentosOrdem2.push(
       converterTransacaoEmLancamento(item.transacao, CONTA_ID, BANCO_CODIGO, 'lote-xlsx-2', 'xlsx')
@@ -279,8 +279,8 @@ async function executarTestes(): Promise<void> {
 
   const totalUniao2 = baseLancamentosOrdem2.length;
   asserir(
-    totalUniao2 === 1687,
-    `União final da Ordem 2: exatamente 1687 lançamentos (400 OFX + 1287 XLSX). Obtido: ${totalUniao2}`
+    totalUniao2 === 40,
+    `União final da Ordem 2: exatamente 40 lançamentos (30 OFX + 10 XLSX). Obtido: ${totalUniao2}`
   );
   asserir(
     totalUniao1 === totalUniao2,
@@ -303,8 +303,8 @@ async function executarTestes(): Promise<void> {
     `Reimportar mesmo XLSX resulta em ZERO novas (obtido: ${novasReimportXlsx.length})`
   );
   asserir(
-    dupReimportXlsx.length === 1682,
-    `Todas as 1682 transações do XLSX reimportado foram identificadas como 'duplicada_exata' (obtido: ${dupReimportXlsx.length})`
+    dupReimportXlsx.length === 37,
+    `Todas as 37 transações do XLSX reimportado foram identificadas como 'duplicada_exata' (obtido: ${dupReimportXlsx.length})`
   );
 
   // Reimportar OFX na base que já tem os dados
@@ -319,8 +319,8 @@ async function executarTestes(): Promise<void> {
     `Reimportar mesmo OFX resulta em ZERO novas (obtido: ${novasReimportOfx.length})`
   );
   asserir(
-    dupReimportOfx.length === 400,
-    `Todas as 400 transações do OFX reimportado foram identificadas como 'duplicada_exata' (obtido: ${dupReimportOfx.length})`
+    dupReimportOfx.length === 30,
+    `Todas as 30 transações do OFX reimportado foram identificadas como 'duplicada_exata' (obtido: ${dupReimportOfx.length})`
   );
 
   // -------------------------------------------------------------
@@ -383,11 +383,11 @@ async function executarTestes(): Promise<void> {
     criado_em: '2026-08-05T10:00:00Z'
   };
 
-  const transacaoGirlane = extratoOfx.transacoes.find(
+  const transacaoSilvana = extratoOfx.transacoes.find(
     t => t.data === '2026-08-04' && t.valor === 4703.31 && t.tipo === 'debito'
   )!;
 
-  const classifManual = classificarDuplicatas([transacaoGirlane], [lancManual], contexto);
+  const classifManual = classificarDuplicatas([transacaoSilvana], [lancManual], contexto);
   asserir(classifManual.length === 1, 'Classificação de 1 transação');
   asserir(
     classifManual[0].status === 'possivel_duplicata_manual',
@@ -405,7 +405,7 @@ async function executarTestes(): Promise<void> {
     data_vencimento: '2026-08-15',
     data_pagamento: '2026-08-15'
   };
-  const classifDistante = classificarDuplicatas([transacaoGirlane], [lancManualDistante], contexto);
+  const classifDistante = classificarDuplicatas([transacaoSilvana], [lancManualDistante], contexto);
   asserir(
     classifDistante[0].status === 'nova',
     'Lançamento manual com mais de 2 dias de diferença NÃO gera falso positivo (classificado como "nova")'

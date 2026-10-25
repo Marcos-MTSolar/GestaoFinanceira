@@ -88,7 +88,7 @@ export function normalizarDescricao(texto: string): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase()
-    // Remove códigos compostos tipo 3749/000535965 ou números com 2 ou mais dígitos isolados
+    // Remove códigos compostos tipo 0001/000123456 ou números com 2 ou mais dígitos isolados
     .replace(/\b\d+([/-]\d+)*\b/g, '')
     // Substitui pontuações remanescentes por espaço
     .replace(/[^\w\s]/g, ' ')

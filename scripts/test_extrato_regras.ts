@@ -34,8 +34,8 @@ function asserir(condicao: boolean, descricao: string, detalheErro?: string): vo
 // ============================================================
 const contatosFicticios: Contato[] = [
   {
-    id: 'contato-girlane',
-    nome: 'Girlane Santos Brainer',
+    id: 'contato-silvana',
+    nome: 'Silvana Costa Pereira',
     tipo: 'fornecedor',
     cpf_cnpj: '',
     telefone: '',
@@ -58,14 +58,14 @@ const contatosFicticios: Contato[] = [
 // ============================================================
 const regrasUsuario: RegraImportacao[] = [
   {
-    id: 'regra-girlane',
+    id: 'regra-silvana',
     banco_codigo: '033',
     conta_id: '*',
     campo: 'contraparte',
     operador: 'contem',
-    valor: 'Girlane',
+    valor: 'Silvana',
     categoria_id: 'cat-des-3', // Mão de obra terceirizada
-    contato_id: 'contato-girlane',
+    contato_id: 'contato-silvana',
     tipoLancamento: 'despesa',
     ativa: true,
     criadoEm: '2026-01-01T00:00:00Z',
@@ -125,10 +125,10 @@ async function executarTestes(): Promise<void> {
   console.log('================================================================\n');
 
   // ------------------------------------------------------------------
-  // Carregar extratos reais
+  // Carregar extratos sintéticos
   // ------------------------------------------------------------------
-  const caminhoOfx = path.resolve('src/exemplos_extratos/extrato-pj-16_10_2026_19h22m20s.ofx');
-  const caminhoXlsx = path.resolve('src/exemplos_extratos/excel_export1792140356207.xlsx');
+  const caminhoOfx = path.resolve('scripts/fixtures/extrato_sintetico_santander.ofx');
+  const caminhoXlsx = path.resolve('scripts/fixtures/extrato_sintetico_santander.xlsx');
 
   const bufOfxNode = fs.readFileSync(caminhoOfx);
   const bufXlsxNode = fs.readFileSync(caminhoXlsx);
@@ -255,14 +255,14 @@ async function executarTestes(): Promise<void> {
   console.log('\n--- BLOCO 2: Casamento de Contato por Nome Normalizado ---');
 
   // Contato existente
-  const tGirlaneContato = transacaoFake('PIX ENVIADO', 'Girlane Santos Brainer');
-  const rGirlaneContato = classificarTransacao(tGirlaneContato, BANCO, CONTA_ID, [], contatosFicticios);
+  const tSilvanaContato = transacaoFake('PIX ENVIADO', 'Silvana Costa Pereira');
+  const rSilvanaContato = classificarTransacao(tSilvanaContato, BANCO, CONTA_ID, [], contatosFicticios);
   asserir(
-    rGirlaneContato.sugestao.contatoId === 'contato-girlane',
-    `Contraparte "Girlane Santos Brainer" casou com contato cadastrado (id: ${rGirlaneContato.sugestao.contatoId})`
+    rSilvanaContato.sugestao.contatoId === 'contato-silvana',
+    `Contraparte "Silvana Costa Pereira" casou com contato cadastrado (id: ${rSilvanaContato.sugestao.contatoId})`
   );
   asserir(
-    rGirlaneContato.sugestao.nomeContatoSugerido === undefined,
+    rSilvanaContato.sugestao.nomeContatoSugerido === undefined,
     'nomeContatoSugerido vazio pois contato já existe'
   );
 
@@ -292,24 +292,24 @@ async function executarTestes(): Promise<void> {
   // ------------------------------------------------------------------
   console.log('\n--- BLOCO 3: Regras do Usuário (regra_usuario) ---');
 
-  // Girlane: regra_usuario deve vencer regra_banco
-  const tGirlaneRegra = transacaoFake('PIX ENVIADO', 'Girlane Santos Brainer');
-  const rGirlaneRegra = classificarTransacao(tGirlaneRegra, BANCO, CONTA_ID, regrasUsuario, contatosFicticios);
+  // Silvana: regra_usuario deve vencer regra_banco
+  const tSilvanaRegra = transacaoFake('PIX ENVIADO', 'Silvana Costa Pereira');
+  const rSilvanaRegra = classificarTransacao(tSilvanaRegra, BANCO, CONTA_ID, regrasUsuario, contatosFicticios);
   asserir(
-    rGirlaneRegra.origemSugestao === 'regra_usuario',
-    `Regra do usuário para Girlane prevalece sobre regra_banco (origem: ${rGirlaneRegra.origemSugestao})`
+    rSilvanaRegra.origemSugestao === 'regra_usuario',
+    `Regra do usuário para Silvana prevalece sobre regra_banco (origem: ${rSilvanaRegra.origemSugestao})`
   );
   asserir(
-    rGirlaneRegra.sugestao.regraUsuarioId === 'regra-girlane',
-    `ID da regra aplicada: ${rGirlaneRegra.sugestao.regraUsuarioId}`
+    rSilvanaRegra.sugestao.regraUsuarioId === 'regra-silvana',
+    `ID da regra aplicada: ${rSilvanaRegra.sugestao.regraUsuarioId}`
   );
   asserir(
-    rGirlaneRegra.sugestao.categoriaSugeridaId === 'cat-des-3',
-    `Categoria sugerida pela regra: ${rGirlaneRegra.sugestao.categoriaSugeridaId}`
+    rSilvanaRegra.sugestao.categoriaSugeridaId === 'cat-des-3',
+    `Categoria sugerida pela regra: ${rSilvanaRegra.sugestao.categoriaSugeridaId}`
   );
   asserir(
-    rGirlaneRegra.sugestao.contatoId === 'contato-girlane',
-    `contatoId da regra: ${rGirlaneRegra.sugestao.contatoId} (regra define contato_id = contato-girlane)`
+    rSilvanaRegra.sugestao.contatoId === 'contato-silvana',
+    `contatoId da regra: ${rSilvanaRegra.sugestao.contatoId} (regra define contato_id = contato-silvana)`
   );
 
   // Regra de conta de luz por começa_com
@@ -417,20 +417,20 @@ async function executarTestes(): Promise<void> {
     `Todos os PIX ENVIADO reais → pagamento`
   );
 
-  // Girlane real no OFX
-  const girlaneReal = extratoOfx.transacoes.find(
-    (t) => t.contraparte?.toUpperCase().includes('GIRLANE SANTOS BRAINER')
+  // Silvana real no OFX
+  const silvanaReal = extratoOfx.transacoes.find(
+    (t) => t.contraparte?.toUpperCase().includes('SILVANA COSTA PEREIRA')
   );
-  asserir(girlaneReal !== undefined, 'Transação real da Girlane Santos Brainer encontrada no OFX');
-  if (girlaneReal) {
-    const rGirlaneReal = classificarTransacao(girlaneReal, BANCO, CONTA_ID, regrasUsuario, contatosFicticios);
+  asserir(silvanaReal !== undefined, 'Transação real da Silvana Costa Pereira encontrada no OFX');
+  if (silvanaReal) {
+    const rSilvanaReal = classificarTransacao(silvanaReal, BANCO, CONTA_ID, regrasUsuario, contatosFicticios);
     asserir(
-      rGirlaneReal.origemSugestao === 'regra_usuario',
-      `Girlane real: regra_usuario aplicada (origem: ${rGirlaneReal.origemSugestao})`
+      rSilvanaReal.origemSugestao === 'regra_usuario',
+      `Silvana real: regra_usuario aplicada (origem: ${rSilvanaReal.origemSugestao})`
     );
     asserir(
-      rGirlaneReal.sugestao.contatoId === 'contato-girlane',
-      `Girlane real: contato identificado`
+      rSilvanaReal.sugestao.contatoId === 'contato-silvana',
+      `Silvana real: contato identificado`
     );
   }
 
@@ -459,7 +459,7 @@ async function executarTestes(): Promise<void> {
   console.log('\n--- BLOCO 6: normalizarNome ---');
 
   asserir(
-    normalizarNome('Girlane Santos Brainer') === normalizarNome('GIRLANE SANTOS BRAINER'),
+    normalizarNome('Silvana Costa Pereira') === normalizarNome('SILVANA COSTA PEREIRA'),
     'normalizarNome insensível a maiúsculas'
   );
   asserir(

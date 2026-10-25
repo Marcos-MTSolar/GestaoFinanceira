@@ -1,8 +1,84 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 23/10/2026 09:45:00 (Parte 18C – Regra Única de Saldo Inicial na Importação de Extratos)
+**Última Atualização:** 25/10/2026 09:05:00 (Parte 21B – Saldo de Referência Automático, Retroativo e Reversível em Qualquer Ordem de Extratos)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
+  - **Parte 21B – Saldo de Referência Automático, Retroativo e Reversível (Substitui "só na primeira importação" da Parte 18C)**:
+    - **Objetivo Central**: O usuário nunca informa saldo inicial manualmente. O app armazena o último saldo real conhecido do banco (`saldo_referencia`) e recalcula o saldo inicial automaticamente após cada importação (e após Desfazer), independentemente da ordem cronológica em que os arquivos forem importados.
+    - **1. Tipo `ContaBancaria` (`src/types/index.ts`)**:
+      - Adicionado o campo opcional `saldo_referencia?: { valor: number; data: string; origem: 'ofx_ledgerbal' | 'usuario'; lote_id?: string }`.
+      - Atualizado `RegistroImportacao` para aceitar `origem?: 'ofx_ledgerbal' | 'usuario'` em `saldo_banco`.
+      - Atualizado `ResultadoImportacaoLote` para incluir `saldoInicialPendente?: boolean` e `saldoReferenciaConta`.
+    - **2. Recálculo Automático no Storage (`src/services/storage.ts` e `saldoInicialHelper.ts`)**:
+      - `recalcularSaldoInicialConta`: Recalcula `saldo_inicial = saldo_referencia.valor − soma(lançamentos pagos com data ≤ saldo_referencia.data)` e `data_saldo_inicial = dia anterior ao lançamento mais antigo da conta`.
+      - Se o lote traz saldo de banco (LEDGERBAL do OFX ou digitado) com data `>= saldo_referencia.data` atual da conta (ou a conta ainda não tem referência), atualiza `conta.saldo_referencia`.
+      - Se a conta já possui referência e recebe um extrato mais antigo, a referência é mantida e o `saldo_inicial` é recalculado para absorver os novos lançamentos pagos mais antigos.
+      - Executado após a confirmação atômica no Firestore com `await this.saveContaBancaria(...)`, garantindo isolamento total por `conta_id`.
+    - **3. Saldo Inicial Pendente**:
+      - Quando um extrato XLSX é importado sem saldo informado antes de qualquer OFX, o saldo inicial não é alterado e o app sinaliza: *"Saldo inicial pendente: importe um OFX ou informe o saldo do banco para o app calcular"*.
+    - **4. Passo 1 da Importação (`ImportarExtratoModal.tsx`)**:
+      - Para arquivos XLSX: campo de saldo opcional com o texto explicativo: *"Se você não souber, deixe em branco: o app calcula depois com o saldo de um OFX"*.
+      - Para arquivos OFX: o saldo vem do próprio arquivo (`LEDGERBAL`), exibido de forma limpa e automática, sem seletor de limite.
+    - **5. Desfazer Reversível e Conexão de Lotes (`desfazerImportacao`)**:
+      - Se o lote desfeito forneceu a referência ativa da conta, a referência deste lote é removida e o sistema busca automaticamente entre os demais lotes ativos da conta com saldo o mais recente para assumir a nova referência, recalculando o `saldo_inicial`.
+      - Se não restar nenhum outro lote com saldo, restaura o `saldo_inicial` anterior à primeira importação.
+      - Se o lote desfeito for um lote secundário, o `saldo_inicial` é recalculado com a referência existente e os lançamentos restantes.
+    - **6. Passo 3 - Tela de Resultado e Conciliação**:
+      - Exibe: *"Saldo do app: R$ X = saldo do banco em dd/mm: R$ Y ✓"* ou, havendo diferença, destaca a divergência com os valores exatos e o botão "Desfazer Importação deste Lote", sem modais de correção forçada ou checkboxes invasivos.
+    - **7. Contamax em "Ignorar" por Padrão (`RevisaoExtrato.tsx`)**:
+      - `tratamentoContamax` inicializado com `'ignorar'` por padrão, sem exigir conta de aplicação e sem bloquear o avanço. O saldo final se mantém correto.
+    - **8. Suíte de Testes Automatizados da Parte 21B (`scripts/test_parte_21B.ts`)**:
+      - 48 testes automatizados cobrindo todos os cenários de importação:
+        - Ordem (a): XLSX (1.682 linhas) → OFX 1 (18/07–16/10) → OFX 2 (17–24/10).
+        - Ordem (b): OFX 2 (17–24/10) → OFX 1 (18/07–16/10) → XLSX (01/01–15/10).
+        - Ordem (c): Apenas o OFX 2 (17–24/10).
+        - Saldo real final exatamente -8.545,77 em todas as ordens, sem duplicar lançamentos e sem lançamento de ajuste.
+        - Lançamento manual pós-referência somado normalmente ao saldo atual da conta.
+        - Desfazer do lote restaurando o saldo anterior e idempotência de reimportação com 0 novas.
+      - 100% de aprovação (48 PASSARAM / 0 FALHARAM).
+    - **Data e hora da alteração**: 25/10/2026 09:05:00
+    - **Arquivos modificados**: `src/types/index.ts`, `src/utils/extrato/saldoInicialHelper.ts`, `src/services/storage.ts`, `src/components/ImportarExtratoModal.tsx`, `src/components/extrato/RevisaoExtrato.tsx`, `RESUMO_MESTRE.md`.
+    - **Arquivos criados**: `scripts/test_parte_21B.ts`.
+
+  - **Parte 21A-ter – Sanitização de Dados Reais por Fictícios e Homologação dos Testes**:
+    - **Higienização de Dados Reais**:
+      - Substituição de dados reais (agência 3749 -> 0001, conta 13004696-4 / 130046964 -> 99999999-9 / 999999999, ACCTID 0001999999999, saldos reais -7.377,22 e -8.545,77 por valores equivalentes -5.432,10 e -4.321,10 com limite 5.000) em todos os fixtures, scripts geradores, suíte de testes e componentes de interface.
+      - Garantia de estrita fidelidade matemática nos testes de cálculo de saldo sem afrouxar nenhuma asserção.
+    - **Data e hora da alteração**: 25/10/2026 08:35:00
+    - **Arquivos modificados**: `scripts/gerar_fixtures.ts`, `scripts/fixtures/extrato_sintetico_santander.ofx`, `scripts/fixtures/extrato_sintetico_santander.xlsx`, `scripts/test_extrato_parsers.ts`, `scripts/test_extrato_dedupe.ts`, `scripts/test_extrato_regras.ts`, `scripts/test_extrato_e2e.ts`, `scripts/test_resolver_conta.ts`, `scripts/test_isolamento_importacao.ts`, `scripts/test_parte_15H.ts`, `scripts/test_parte_15I.ts`, `scripts/test_parte_15J.ts`, `scripts/test_parte_16C.ts`, `scripts/test_parte_16F.ts`, `scripts/test_parte_18A.ts`, `scripts/test_parte_18B.ts`, `scripts/test_parte_18C.ts`, `scripts/test_parte_21A.ts`, `src/components/ImportarExtratoModal.tsx`, `src/components/extrato/RevisaoExtrato.tsx`, `src/pages/ContasBancarias.tsx`, `src/utils/extrato/resolverConta.ts`, `src/utils/extrato/tipos.ts`, `RESUMO_MESTRE.md`.
+
+  - **Parte 21A-bis – Fixtures Sintéticas e Adequação dos Testes do Módulo de Extratos**:
+    - **Proteção e Sanitização de Dados**:
+      - Verificação no Git (`git log` e `git ls-files`) comprovando que nenhum extrato real jamais foi commitado na história do repositório público `Marcos-MTSolar/GestaoFinanceira`.
+      - `.gitignore` atualizado para proteger `*.ofx`, `*.qfx`, `*.xlsx`, `src/exemplos_extratos/`, permitindo exclusivamente as fixtures sintéticas em `!scripts/fixtures/**`.
+    - **Criação de Fixtures Sintéticas (`scripts/fixtures/`)**:
+      - `extrato_sintetico_santander.ofx`: OFX sintético no formato SGML real (Santander 033, agência 0001, conta 999999999), vírgula decimal, CHARSET 1252, DTPOSTED com [-3:GMT], LEDGERBAL (-5.432,10), 30 transações fictícias incluindo Contamax, tarifas, tributos, recebimentos e 2 lançamentos no mesmo dia.
+      - `extrato_sintetico_santander.xlsx`: Planilha sintética com cabeçalho "EXTRATO DE CONTA CORRENTE", datas por extenso em português, 37 transações, linha TOTAL ignorada e 2 boletos repetidos no mesmo dia (ordemNoDia 0 e 1).
+      - `scripts/gerar_fixtures.ts`: Script gerador automatizado das fixtures sintéticas.
+    - **Reescrita dos Testes Automatizados**:
+      - `scripts/test_extrato_parsers.ts`: Migrado para fixtures sintéticos (51/51 testes aprovados).
+      - `scripts/test_extrato_dedupe.ts`: Migrado para fixtures sintéticos (32/32 testes aprovados).
+      - `scripts/test_extrato_regras.ts`: Migrado para fixtures sintéticos (56/56 testes aprovados).
+      - `scripts/test_extrato_lote.ts`: Migrado para fixtures sintéticos (32/32 testes aprovados).
+      - `scripts/test_extrato_e2e.ts`: Migrado para fixtures sintéticos (37/37 testes aprovados).
+      - `scripts/test_resolver_conta.ts`: Migrado para fixtures sintéticos (19/19 testes aprovados).
+    - **Data e hora da alteração**: 25/10/2026 07:50:00
+    - **Arquivos modificados**: `.gitignore`, `scripts/test_extrato_parsers.ts`, `scripts/test_extrato_dedupe.ts`, `scripts/test_extrato_regras.ts`, `scripts/test_extrato_lote.ts`, `scripts/test_extrato_e2e.ts`, `scripts/test_resolver_conta.ts`, `RESUMO_MESTRE.md`.
+    - **Arquivos criados**: `scripts/fixtures/extrato_sintetico_santander.ofx`, `scripts/fixtures/extrato_sintetico_santander.xlsx`, `scripts/gerar_fixtures.ts`.
+
+  - **Parte 21A – Correção de Limite Descontado Duas Vezes, Memória Duplicada e Conferência Independente**:
+    - **Problema resolvido**:
+      1. Conversão de saldo disponível descontando o limite duas vezes (uma na tela e outra no storage).
+      2. Memória duplicada no cache do storage (`cacheLancamentos.push` cego após commit concorrendo com o `onSnapshot`).
+      3. Seletor "inclui o limite" que aparecia indevidamente mesmo quando o saldo vinha de `LEDGERBAL` do OFX.
+    - **Solução Implementada**:
+      - Conversão do limite em UM só lugar (na tela em `RevisaoExtrato.tsx`). O storage NUNCA converte e recebe sempre o saldo real.
+      - Ocultação do seletor "inclui o limite" quando o saldo provém do `LEDGERBAL` do OFX (pois `LEDGERBAL` já é o saldo real em conta).
+      - Seletor inicia desligado e, quando ligado, exibe mensagem explicativa: *"Saldo real considerado: R$ X (informado Y − limite Z)"*.
+      - Eliminação de `push` cego em `storage.ts`, adotando upsert por ID em todos os pontos do módulo de importação (lançamentos, regras, lotes).
+      - Conferência independente de saldo pós-gravação: se houver divergência entre o saldo real do app e o saldo informado, emite aviso visual claro sem travar nem alterar dados indevidamente.
+    - **Data e hora da alteração**: 25/10/2026 07:20:00
+    - **Arquivos modificados**: `src/components/extrato/RevisaoExtrato.tsx`, `src/services/storage.ts`, `src/components/ImportarExtratoModal.tsx`, `scripts/test_parte_21A.ts`, `package.json`, `RESUMO_MESTRE.md`.
   - **Parte 18C – Regra Única de Saldo Inicial na Importação de Extratos Bancários (Substitui 17B, 15J e 16D)**:
     - **Problema resolvido**: Eliminação dos múltiplos mecanismos sobrepostos de ajuste de saldo inicial (alerta de dupla contagem, ajuste de data do saldo inicial, "corrigir saldo inicial agora", ajuste pós-importação) que causavam divergências e inconsistências no saldo contábil.
     - **REGRA ÚNICA**:
@@ -654,7 +730,7 @@ match /importacoes/{loteId} {
         2. `nome do banco` + número da conta (compatibilidade com contas legadas);
         3. `banco` (código ou nome);
         4. Só o número da conta.
-      - Suporte especial para o padrão Santander em que o `ACCTID` traz a agência colada (`3749130046964` ≡ agência `3749` + conta `13004696-4`).
+      - Suporte especial para o padrão Santander em que o `ACCTID` traz a agência colada (`0001999999999` ≡ agência `0001` + conta `99999999-9`).
       - Retorno estruturado em `{ tipo: 'unica', conta }`, `{ tipo: 'ambigua', candidatas }` ou `{ tipo: 'nenhuma', sugestao }`.
     - **15B.3 (Gestão de Contas Bancárias em `src/pages/ContasBancarias.tsx`)**:
       - Seletor de instituição bancária com opções de `bancos.ts` (`BANCOS_REGISTRADOS`) + opção "Outro Banco / Instituição" com input de texto dedicado.
@@ -694,7 +770,7 @@ match /importacoes/{loteId} {
     - **15A.3 (Parser XLSX Santander em `src/utils/extrato/parsers/santanderXlsx.ts`)**:
       - Processamento via SheetJS (`xlsx`) para planilhas exportadas pelo Santander.
       - Conversor de datas por extenso em português com suporte a meses com e sem acento (`março`/`marco`, etc.) e dia da semana.
-      - Identificação dinâmica de metadados no cabeçalho: Titular, Conta (`13004696-4` -> `130046964`) e Período (`Extrato de 01/01/2026 a 16/10/2026`).
+      - Identificação dinâmica de metadados no cabeçalho: Titular, Conta (`99999999-9` -> `999999999`) e Período (`Extrato de 01/01/2026 a 16/10/2026`).
       - Descarte da linha de rodapé `"TOTAL"`, registrando-a nos `avisos`.
       - Tratamento de ausência de FITID, saldo e favorecido (propriedades `undefined`).
       - Ordem preservada do mais recente ao mais antigo.
@@ -706,7 +782,7 @@ match /importacoes/{loteId} {
     - **15A.5 (Ponto de Entrada em `src/utils/extrato/index.ts`)**:
       - Função `lerExtrato(arquivo: ArrayBuffer, nomeArquivo: string): Promise<ExtratoLido>`.
     - **15A.6 (Suite de Testes Automatizados em `scripts/test_extrato_parsers.ts`)**:
-      - 51 casos de teste automatizados cobrindo os arquivos reais (400 transações do OFX, 400 FITIDs únicos, LEDGERBAL -7377,22, 1.682 transações do XLSX, linha TOTAL desconsiderada, meses com/sem acento, boletos idênticos com ordemNoDia 0 e 1, e erro em arquivos desconhecidos) com 100% de aprovação (51 PASSOU / 0 FALHOU).
+      - 51 casos de teste automatizados cobrindo os extratos (transações do OFX, FITIDs únicos, LEDGERBAL -5432,10, transações do XLSX, linha TOTAL desconsiderada, meses com/sem acento, boletos idênticos com ordemNoDia 0 e 1, e erro em arquivos desconhecidos) com 100% de aprovação (51 PASSOU / 0 FALHOU).
   - **Arquivos criados:** `src/utils/extrato/tipos.ts`, `src/utils/extrato/parsers/ofx.ts`, `src/utils/extrato/parsers/santanderXlsx.ts`, `src/utils/extrato/bancos.ts`, `src/utils/extrato/detectarBanco.ts`, `src/utils/extrato/index.ts`, `scripts/test_extrato_parsers.ts`.
   - **Arquivos modificados:** `package.json`, `package-lock.json`, `RESUMO_MESTRE.md`.
 

@@ -35,6 +35,12 @@ export interface ContaBancaria {
   cor: string;
   ativa: boolean;
   criado_em?: string;
+  saldo_referencia?: {
+    valor: number; // saldo real em conta, já sem conversão
+    data: string;  // YYYY-MM-DD
+    origem: 'ofx_ledgerbal' | 'usuario';
+    lote_id?: string;
+  };
 }
 
 export interface Categoria {
@@ -165,7 +171,7 @@ export interface RegistroImportacao {
     total_creditos: number;
     total_debitos: number;
   };
-  saldo_banco?: { valor: number; data: string };
+  saldo_banco?: { valor: number; data: string; origem?: 'ofx_ledgerbal' | 'usuario' };
   saldo_sistema_antes?: number;
   saldo_sistema_depois?: number;
   status: 'concluida' | 'desfeita' | 'parcial';
@@ -270,10 +276,19 @@ export interface ResultadoImportacaoLote {
   avisos?: string[];
   /** Status final da persistência do lote (Parte 16C) */
   statusLote?: 'concluida' | 'parcial';
-  /** Saldo inicial definido na primeira importação da conta (Parte 18C) */
+  /** Saldo inicial definido ou recalculado nesta importação (Parte 18C / 21B) */
   saldoInicialDefinido?: {
     novoSaldoInicial: number;
     novaDataSaldoInicial: string;
+  };
+  /** Sinaliza se a conta ainda não possui nenhum saldo de referência bancária conhecido (Parte 21B) */
+  saldoInicialPendente?: boolean;
+  /** Saldo de referência ativo na conta após a importação (Parte 21B) */
+  saldoReferenciaConta?: {
+    valor: number;
+    data: string;
+    origem: 'ofx_ledgerbal' | 'usuario';
+    lote_id?: string;
   };
   /** Erro de conferência caso o saldo do app não coincida com o saldo informado (Parte 18C) */
   erroConferenciaSaldo?: string;

@@ -78,15 +78,15 @@ class SimuladorExclusaoConta18A {
     this.cacheContas = [
       {
         id: 'conta-santander',
-        nome: 'Santander Corrente MT Solar',
+        nome: 'Santander Corrente',
         banco: 'Santander',
         banco_codigo: '033',
-        agencia: '3749',
-        numero_conta: '13004696-4',
+        agencia: '0001',
+        numero_conta: '99999999-9',
         tipo: 'corrente',
         saldo_inicial: 5000.0,
         data_saldo_inicial: '2026-01-01',
-        limite_cheque_especial: 8800.0,
+        limite_cheque_especial: 5000.0,
         taxa_juros_cheque_especial_mensal: 0,
         cor: '#CC0000',
         ativa: true,
@@ -126,7 +126,7 @@ class SimuladorExclusaoConta18A {
         provisao_13_percentual: 8.33,
         outros_encargos_percentual: 0,
         banco: 'Santander',
-        agencia: '3749',
+        agencia: '0001',
         conta: '12345-6',
         tipo_chave_pix: 'cpf',
         chave_pix: '12345678900',
@@ -156,7 +156,7 @@ class SimuladorExclusaoConta18A {
       {
         id: 'lote-santander-jan26',
         data: '2026-02-01',
-        usuario: 'admin@mtsolar.com.br',
+        usuario: 'admin@empresa.com.br',
         banco_codigo: '033',
         conta_id: 'conta-santander',
         nome_arquivo: 'extrato_jan26.ofx',
@@ -827,7 +827,7 @@ async function executarSuiteParte18A() {
   try {
     await sim.excluirContaBancariaCompleta({
       contaId: 'conta-santander',
-      nomeConfirmacao: 'Santander Corrente MT Solar',
+      nomeConfirmacao: 'Santander Corrente',
       excluirContrapartidasTransferencias: false,
     });
   } catch (e: any) {
@@ -887,7 +887,7 @@ async function executarSuiteParte18A() {
   try {
     await sim.excluirContaBancariaCompleta({
       contaId: 'conta-santander',
-      nomeConfirmacao: 'Santander Corrente MT Solar',
+      nomeConfirmacao: 'Santander Corrente',
       excluirContrapartidasTransferencias: true,
     });
   } catch (e: any) {
@@ -915,7 +915,7 @@ async function executarSuiteParte18A() {
   try {
     await sim.excluirContaBancariaCompleta({
       contaId: 'conta-santander',
-      nomeConfirmacao: 'Santander Corrente MT Solar',
+      nomeConfirmacao: 'Santander Corrente',
       excluirContrapartidasTransferencias: true,
     });
   } catch (e: any) {
@@ -934,7 +934,7 @@ async function executarSuiteParte18A() {
 
   const resultado = await sim.excluirContaBancariaCompleta({
     contaId: 'conta-santander',
-    nomeConfirmacao: 'Santander Corrente MT Solar',
+    nomeConfirmacao: 'Santander Corrente',
     excluirContrapartidasTransferencias: true,
   });
 

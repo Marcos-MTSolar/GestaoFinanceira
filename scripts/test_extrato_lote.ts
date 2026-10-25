@@ -610,58 +610,79 @@ async function executarTestes() {
   asserir(registroLoteDesfeito?.status === 'desfeita', "Status do lote atualizado para 'desfeita'");
 
   // ------------------------------------------------------------
-  // CENÁRIO 4: Validação com o Arquivo Real Santander XLSX (1.682 linhas)
+  // CENÁRIO 4: Processamento do Fixture Sintético Santander XLSX (37 transações + linha TOTAL)
+  // Verifica que: parser ignora linha TOTAL, 37 transações lidas, lote
+  // particionado em 1 batch (37 lançamentos + 1 registro = 38 ops), rollback correto.
   // ------------------------------------------------------------
-  console.log('\n--- Cenário 4: Processamento do Arquivo Real Santander (1.682 linhas) ---');
+  console.log('\n--- Cenário 4: Processamento do Fixture Sintético Santander XLSX (37 transações) ---');
 
-  const caminhoXlsx1 = path.resolve(__dirname, '../src/exemplos_extratos/excel_export1792140356207.xlsx');
-  const caminhoXlsx2 = path.resolve(__dirname, '../src/exemplos_extratos/extrato_ano_completo_santander.xlsx');
-  const caminhoXlsx = fs.existsSync(caminhoXlsx1) ? caminhoXlsx1 : caminhoXlsx2;
-  if (fs.existsSync(caminhoXlsx)) {
-    const buffer = fs.readFileSync(caminhoXlsx);
-    const arrayBuf = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
-    const extratoReal = await lerExtrato(arrayBuf, path.basename(caminhoXlsx));
+  const caminhoFixtureXlsx = path.resolve(__dirname, '../scripts/fixtures/extrato_sintetico_santander.xlsx');
+  const bufFixture = fs.readFileSync(caminhoFixtureXlsx);
+  const arrayBufFixture = bufFixture.buffer.slice(bufFixture.byteOffset, bufFixture.byteOffset + bufFixture.byteLength) as ArrayBuffer;
+  const extratoFixture = await lerExtrato(arrayBufFixture, 'extrato_sintetico_santander.xlsx');
 
-    asserir(extratoReal.transacoes.length > 1500, `Arquivo real lido com sucesso: ${extratoReal.transacoes.length} transações`);
+  asserir(
+    extratoFixture.transacoes.length === 37,
+    `Fixture XLSX lido com 37 transações válidas (TOTAL ignorado). Obtido: ${extratoFixture.transacoes.length}`
+  );
 
-    // Converte transações reais para itens de revisão
-    const itensReais: ItemRevisaoExtrato[] = extratoReal.transacoes.map((t, idx) => ({
-      id: `item-real-${idx}`,
-      transacao: t,
-      bancoCodigo: '033',
-      contaId: 'conta-santander',
-      formato: 'xlsx',
-      statusDeduplicacao: 'nova',
-      natureza: 'tarifa_bancaria',
-      tipoLancamento: t.tipo === 'credito' ? 'receita' : 'despesa',
-      categoriaId: t.tipo === 'credito' ? 'cat-rec' : 'cat-des',
-      acao: 'incluir'
-    }));
+  // Converte para itens de revisão
+  const itensFixture: ItemRevisaoExtrato[] = extratoFixture.transacoes.map((t, idx) => ({
+    id: `item-fixture-${idx}`,
+    transacao: t,
+    bancoCodigo: '033',
+    contaId: 'conta-santander',
+    formato: 'xlsx',
+    statusDeduplicacao: 'nova',
+    natureza: 'indefinido',
+    tipoLancamento: t.tipo === 'credito' ? 'receita' : 'despesa',
+    categoriaId: t.tipo === 'credito' ? 'cat-rec' : 'cat-des',
+    acao: 'incluir'
+  }));
 
-    storage.reset();
-    const resReal = await storage.importarExtratoLote({
-      loteId: 'lote-santander-real-1682',
-      bancoCodigo: '033',
-      contaId: 'conta-santander',
-      nomeArquivo: 'extrato_ano_completo_santander.xlsx',
-      formato: 'xlsx',
-      periodo: extratoReal.periodo,
-      itens: itensReais,
-      usuario: 'aureliano@mtsolar.com.br'
-    });
+  storage.reset();
+  const resFixture = await storage.importarExtratoLote({
+    loteId: 'lote-fixture-xlsx-37',
+    bancoCodigo: '033',
+    contaId: 'conta-santander',
+    nomeArquivo: 'extrato_sintetico_santander.xlsx',
+    formato: 'xlsx',
+    periodo: extratoFixture.periodo,
+    itens: itensFixture,
+    usuario: 'aureliano@mtsolar.com.br'
+  });
 
-    asserir(resReal.sucesso === true, 'Lote real de 1.682 transações importado com sucesso');
-    asserir(resReal.totais.lancadas === extratoReal.transacoes.length, 'Total de lançadas igual ao total de transações lidas');
-    asserir(storage.batchesGravados.length === 4, '1.682 operações particionadas corretamente em 4 batches (490 + 490 + 490 + 212)');
-    asserir(storage.batchesGravados.every(b => b.length <= 490), 'Nenhum batch ultrapassou 490 operações');
+  asserir(resFixture.sucesso === true, 'Lote fixture de 37 transações importado com sucesso');
+  asserir(
+    resFixture.totais.lancadas === 37,
+    `37 lançamentos criados (obtido: ${resFixture.totais.lancadas})`
+  );
+  // 37 lançamentos + 1 registro de lote = 38 operações → cabe em 1 batch (limite 490)
+  asserir(
+    storage.batchesGravados.length === 1,
+    `38 operações em 1 único batch (obtido: ${storage.batchesGravados.length})`
+  );
+  asserir(
+    storage.batchesGravados[0].length <= 490,
+    `Batch não ultrapassou 490 operações (${storage.batchesGravados[0].length} ops)`
+  );
 
-    // Desfaz o lote real
-    const desfazReal = await storage.desfazerImportacao('lote-santander-real-1682');
-    asserir(desfazReal.sucesso === true, 'Lote real desfeito com sucesso');
-    asserir(desfazReal.lancamentosRemovidos === extratoReal.transacoes.length, 'Todas as 1.682 transações removidas com perfeição');
-  } else {
-    console.log('  [AVISO] Arquivo real de teste não localizado em src/exemplos_extratos/');
-  }
+  // Verifica 2 boletos de 108,39 no mesmo dia (não colapsados)
+  const boletosDia = storage.cacheLancamentos.filter(
+    l => (l.data_pagamento === '2026-10-15') && Math.round(l.valor * 100) === 10839
+  );
+  asserir(
+    boletosDia.length === 2,
+    `2 boletos de 108,39 em 15/10/2026 gravados de forma independente (obtido: ${boletosDia.length})`
+  );
+
+  // Rollback do fixture
+  const desfazFixture = await storage.desfazerImportacao('lote-fixture-xlsx-37');
+  asserir(desfazFixture.sucesso === true, 'Lote fixture desfeito com sucesso');
+  asserir(
+    desfazFixture.lancamentosRemovidos === 37,
+    `37 lançamentos removidos no rollback (obtido: ${desfazFixture.lancamentosRemovidos})`
+  );
 
   // ------------------------------------------------------------
   // RESUMO DOS RESULTADOS

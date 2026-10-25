@@ -61,8 +61,38 @@ export interface ResultadoCalculoSaldoInicialUnico {
   menorDataLancamento?: string;
 }
 
+export interface ParamsRecalculoSaldoInicial {
+  saldoReferencia: {
+    valor: number;
+    data: string;
+  };
+  contaId: string;
+  todosLancamentosPagosConta: Lancamento[];
+}
+
 /**
- * REGRA ÚNICA (Parte 18C):
+ * PARTE 21B (Regra de Saldo de Referência Reversível e Automática):
+ * O usuário nunca informa saldo inicial. O app guarda o último saldo real conhecido do banco e
+ * recalcula o saldo inicial automaticamente depois de cada importação (e depois de Desfazer),
+ * em qualquer ordem de arquivos.
+ *
+ * saldo_inicial = saldo_referencia.valor − soma dos lançamentos pagos da conta com data ≤ saldo_referencia.data
+ *                 (entrada +, saída −, deduplicado por ID, incluindo manuais)
+ * data_saldo_inicial = dia anterior ao lançamento mais antigo da conta.
+ */
+export function recalcularSaldoInicialConta(
+  params: ParamsRecalculoSaldoInicial
+): ResultadoCalculoSaldoInicialUnico {
+  return calcularSaldoInicialPrimeiraImportacao({
+    saldoRealInformado: params.saldoReferencia.valor,
+    dataSaldoInformado: params.saldoReferencia.data,
+    contaId: params.contaId,
+    todosLancamentosPagosConta: params.todosLancamentosPagosConta,
+  });
+}
+
+/**
+ * REGRA (Parte 18C / 21B):
  * saldo_inicial = saldo_real_informado − (soma de TODOS os lançamentos pagos da conta com data ≤ data do saldo informado,
  *                 já incluindo os que serão gravados pelo extrato e considerando entradas positivas e saídas negativas).
  * data_saldo_inicial = dia anterior ao lançamento mais antigo da conta.

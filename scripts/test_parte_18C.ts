@@ -311,16 +311,16 @@ async function executarTestesParte18C() {
       tipo: 'corrente',
       saldo_inicial: 0,
       data_saldo_inicial: '2026-08-01',
-      limite_cheque_especial: 8800,
+      limite_cheque_especial: 5000,
       ativa: true,
       cor: '#003064',
     });
     sim.cacheContas.push(conta);
 
     // O requisito especifica:
-    // LEDGERBAL = -7.377,22
-    // Saldo Inicial Calculado = -6.803,58 em 02/08/2026
-    // Logo a soma dos 400 lançamentos deve ser = -7.377,22 - (-6.803,58) = -573,64
+    // LEDGERBAL = -5.432,10
+    // Saldo Inicial Calculado = -4.858,46 em 02/08/2026
+    // Logo a soma dos 400 lançamentos deve ser = -5.432,10 - (-4.858,46) = -573,64
     // Transação mais antiga em 03/08/2026 (dia anterior = 02/08/2026)
     const lancamentos400: Lancamento[] = [];
     const somaAlvo = -573.64;
@@ -361,12 +361,12 @@ async function executarTestesParte18C() {
       loteId: 'lote-ofx-400',
       contaId: 'conta-ofx-400',
       novosLancamentos: lancamentos400,
-      saldoInformado: { valor: -7377.22, data: '2026-08-31' },
+      saldoInformado: { valor: -5432.10, data: '2026-08-31' },
     });
 
-    asserir(conta.saldo_inicial === -6803.58, `Saldo inicial recalculado = -6.803,58 (obtido: ${conta.saldo_inicial})`);
+    asserir(conta.saldo_inicial === -4858.46, `Saldo inicial recalculado = -4.858,46 (obtido: ${conta.saldo_inicial})`);
     asserir(conta.data_saldo_inicial === '2026-08-02', `Data saldo inicial = 02/08/2026 (obtido: ${conta.data_saldo_inicial})`);
-    asserir(res.saldoFinalApp === -7377.22, `Saldo final do app = -7.377,22 (obtido: ${res.saldoFinalApp})`);
+    asserir(res.saldoFinalApp === -5432.10, `Saldo final do app = -5.432,10 (obtido: ${res.saldoFinalApp})`);
     asserir(!res.erroConferencia, 'Conferência exata com tolerância R$ 0,01');
   }
 
@@ -436,16 +436,16 @@ async function executarTestesParte18C() {
   }
 
   // -------------------------------------------------------------
-  // Teste (d): Saldo "disponível" com limite 8.800 convertido corretamente
+  // Teste (d): Saldo "disponível" com limite 5.000 convertido corretamente
   // -------------------------------------------------------------
-  secao('Cenário (d): Saldo "disponível" com limite R$ 8.800 convertido corretamente');
+  secao('Cenário (d): Saldo "disponível" com limite R$ 5.000 convertido corretamente');
   {
     // Fórmula: saldo real = disponível − limite da conta
-    const limiteConta = 8800;
-    const saldoDisponivelDigitado = 1422.78; // Está usando 7377,22 do limite: 1422.78 - 8800 = -7377.22
+    const limiteConta = 5000;
+    const saldoDisponivelDigitado = 678.90; // 678.90 - 5000 = -4321.10
     const saldoRealEsperado = converterDisponivelParaSaldoReal(saldoDisponivelDigitado, limiteConta);
 
-    asserir(saldoRealEsperado === -7377.22, `Conversão de disponível R$ 1.422,78 com limite R$ 8.800 → R$ -7.377,22 (obtido: ${saldoRealEsperado})`);
+    asserir(saldoRealEsperado === -4321.10, `Conversão de disponível R$ 678,90 com limite R$ 5.000 → R$ -4.321,10 (obtido: ${saldoRealEsperado})`);
 
     // Teste integrado na importação
     const sim = new SimuladorImportacao18C();
@@ -458,7 +458,7 @@ async function executarTestesParte18C() {
       tipo: 'corrente',
       saldo_inicial: 0,
       data_saldo_inicial: '2026-08-01',
-      limite_cheque_especial: 8800,
+      limite_cheque_especial: 5000,
       ativa: true,
       cor: '#003064',
     });
@@ -467,8 +467,8 @@ async function executarTestesParte18C() {
     const lancs: Lancamento[] = [
       mockLancamento({ id: 'disp-l1', tipo: 'despesa', descricao: 'Despesa 1', valor: 500, data_vencimento: '2026-08-10', data_pagamento: '2026-08-10', status: 'pago', conta_id: 'conta-disp', categoria_id: 'c1', forma_pagamento: 'cartao', recorrencia: 'nenhuma', origem: 'importacao', origem_importacao: { lote_id: 'lote-disp' } }),
     ];
-    // soma = -500. Saldo real informado = -7.377,22.
-    // Saldo inicial = -7.377,22 - (-500) = -6.877,22
+    // soma = -500. Saldo real informado = -4.321,10.
+    // Saldo inicial = -4.321,10 - (-500) = -3.821,10
 
     const res = sim.importarLote({
       loteId: 'lote-disp',
@@ -481,8 +481,8 @@ async function executarTestesParte18C() {
       },
     });
 
-    asserir(conta.saldo_inicial === -6877.22, `Saldo inicial após conversão do disponível = -6.877,22 (obtido: ${conta.saldo_inicial})`);
-    asserir(res.saldoFinalApp === -7377.22, `Saldo final do app coincide com o saldo real do banco = -7.377,22`);
+    asserir(conta.saldo_inicial === -3821.10, `Saldo inicial após conversão do disponível = -3.821,10 (obtido: ${conta.saldo_inicial})`);
+    asserir(res.saldoFinalApp === -4321.10, `Saldo final do app coincide com o saldo real do banco = -4.321,10`);
   }
 
   // -------------------------------------------------------------

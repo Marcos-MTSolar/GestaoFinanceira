@@ -72,8 +72,8 @@ class SimuladorStorageE2E {
         nome: 'Santander PJ MT Solar',
         banco: 'Santander',
         banco_codigo: '033',
-        agencia: '3749',
-        numero_conta: '130046964',
+        agencia: '0001',
+        numero_conta: '999999999',
         tipo: 'corrente',
         saldo_inicial: 0,
         data_saldo_inicial: '2026-01-01',
@@ -412,30 +412,36 @@ class SimuladorStorageE2E {
 // ============================================================
 async function executarTesteE2E() {
   console.log('='.repeat(72));
-  console.log(' TESTE PONTA A PONTA (E2E) - PARTE 15G FECHAMENTO');
+  console.log(' TESTE PONTA A PONTA (E2E) - PARTE 15G FECHAMENTO (FIXTURES SINTÉTICOS)');
   console.log('='.repeat(72));
 
   const storage = new SimuladorStorageE2E();
 
-  const caminhoXlsx = path.resolve(__dirname, '../src/exemplos_extratos/excel_export1792140356207.xlsx');
-  const caminhoOfx = path.resolve(__dirname, '../src/exemplos_extratos/extrato-pj-16_10_2026_19h22m20s.ofx');
+  // Fixtures sintéticos:
+  //   XLSX: 37 transações (Jan/26 a 15/Out/26) + linha TOTAL ignorada
+  //   OFX : 30 transações (03/Ago/26 a 16/Out/26) | LEDGERBAL -7.377,22
+  //   Sobreposição: 27 transações casam (enriquecer_existente)
+  //   Exclusivas do OFX: 3 transações de 16/10 (novas)
+  //   União: 40 lançamentos (37 XLSX + 3 novas OFX)
+  const caminhoXlsx = path.resolve(__dirname, '../scripts/fixtures/extrato_sintetico_santander.xlsx');
+  const caminhoOfx  = path.resolve(__dirname, '../scripts/fixtures/extrato_sintetico_santander.ofx');
 
-  asserir(fs.existsSync(caminhoXlsx), 'Arquivo XLSX real existe em src/exemplos_extratos/');
-  asserir(fs.existsSync(caminhoOfx), 'Arquivo OFX real existe em src/exemplos_extratos/');
+  asserir(fs.existsSync(caminhoXlsx), 'Fixture XLSX existe em scripts/fixtures/');
+  asserir(fs.existsSync(caminhoOfx),  'Fixture OFX existe em scripts/fixtures/');
 
   const bufXlsx = fs.readFileSync(caminhoXlsx);
   const arrXlsx = bufXlsx.buffer.slice(bufXlsx.byteOffset, bufXlsx.byteOffset + bufXlsx.byteLength) as ArrayBuffer;
-  const extratoXlsx = await lerExtrato(arrXlsx, 'excel_export1792140356207.xlsx');
+  const extratoXlsx = await lerExtrato(arrXlsx, 'extrato_sintetico_santander.xlsx');
 
   const bufOfx = fs.readFileSync(caminhoOfx);
   const arrOfx = bufOfx.buffer.slice(bufOfx.byteOffset, bufOfx.byteOffset + bufOfx.byteLength) as ArrayBuffer;
-  const extratoOfx = await lerExtrato(arrOfx, 'extrato-pj-16_10_2026_19h22m20s.ofx');
+  const extratoOfx = await lerExtrato(arrOfx, 'extrato_sintetico_santander.ofx');
 
   // ------------------------------------------------------------
-  // ETAPA A: Importar o XLSX de 365 dias (1.682 transações)
+  // ETAPA A: Importar o XLSX de 37 transações
   // ------------------------------------------------------------
-  console.log('\n--- Etapa (a): Importação do XLSX de 365 dias ---');
-  asserir(extratoXlsx.transacoes.length === 1682, `XLSX lido com 1.682 transações (obtido: ${extratoXlsx.transacoes.length})`);
+  console.log('\n--- Etapa (a): Importação do XLSX de 37 transações ---');
+  asserir(extratoXlsx.transacoes.length === 37, `XLSX lido com 37 transações (obtido: ${extratoXlsx.transacoes.length})`);
 
   const itensXlsx: ItemRevisaoExtrato[] = extratoXlsx.transacoes.map((t, i) => ({
     id: `item-xlsx-${i}`,
@@ -450,12 +456,12 @@ async function executarTesteE2E() {
     acao: 'incluir',
   }));
 
-  const loteIdXlsx = 'lote-xlsx-365dias';
+  const loteIdXlsx = 'lote-xlsx-sintetico';
   const resXlsx = await storage.importarExtratoLote({
     loteId: loteIdXlsx,
     bancoCodigo: '033',
     contaId: 'conta-santander-pj',
-    nomeArquivo: 'excel_export1792140356207.xlsx',
+    nomeArquivo: 'extrato_sintetico_santander.xlsx',
     formato: 'xlsx',
     periodo: extratoXlsx.periodo,
     itens: itensXlsx,
@@ -463,53 +469,53 @@ async function executarTesteE2E() {
   });
 
   asserir(resXlsx.sucesso === true, 'Importação do lote XLSX concluída com sucesso');
-  asserir(resXlsx.totais.lancadas === 1682, 'Exatamente 1.682 lançamentos criados a partir do XLSX');
-  asserir(storage.cacheLancamentos.length === 1682, 'Cache de lançamentos possui 1.682 itens');
-  asserir(storage.batchesGravados.length === 4, 'Particionado em 4 batches no Firestore (490 + 490 + 490 + 212)');
+  asserir(resXlsx.totais.lancadas === 37, `37 lançamentos criados (obtido: ${resXlsx.totais.lancadas})`);
+  asserir(storage.cacheLancamentos.length === 37, `Cache possui 37 lançamentos (obtido: ${storage.cacheLancamentos.length})`);
+  // 37 lançamentos + 1 registro de lote = 38 ops → 1 batch
+  asserir(storage.batchesGravados.length === 1, `Importação em 1 batch (obtido: ${storage.batchesGravados.length})`);
   asserir(storage.batchesGravados.every((b) => b.length <= 490), 'Nenhum batch excedeu o limite máximo de 490');
 
-  // Verifica registro de auditoria
+  // Verifica auditoria
   const auditXlsx = storage.cacheAuditoria.find((a) => a.modulo === 'importacoes' && a.acao === 'importacao');
-  asserir(!!auditXlsx, 'Auditoria de importação do XLSX registrada com sucesso');
-  asserir(auditXlsx?.descricao.includes('1682 lançamentos') || false, 'Descrição da auditoria contém o número de lançamentos');
+  asserir(!!auditXlsx, 'Auditoria de importação do XLSX registrada');
+  asserir(auditXlsx?.descricao.includes('37 lançamentos') || false, 'Auditoria contém a contagem de lançamentos');
 
   // ------------------------------------------------------------
-  // ETAPA B & C: Importar o OFX de 90 dias e conferir 0 duplicatas
+  // ETAPA B & C: Importar o OFX de 30 transações e conferir deduplicação
   // ------------------------------------------------------------
-  console.log('\n--- Etapa (b) & (c): Importação do OFX de 90 dias & Deduplicação ---');
-  asserir(extratoOfx.transacoes.length === 400, `OFX lido com 400 transações (obtido: ${extratoOfx.transacoes.length})`);
-  asserir(extratoOfx.saldoFinal?.valor === -7377.22, `LEDGERBAL do OFX extraído com exatidão: -7.377,22 (obtido: ${extratoOfx.saldoFinal?.valor})`);
+  console.log('\n--- Etapa (b) & (c): Importação do OFX de 30 transações & Deduplicação ---');
+  asserir(extratoOfx.transacoes.length === 30, `OFX lido com 30 transações (obtido: ${extratoOfx.transacoes.length})`);
+  asserir(
+    extratoOfx.saldoFinal?.valor === -5432.10,
+    `LEDGERBAL extraído: -5.432,10 (obtido: ${extratoOfx.saldoFinal?.valor})`
+  );
 
-  // Classifica duplicatas contra a base já preenchida pelo XLSX
+  // Classifica duplicatas contra os 37 lançamentos do XLSX
   const dedupeOfx = classificarDuplicatas(extratoOfx.transacoes, storage.cacheLancamentos, {
     contaId: 'conta-santander-pj',
     bancoCodigo: '033',
-    contaNumero: '130046964',
+    contaNumero: '999999999',
   });
 
-  // Janela de sobreposição: 18/07/2026 a 16/10/2026
-  const transacoesNaJanela = dedupeOfx.filter(
-    (d) => d.transacao.data >= '2026-07-18' && d.transacao.data <= '2026-10-16'
-  );
+  const enriquecidas    = dedupeOfx.filter((d) => d.status === 'enriquecer_existente');
+  const novas           = dedupeOfx.filter((d) => d.status === 'nova');
+  const duplicatasExatas = dedupeOfx.filter((d) => d.status === 'duplicada_exata');
 
-  const novasNaJanela = transacoesNaJanela.filter((d) => d.status === 'nova');
-  const enriquecidasNaJanela = transacoesNaJanela.filter((d) => d.status === 'enriquecer_existente');
+  asserir(enriquecidas.length === 27,      `27 transações do OFX casaram com XLSX para enriquecimento (obtido: ${enriquecidas.length})`);
+  asserir(novas.length === 3,              `3 transações exclusivas do OFX (16/10) → novas (obtido: ${novas.length})`);
+  asserir(duplicatasExatas.length === 0,   `0 duplicatas exatas — nenhum FITID repetido (obtido: ${duplicatasExatas.length})`);
 
-  asserir(transacoesNaJanela.length === 400, 'Todas as 400 transações do OFX estão na janela de sobreposição');
-  asserir(enriquecidasNaJanela.length === 395, 'Exatamente 395 transações casaram com o XLSX para enriquecimento');
-  asserir(novasNaJanela.length === 5, 'Apenas 5 transações novas identificadas (lançadas em 16/10 após a geração do XLSX)');
-
-  // Verifica as 5 novas de 16/10
+  // Todas as novas são exclusivamente de 16/10
   asserir(
-    novasNaJanela.every((n) => n.transacao.data === '2026-10-16'),
-    'Todas as transações "novas" são exclusivamente do dia 16/10/2026'
+    novas.every((n) => n.transacao.data === '2026-10-16'),
+    'Todas as 3 transações novas são do dia 16/10/2026'
   );
 
-  // Nenhuma das transações do período anterior a 16/10 gerou duplicata
+  // Nenhuma transação anterior a 16/10 gerou nova (seria bug de deduplicação)
   const novasAntesDe16Out = dedupeOfx.filter((d) => d.status === 'nova' && d.transacao.data < '2026-10-16');
-  asserir(novasAntesDe16Out.length === 0, 'Exatamente ZERO duplicatas na janela 18/07 até 15/10 (obtido: 0)');
+  asserir(novasAntesDe16Out.length === 0, 'ZERO novas antes de 16/10 — deduplicação perfeita');
 
-  // Converte para itens de revisão e importa o lote do OFX
+  // Converte e importa o lote do OFX
   const itensOfx: ItemRevisaoExtrato[] = dedupeOfx.map((item, idx) => ({
     id: `item-ofx-${idx}`,
     transacao: item.transacao,
@@ -524,12 +530,12 @@ async function executarTesteE2E() {
     lancamentoExistenteId: item.lancamentoRelacionado?.id,
   }));
 
-  const loteIdOfx = 'lote-ofx-90dias';
+  const loteIdOfx = 'lote-ofx-sintetico';
   const resOfx = await storage.importarExtratoLote({
     loteId: loteIdOfx,
     bancoCodigo: '033',
     contaId: 'conta-santander-pj',
-    nomeArquivo: 'extrato-pj-16_10_2026_19h22m20s.ofx',
+    nomeArquivo: 'extrato_sintetico_santander.ofx',
     formato: 'ofx',
     periodo: extratoOfx.periodo,
     itens: itensOfx,
@@ -538,62 +544,57 @@ async function executarTesteE2E() {
   });
 
   asserir(resOfx.sucesso === true, 'Importação do lote OFX concluída com sucesso');
-  asserir(resOfx.totais.lancadas === 5, 'Exatamente 5 novos lançamentos criados pelo OFX');
-  asserir(resOfx.totais.enriquecidas === 395, 'Exatamente 395 lançamentos do XLSX foram enriquecidos');
-  asserir(storage.cacheLancamentos.length === 1687, 'Total de lançamentos no sistema: 1.687 (1.682 + 5)');
+  asserir(resOfx.totais.lancadas === 3,   `3 novos lançamentos criados pelo OFX (obtido: ${resOfx.totais.lancadas})`);
+  asserir(resOfx.totais.enriquecidas === 27, `27 lançamentos enriquecidos (obtido: ${resOfx.totais.enriquecidas})`);
+  asserir(storage.cacheLancamentos.length === 40, `Total 40 lançamentos no sistema (37 XLSX + 3 OFX). Obtido: ${storage.cacheLancamentos.length}`);
 
   // ------------------------------------------------------------
-  // ETAPA D: Saldo Conciliado com LEDGERBAL -7.377,22
+  // ETAPA D: Saldo conciliado com LEDGERBAL -5.432,10
   // ------------------------------------------------------------
-  console.log('\n--- Etapa (d): Conciliação Bancária com LEDGERBAL -7.377,22 ---');
-  const resumoContaAposOfx = storage.calcularResumoConta(storage.cacheContas[0]);
-  console.log(`  Saldo Real calculado pelo sistema: R$ ${resumoContaAposOfx.saldo_real.toFixed(2)}`);
-  console.log(`  Saldo LEDGERBAL do banco Santander: R$ ${extratoOfx.saldoFinal?.valor.toFixed(2)}`);
+  console.log('\n--- Etapa (d): Conciliação com LEDGERBAL -5.432,10 ---');
+  const resumoAposOfx = storage.calcularResumoConta(storage.cacheContas[0]);
+  console.log(`  Saldo sistema: R$ ${resumoAposOfx.saldo_real.toFixed(2)}`);
+  console.log(`  LEDGERBAL banco: R$ ${extratoOfx.saldoFinal?.valor.toFixed(2)}`);
 
-  const diferencaInicial = +(extratoOfx.saldoFinal!.valor - resumoContaAposOfx.saldo_real).toFixed(2);
-  console.log(`  Diferença apurada para ajuste de conciliação: R$ ${diferencaInicial}`);
-
-  // Executa conciliação bancária
   const resConciliacao = storage.conciliarSaldoConta('conta-santander-pj', extratoOfx.saldoFinal!.valor);
   asserir(resConciliacao.sucesso === true, 'Operação conciliarSaldoConta executada com sucesso');
 
-  const resumoContaPosConciliacao = storage.calcularResumoConta(storage.cacheContas[0]);
+  const resumoPosConciliacao = storage.calcularResumoConta(storage.cacheContas[0]);
   asserir(
-    resumoContaPosConciliacao.saldo_real === extratoOfx.saldoFinal?.valor,
-    `Saldo da conta perfeitamente igual ao LEDGERBAL: -7.377,22 (obtido: ${resumoContaPosConciliacao.saldo_real})`
+    resumoPosConciliacao.saldo_real === extratoOfx.saldoFinal?.valor,
+    `Saldo igual ao LEDGERBAL: -5.432,10 (obtido: ${resumoPosConciliacao.saldo_real})`
   );
 
   // ------------------------------------------------------------
-  // ETAPA E: Desfazer o Lote do OFX Mantendo o do XLSX
+  // ETAPA E: Desfazer o lote do OFX mantendo o do XLSX
   // ------------------------------------------------------------
   console.log('\n--- Etapa (e): Desfazer o lote do OFX mantendo o XLSX ---');
   const resDesfazerOfx = await storage.desfazerImportacao(loteIdOfx);
 
   asserir(resDesfazerOfx.sucesso === true, 'Rollback do lote OFX executado com sucesso');
-  asserir(resDesfazerOfx.lancamentosRemovidos === 5, 'Exatamente os 5 novos lançamentos do OFX foram removidos');
-  asserir(resDesfazerOfx.lancamentosRestaurados === 395, 'Exatamente os 395 lançamentos enriquecidos foram restaurados aos snapshots');
+  asserir(resDesfazerOfx.lancamentosRemovidos === 3,   `3 lançamentos novos do OFX removidos (obtido: ${resDesfazerOfx.lancamentosRemovidos})`);
+  asserir(resDesfazerOfx.lancamentosRestaurados === 27, `27 enriquecidos restaurados aos snapshots (obtido: ${resDesfazerOfx.lancamentosRestaurados})`);
 
-  // Verifica integridade dos lançamentos do XLSX
-  const lancamentosDoXlsxRestantes = storage.cacheLancamentos.filter(
+  // XLSX deve permanecer 100% íntegro
+  const lancamentosXlsx = storage.cacheLancamentos.filter(
     (l) => l.origem_importacao?.lote_id === loteIdXlsx
   );
   asserir(
-    lancamentosDoXlsxRestantes.length === 1682,
-    `Todos os 1.682 lançamentos do lote XLSX continuam 100% íntegros no sistema (obtido: ${lancamentosDoXlsxRestantes.length})`
+    lancamentosXlsx.length === 37,
+    `37 lançamentos do XLSX continuam íntegros (obtido: ${lancamentosXlsx.length})`
   );
 
-  const loteOfxRegistro = storage.cacheImportacoes.find((i) => i.id === loteIdOfx);
-  asserir(loteOfxRegistro?.status === 'desfeita', "Lote do OFX marcado como status 'desfeita'");
+  const loteOfxReg = storage.cacheImportacoes.find((i) => i.id === loteIdOfx);
+  asserir(loteOfxReg?.status === 'desfeita', "Lote OFX marcado como 'desfeita'");
 
-  const loteXlsxRegistro = storage.cacheImportacoes.find((i) => i.id === loteIdXlsx);
-  asserir(loteXlsxRegistro?.status === 'concluida', "Lote do XLSX permanece com status 'concluida'");
+  const loteXlsxReg = storage.cacheImportacoes.find((i) => i.id === loteIdXlsx);
+  asserir(loteXlsxReg?.status === 'concluida', "Lote XLSX permanece como 'concluida'");
 
   // ------------------------------------------------------------
   // ETAPA F: Auditoria de Regras de Importação
   // ------------------------------------------------------------
   console.log('\n--- Etapa (f): Auditoria de Regras e Lotes em RegistroAuditoria ---');
 
-  // 1. Criar regra
   const novaRegra = storage.saveRegraImportacao({
     valor: 'ENEL DISTRIBUICAO',
     campo: 'descricao',
@@ -609,32 +610,26 @@ async function executarTesteE2E() {
   const auditCriarRegra = storage.cacheAuditoria.find(
     (a) => a.modulo === 'regras_importacao' && a.acao === 'criacao'
   );
-  asserir(!!auditCriarRegra, 'Auditoria registrada ao CRIAR regra de importação');
+  asserir(!!auditCriarRegra, 'Auditoria registrada ao CRIAR regra');
   asserir(auditCriarRegra?.descricao.includes('ENEL DISTRIBUICAO') || false, 'Auditoria cita o padrão cadastrado');
 
-  // 2. Editar regra
-  storage.saveRegraImportacao({
-    ...novaRegra,
-    ativa: false,
-  });
+  storage.saveRegraImportacao({ ...novaRegra, ativa: false });
   const auditEditarRegra = storage.cacheAuditoria.find(
     (a) => a.modulo === 'regras_importacao' && a.acao === 'edicao'
   );
-  asserir(!!auditEditarRegra, 'Auditoria registrada ao EDITAR regra de importação');
+  asserir(!!auditEditarRegra, 'Auditoria registrada ao EDITAR regra');
 
-  // 3. Excluir regra
   storage.deleteRegraImportacao(novaRegra.id);
   asserir(storage.cacheRegras.length === 0, 'Regra removida com sucesso');
   const auditExcluirRegra = storage.cacheAuditoria.find(
     (a) => a.modulo === 'regras_importacao' && a.acao === 'exclusao'
   );
-  asserir(!!auditExcluirRegra, 'Auditoria registrada ao EXCLUIR regra de importação');
+  asserir(!!auditExcluirRegra, 'Auditoria registrada ao EXCLUIR regra');
 
-  // 4. Auditoria de Desfazer
   const auditDesfazer = storage.cacheAuditoria.find(
     (a) => a.modulo === 'importacoes' && a.acao === 'desfazer'
   );
-  asserir(!!auditDesfazer, 'Auditoria registrada ao DESFAZER lote de importação');
+  asserir(!!auditDesfazer, 'Auditoria registrada ao DESFAZER lote');
   asserir(auditDesfazer?.descricao.includes(loteIdOfx) || false, 'Auditoria cita o ID do lote revertido');
 
   // ------------------------------------------------------------
@@ -655,3 +650,4 @@ executarTesteE2E().catch((err) => {
   console.error('Erro fatal no teste E2E:', err);
   process.exit(1);
 });
+

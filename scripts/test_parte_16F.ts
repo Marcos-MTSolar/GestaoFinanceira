@@ -84,12 +84,12 @@ class SimuladorRegressao16F {
         nome: 'Santander Corrente MT Solar',
         banco: 'Santander',
         banco_codigo: '033',
-        agencia: '3749',
-        numero_conta: '13004696-4',
+        agencia: '0001',
+        numero_conta: '99999999-9',
         tipo: 'corrente',
         saldo_inicial: 5000.0,
         data_saldo_inicial: '2025-12-31',
-        limite_cheque_especial: 8800.0,
+        limite_cheque_especial: 5000.0,
         taxa_juros_cheque_especial_mensal: 0,
         cor: '#CC0000',
         ativa: true,
@@ -517,7 +517,7 @@ async function executarTestes() {
   const contextoB: ContextoClassificacao = {
     contaId: 'conta-santander',
     bancoCodigo: '033',
-    contaNumero: '13004696-4',
+    contaNumero: '99999999-9',
     loteId: 'lote-fev-2026',
   };
 

@@ -64,8 +64,8 @@ class Simulador15J {
         nome: "Santander Corrente MT Solar",
         banco: "Santander",
         banco_codigo: "033",
-        agencia: "3749",
-        numero_conta: "13004696-4",
+        agencia: "0001",
+        numero_conta: "99999999-9",
         tipo: "corrente",
         saldo_inicial: -8475.22, // Saldo de hoje digitado pelo usuário
         data_saldo_inicial: "2026-10-16",
@@ -324,7 +324,7 @@ function criarItem(id: string, tipo: "credito" | "debito", valor: number, data: 
   } as ItemImportacao;
 }
 
-const LEDGERBAL_OFX_REAL = -7377.22;
+const LEDGERBAL_OFX_REAL = -5432.10;
 const DATA_LEDGERBAL = "2026-10-16";
 const PRIMEIRA_DATA_OFX = "2026-08-03";
 
@@ -373,8 +373,8 @@ async function executarTestesParte15J(): Promise<void> {
 
   asserir(analise.temDivergencia === true, "A.5 — Alerta de dupla contagem foi acionado (temDivergencia = true)");
   asserir(analise.saldoProjetado === -9048.86, `A.6 — Saldo projetado com erro de contagem dupla = -9.048,86 (obtido: ${analise.saldoProjetado})`);
-  asserir(analise.saldoBanco === LEDGERBAL_OFX_REAL, `A.7 — Saldo informado pelo banco (LEDGERBAL) = -7.377,22`);
-  asserir(analise.saldoInicialSugerido === -6803.58, `A.8 — Saldo inicial sugerido exato: -6.803,58 (obtido: ${analise.saldoInicialSugerido})`);
+  asserir(analise.saldoBanco === LEDGERBAL_OFX_REAL, `A.7 — Saldo informado pelo banco (LEDGERBAL) = -5.432,10`);
+  asserir(analise.saldoInicialSugerido === -4858.46, `A.8 — Saldo inicial sugerido exato: -4.858,46 (obtido: ${analise.saldoInicialSugerido})`);
   asserir(analise.dataSaldoInicialSugerida === "2026-08-02", `A.9 — Data sugerida é o dia anterior à 1ª transação: 2026-08-02 (obtido: ${analise.dataSaldoInicialSugerida})`);
 
   // ────────────────────────────────────────────────────────────────
@@ -404,9 +404,9 @@ async function executarTestesParte15J(): Promise<void> {
   const saldoFinalSantander = sim.calcularSaldoReal(santander.id);
   const saldoFinalSicoob = sim.calcularSaldoReal(sicoob.id);
 
-  asserir(saldoFinalSantander === LEDGERBAL_OFX_REAL, `B.1 — Saldo final Santander confere EXATAMENTE com LEDGERBAL: -7.377,22 (obtido: ${saldoFinalSantander})`);
+  asserir(saldoFinalSantander === LEDGERBAL_OFX_REAL, `B.1 — Saldo final Santander confere EXATAMENTE com LEDGERBAL: -5.432,10 (obtido: ${saldoFinalSantander})`);
   asserir(resultadoLote.diferencaConciliacao === 0, `B.2 — Diferença de conciliação foi zerada (0,00)`);
-  asserir(santander.saldo_inicial === -6803.58, `B.3 — Saldo inicial da conta alterado no cadastro para -6.803,58`);
+  asserir(santander.saldo_inicial === -4858.46, `B.3 — Saldo inicial da conta alterado no cadastro para -4.858,46`);
   asserir(santander.data_saldo_inicial === "2026-08-02", `B.4 — Data do saldo inicial alterada para 2026-08-02`);
 
   // Verifica que NÃO foi criado nenhum lançamento com origem 'ajuste'
@@ -544,7 +544,7 @@ async function executarTestesParte15J(): Promise<void> {
     periodo: { inicio: "2026-08-03", fim: "2026-10-16" },
     saldoBanco: { valor: LEDGERBAL_OFX_REAL, data: DATA_LEDGERBAL },
     saldoInicialAjustado: {
-      novoSaldoInicial: -6803.58,
+      novoSaldoInicial: -4858.46,
       novaDataSaldoInicial: "2026-08-02",
       saldoInicialAnterior: -8475.22,
       dataSaldoInicialAnterior: "2026-10-16",
@@ -552,7 +552,7 @@ async function executarTestesParte15J(): Promise<void> {
     itens: ITENS_OFX_90_DIAS,
   });
 
-  asserir(santanderE.saldo_inicial === -6803.58, "E.1 — Saldo inicial alterado durante a importação para -6.803,58");
+  asserir(santanderE.saldo_inicial === -4858.46, "E.1 — Saldo inicial alterado durante a importação para -4.858,46");
   asserir(sim.lancamentos.length === 6, `E.2 — 6 lançamentos criados no lote (obtido: ${sim.lancamentos.length})`);
 
   // 2. Aciona rollback da importação

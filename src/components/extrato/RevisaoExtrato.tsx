@@ -182,9 +182,8 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
   const [isSaldoDisponivel, setIsSaldoDisponivel] = useState<boolean>(false);
   const [confirmouMultiplasContas, setConfirmouMultiplasContas] = useState<boolean>(false);
 
-  // Tratamento do Contamax (Parte 15H / 16D: SEM padrão implícito!)
-  // Inicia como null para forçar escolha explícita quando existirem transações Contamax.
-  const [tratamentoContamax, setTratamentoContamax] = useState<'ignorar' | 'transferencia' | null>(null);
+  // PARTE 21B: Contamax em "Ignorar" é o padrão e não exige conta de aplicação. O saldo final continua correto.
+  const [tratamentoContamax, setTratamentoContamax] = useState<'ignorar' | 'transferencia'>('ignorar');
   const [contaAplicacaoId, setContaAplicacaoId] = useState<string>(''); // SEM PRÉ-SELEÇÃO!
   const [criandoContaContamax, setCriandoContaContamax] = useState<boolean>(false);
 
@@ -846,13 +845,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       return;
     }
 
-    // Parte 16D: bloqueia se há Contamax mas o usuário ainda não escolheu o tratamento
-    if (itensContamax.length > 0 && tratamentoContamax === null) {
-      alert('Existem movimentações Contamax neste extrato. Por favor, escolha o tratamento (Ignorar ou Transferência) antes de continuar.');
-      setContamaxRecolhido(false); // abre o bloco para o usuário ver
-      return;
-    }
-
+    // PARTE 21B: Contamax em "Ignorar" é o padrão. Apenas se escolher "transferência" exige conta de aplicação.
     if (tratamentoContamax === 'transferencia' && !contaAplicacaoId) {
       alert('Por favor, selecione ou crie a conta de aplicação antes de concluir a revisão das transferências Contamax.');
       return;
@@ -958,7 +951,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         nome: 'Santander Contamax (Aplicação)',
         banco: 'Santander',
         banco_codigo: '033',
-        agencia: contaPrincipal?.agencia || '3749',
+        agencia: contaPrincipal?.agencia || '0001',
         numero_conta: contaPrincipal?.numero_conta ? `${contaPrincipal.numero_conta}-APL` : undefined,
         tipo: 'poupanca',
         saldo_inicial: 0,
