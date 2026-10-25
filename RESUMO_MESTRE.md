@@ -1318,3 +1318,55 @@ match /importacoes/{loteId} {
 ⚠️ **ATENÇÃO:** A Parte 18D **substitui completamente** os mecanismos de ajuste de saldo das Partes 15H, 15J, 16D e 17B. Qualquer regressão nesses fluxos deve ser validada pelos 30 testes da suíte `test_parte_18C.ts`.
 
 ---
+
+### Parte 21A – Unificação de Conversão de Limite, Upsert por ID em Memória e Conferência Independente (2026-10-25)
+**Data:** 2026-10-25T07:15  
+**Arquivos modificados:**
+- `src/components/extrato/RevisaoExtrato.tsx`
+- `src/components/ImportarExtratoModal.tsx`
+- `src/services/storage.ts`
+- `scripts/test_parte_21A.ts`
+- `RESUMO_MESTRE.md`
+
+> **Nota:** Esta Parte 21A substitui formalmente as Partes 17A, 19A, 20A e 20B.
+
+**O que foi feito:**
+
+**1. Correção do Desconto Duplo de Limite de Cheque Especial:**
+- **Conversão em um só lugar (na tela):** O componente `RevisaoExtrato.tsx` calcula e converte o saldo real informado antes de enviar os parâmetros para gravação. O parâmetro repassado ao storage possui `isDisponivel: false`, assegurando que o storage NUNCA desconte o limite de novo.
+- **O storage NUNCA converte:** Em `storage.ts > importarExtratoLote`, a conversão dupla `converterDisponivelParaSaldoReal` foi removida; o serviço agora recebe rigorosamente o saldo real final apurado.
+- **Detecção de OFX LEDGERBAL:** No Passo 1 (`ImportarExtratoModal.tsx`), quando o extrato possui saldo final vindo do LEDGERBAL do OFX (`saldoFinal.valor !== undefined`), o seletor *"Este valor inclui o limite do cheque especial?"* é ocultado e nunca converte, visto que o LEDGERBAL já representa o saldo real líquido em conta corrente.
+- **Seletor de Limite no Passo 1:** Começa sempre desligado (`false`). Quando acionado pelo usuário em extratos sem LEDGERBAL (ex.: manual/XLSX), exibe dinamicamente:  
+  `Saldo real considerado: R$ X (informado Y − limite Z)` calculando em tempo real com base no limite cadastrado na conta.
+
+**2. Eliminação de Memória Duplicada (Upsert por ID no Módulo de Importação):**
+- Substituído todo `push` cego no cache síncrono após o commit em `storage.ts`:
+  - `cacheLancamentos`: atualizado via upsert por ID (`findIndex` substituindo pelo ID se já existente, ou adicionando caso novo).
+  - `cacheRegrasImportacao`: atualizado via upsert por ID.
+  - `cacheContas` e `cacheImportacoes`: sincronizados exclusivamente via upsert por ID.
+- **Deduplicação Estrita antes do Cálculo:** Antes de chamar `calcularResumoConta` e retornar o resultado da importação, `cacheLancamentos` passa por deduplicação estrita via `Map<string, Lancamento>`, garantindo que qualquer concorrência com o listener `onSnapshot` do Firestore produza saldos 100% íntegros e sem duplicação de valores.
+
+**3. Conferência Independente Pós-Gravação:**
+- Imediatamente após a gravação atômica, o saldo da conta é recalculado do zero via `calcularResumoConta(contaFinal)`.
+- Se o saldo apurado divergir do saldo real considerado (além da tolerância de R$ 0,01), a mensagem de divergência é retornada em `erroConferenciaSaldo`.
+- No Passo 3 (`ImportarExtratoModal.tsx`), se houver divergência, é apresentado um card com destaque visual em vermelho (`Atenção: Divergência na Conferência de Saldo`), permitindo visualizar todo o resultado do lote sem travar a interface e possibilitando ao usuário auditar ou acionar o botão Desfazer se necessário.
+
+**4. Testes com Simulador e Validação:**
+- Criada a suíte `scripts/test_parte_21A.ts` com 25 asserções testando:
+  1. OFX de 17 a 24/10/2026 (26 transações, soma -1.168,55, LEDGERBAL -8.545,77, limite 8.800,00) → saldo real -8.545,77, saldo inicial -7.377,22, saldo disponível no banco +254,23.
+  2. Usuário digitando 254,23 com seletor "inclui limite" ativado → saldo real -8.545,77, saldo inicial -7.377,22.
+  3. Matriz de combinações comprovando que nenhuma combinação subtrai o limite mais de uma vez.
+  4. Simulação de concorrência com entrega antecipada do `onSnapshot`: exatamente 26 registros em cache sem duplicatas.
+  5. Reimportação do mesmo lote gerando 0 novas transações e mantendo os saldos intactos.
+  6. Saldos absolutamente idênticos antes e depois de recarregar a página/memória.
+  7. Detecção e notificação clara na conferência independente em caso de divergência.
+
+**Métricas de Qualidade:**
+- **Testes Parte 21A:** 25/25 passaram com sucesso (100%)
+- **Testes Parte 18C:** 30/30 passaram com sucesso (100%)
+- **Testes Parte 18A:** 67/67 passaram com sucesso (100%)
+- **tsc (--noEmit):** 0 erros
+- **Build de Produção (Vite):** ✓ Sucesso (dist gerado em 18.16s)
+
+---
+

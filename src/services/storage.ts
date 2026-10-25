@@ -3763,11 +3763,10 @@ export const dbService = {
 
     if (infoSaldo && infoSaldo.valor !== undefined) {
       dataSaldoInformado = infoSaldo.data || params.periodo.fim || new Date().toISOString().split('T')[0];
-      if (params.saldoInformado?.isDisponivel) {
-        saldoRealInformado = converterDisponivelParaSaldoReal(infoSaldo.valor, conta.limite_cheque_especial);
-      } else {
-        saldoRealInformado = infoSaldo.valor;
-      }
+      // PARTE 21A: a conversão disponível→real é feita SOMENTE na tela (RevisaoExtrato).
+      // O storage recebe SEMPRE o saldo real já convertido; isDisponivel aqui é sempre false.
+      // Não aplicar converterDisponivelParaSaldoReal aqui.
+      saldoRealInformado = infoSaldo.valor;
     }
 
     if (isPrimeiraImportacaoConta && saldoRealInformado !== undefined && dataSaldoInformado) {
@@ -3815,17 +3814,35 @@ export const dbService = {
       }
     }
 
-    // 9. Atualização atômica do cache síncrono em memória
+    // 9. PARTE 21A: atualização atômica do cache sinâcrono — upsert por id
+    // (o onSnapshot pode ter entregue os mesmos documentos; push cego criaria duplicatas)
     for (const novo of novosLancamentos) {
-      cacheLancamentos.push(novo);
+      const idxExist = cacheLancamentos.findIndex((l) => l.id === novo.id);
+      if (idxExist >= 0) {
+        cacheLancamentos[idxExist] = novo; // substitui se já existe
+      } else {
+        cacheLancamentos.push(novo);
+      }
     }
     for (const atualizado of lancamentosAtualizados) {
       const idx = cacheLancamentos.findIndex((l) => l.id === atualizado.id);
       if (idx >= 0) cacheLancamentos[idx] = atualizado;
     }
     for (const reg of regrasSalvas) {
-      cacheRegrasImportacao.push(reg);
+      const idxReg = cacheRegrasImportacao.findIndex((r) => r.id === reg.id);
+      if (idxReg >= 0) {
+        cacheRegrasImportacao[idxReg] = reg; // upsert: substitui se já existe
+      } else {
+        cacheRegrasImportacao.push(reg);
+      }
     }
+
+    // Deduplicação estrita garantida: calcula os saldos de resultado só com dados deduplicados por ID
+    const mapaLancamentosDeduplicados = new Map<string, Lancamento>();
+    for (const l of cacheLancamentos) {
+      mapaLancamentosDeduplicados.set(l.id, l);
+    }
+    cacheLancamentos = Array.from(mapaLancamentosDeduplicados.values());
 
     // 10. Recalcula saldos finais
     const contaFinal = this.getContaById(params.contaId) || conta;

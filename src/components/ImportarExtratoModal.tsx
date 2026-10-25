@@ -328,7 +328,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
         saldoInformado: temValorValido ? {
           valor: valorNum,
           data: saldoInfo.data || a.extrato!.saldoFinal?.data || a.extrato!.periodo.fim || new Date().toISOString().split('T')[0],
-          isDisponivel: saldoInfo.incluiLimiteChequeEspecial,
+          isDisponivel: a.extrato!.saldoFinal?.valor !== undefined ? false : saldoInfo.incluiLimiteChequeEspecial,
           origem: a.extrato!.saldoFinal?.valor !== undefined && valorNum === a.extrato!.saldoFinal.valor
             ? ('ofx_ledgerbal' as const)
             : ('usuario' as const)
@@ -401,11 +401,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
         saldoInformado: dados.saldoInformado || arquivoAtivo.saldoInformado
       });
 
-      // Exibir erro de conferência pós-gravação (Parte 18C) sem tentar corrigir
-      if (res.erroConferenciaSaldo) {
-        setErroGravacao(res.erroConferenciaSaldo);
-      }
-
+      // PARTE 21A: divergência de saldo não anula a gravação; erroConferenciaSaldo é exibido com destaque na tela de resultado
       setResultadoLote(res);
       setPasso(3);
     } catch (err) {
@@ -581,6 +577,26 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                     </h4>
                     <p className="text-xs text-amber-800">
                       O lote foi registrado com status <strong>parcial</strong>. Revise os avisos e informações abaixo antes de prosseguir.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* PARTE 21A: Destaque de Divergência na Conferência Independente de Saldo */}
+              {resultadoLote.erroConferenciaSaldo && (
+                <div className="bg-red-50 border-2 border-red-400 rounded-2xl p-4.5 flex items-start gap-3 shadow-md animate-in fade-in">
+                  <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center text-red-600 shrink-0 mt-0.5">
+                    <AlertCircle className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1.5 flex-1">
+                    <h4 className="font-serif text-sm font-black text-red-950 uppercase tracking-wide flex items-center gap-2">
+                      <span>Atenção: Divergência na Conferência de Saldo</span>
+                    </h4>
+                    <p className="text-xs text-red-800 leading-relaxed font-semibold">
+                      {resultadoLote.erroConferenciaSaldo}
+                    </p>
+                    <p className="text-[11px] text-red-700">
+                      Os lançamentos foram gravados com sucesso. Revise as movimentações ou o saldo informado para identificar a origem da diferença.
                     </p>
                   </div>
                 </div>
@@ -1229,23 +1245,38 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                                         </div>
                                       </div>
 
-                                      <label className="flex items-center gap-2 pt-1 border-t border-slate-100 text-[11px] font-semibold text-slate-700 cursor-pointer">
-                                        <input
-                                          type="checkbox"
-                                          checked={saldoInfo.incluiLimiteChequeEspecial}
-                                          onChange={(e) =>
-                                            setSaldosInformadosPasso1(prev => ({
-                                              ...prev,
-                                              [item.id]: {
-                                                ...saldoInfo,
-                                                incluiLimiteChequeEspecial: e.target.checked
+                                      {/* PARTE 21A: Se o saldo vier do LEDGERBAL do OFX, esconde o seletor "inclui o limite" e nunca converte (já é saldo em conta) */}
+                                      {item.extrato?.saldoFinal?.valor === undefined && (
+                                        <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                                          <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-700 cursor-pointer">
+                                            <input
+                                              type="checkbox"
+                                              checked={saldoInfo.incluiLimiteChequeEspecial}
+                                              onChange={(e) =>
+                                                setSaldosInformadosPasso1(prev => ({
+                                                  ...prev,
+                                                  [item.id]: {
+                                                    ...saldoInfo,
+                                                    incluiLimiteChequeEspecial: e.target.checked
+                                                  }
+                                                }))
                                               }
-                                            }))
-                                          }
-                                          className="rounded border-slate-300 text-[#003064] focus:ring-[#003064] cursor-pointer"
-                                        />
-                                        <span>Este valor inclui o limite do cheque especial?</span>
-                                      </label>
+                                              className="rounded border-slate-300 text-[#003064] focus:ring-[#003064] cursor-pointer"
+                                            />
+                                            <span>Este valor inclui o limite do cheque especial?</span>
+                                          </label>
+                                          {saldoInfo.incluiLimiteChequeEspecial && (() => {
+                                            const informadoY = Number(saldoInfo.valor) || 0;
+                                            const limiteZ = contaEscolhida.limite_cheque_especial || 0;
+                                            const saldoRealX = informadoY - limiteZ;
+                                            return (
+                                              <p className="text-[11px] font-medium text-blue-900 bg-blue-100/70 p-2 rounded-lg border border-blue-200">
+                                                Saldo real considerado: <strong>{formatarMoeda(saldoRealX)}</strong> (informado {formatarMoeda(informadoY)} − limite {formatarMoeda(limiteZ)})
+                                              </p>
+                                            );
+                                          })()}
+                                        </div>
+                                      )}
                                     </div>
                                   </div>
                                 );

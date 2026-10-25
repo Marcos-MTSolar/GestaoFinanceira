@@ -12,6 +12,7 @@ coverage/
 src/exemplos_extratos/
 *.ofx
 *.qfx
+*.xlsx
 
 # Backups e temporários
 *.bak

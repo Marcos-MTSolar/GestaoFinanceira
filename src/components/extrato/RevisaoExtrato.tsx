@@ -890,10 +890,12 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         valor: saldoRealInformadoEfetivo.valorReal,
         data: saldoRealInformadoEfetivo.data,
       };
+      // PARTE 21A – A conversão disponível→real já foi feita aqui na tela.
+      // O storage NUNCA deve converter novamente: isDisponivel=false indica que o valor já é o saldo real.
       saldoInformadoParam = {
         valor: saldoRealInformadoEfetivo.valorReal,
         data: saldoRealInformadoEfetivo.data,
-        isDisponivel: saldoRealInformadoEfetivo.isDisponivel,
+        isDisponivel: false,   // sempre false: conversão já aplicada acima
         origem: saldoRealInformadoEfetivo.origem,
       };
     }
