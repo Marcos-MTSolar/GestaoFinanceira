@@ -7,11 +7,12 @@ export interface DadosFormatacaoImportacao {
   descricaoOriginal: string;
   contraparte?: string;
   documento?: string;
+  detalhes?: string;
   fitid?: string;
   bancoCodigo: string;
   bancoNome?: string;
   nomeArquivo: string;
-  formato: 'ofx' | 'xlsx';
+  formato: 'ofx' | 'xlsx' | 'pdf';
   loteId: string;
   dataHoraImportacao?: string;
 }
@@ -20,11 +21,12 @@ export interface CamposOrigemDetalhados {
   historicoOriginal: string;
   contraparte?: string;
   documento?: string;
+  detalhes?: string;
   fitid?: string;
   bancoCodigo?: string;
   bancoNome?: string;
   nomeArquivo?: string;
-  formato?: 'ofx' | 'xlsx';
+  formato?: 'ofx' | 'xlsx' | 'pdf';
   loteId?: string;
   dataHoraImportacao?: string;
   assinaturaFraca?: string;
@@ -154,6 +156,10 @@ export function formatarObservacoesImportacao(dados: DadosFormatacaoImportacao):
     linhas.push(`• Documento: ${dados.documento.trim()}`);
   }
 
+  if (dados.detalhes && dados.detalhes.trim()) {
+    linhas.push(`• Detalhes do banco: ${dados.detalhes.trim()}`);
+  }
+
   if (dados.fitid && dados.fitid.trim()) {
     linhas.push(`• FITID: ${dados.fitid.trim()}`);
   }
@@ -193,6 +199,10 @@ export function complementarObservacoesEnriquecimento(
 
   if (dados.documento && dados.documento.trim()) {
     linhasEnriquecimento.push(`• Documento: ${dados.documento.trim()}`);
+  }
+
+  if (dados.detalhes && dados.detalhes.trim()) {
+    linhasEnriquecimento.push(`• Detalhes do banco: ${dados.detalhes.trim()}`);
   }
 
   if (dados.fitid && dados.fitid.trim()) {
@@ -247,6 +257,11 @@ export function extrairCamposOrigem(
     extrairLinha('Documento') ||
     undefined;
 
+  const detalhes =
+    (origemImportacao as any)?.detalhes ||
+    extrairLinha('Detalhes do banco') ||
+    undefined;
+
   const fitid =
     origemImportacao?.fitid ||
     extrairLinha('FITID') ||
@@ -260,7 +275,7 @@ export function extrairCamposOrigem(
 
   const formatoStr =
     origemImportacao?.formato ||
-    (extrairLinha('Formato')?.toLowerCase() as 'ofx' | 'xlsx' | undefined);
+    (extrairLinha('Formato')?.toLowerCase() as 'ofx' | 'xlsx' | 'pdf' | undefined);
 
   const loteId =
     origemImportacao?.lote_id ||
@@ -291,6 +306,7 @@ export function extrairCamposOrigem(
     historicoOriginal,
     contraparte,
     documento,
+    detalhes,
     fitid,
     bancoCodigo: origemImportacao?.banco_codigo,
     bancoNome: bancoStr,

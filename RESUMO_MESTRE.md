@@ -1,8 +1,164 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 25/10/2026 09:05:00 (Parte 21B – Saldo de Referência Automático, Retroativo e Reversível em Qualquer Ordem de Extratos)
+**Última Atualização:** 26/10/2026 19:30:00 (Parte 22D – Importar o PDF do Sicoob de ponta a ponta)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
+  - **Parte 22D – Importar o PDF do Sicoob de ponta a ponta (Conta, Saldo Automático, Observações, Histórico e Desfazer)**:
+    - **Objetivo**: Integrar o suporte a arquivos PDF do Banco Sicoob (`756`) de ponta a ponta no sistema de conciliação e gestão financeira, contemplando resolução automática de conta, captura de saldo de referência (`extrato_pdf`), gravação e restauração de saldo ao desfazer importação, enriquecimento de observações/histórico com detalhes bancários e preservação de isolamento multi-lote/multi-conta.
+    - **1. Saldo Automático Generalizado (`ImportarExtratoModal.tsx`)**:
+      - Passo 1: Ocultação automática dos campos manuais de saldo ("Saldo em conta" e "O saldo informado inclui o limite") para qualquer extrato com `saldoFinal` definido (`extratoLido.saldoFinal !== undefined`), não restringindo mais apenas ao formato 'ofx'. O saldo do Sicoob ("SALDO DO DIA") é capturado diretamente do extrato sem o limite de cheque especial.
+    - **2. Tipagem e Origem do Saldo de Referência (`src/types/index.ts`)**:
+      - Atualizado tipo `saldo_referencia.origem` para `'ofx_ledgerbal' | 'extrato_pdf' | 'usuario'` em `ContaBancaria`.
+      - Adicionado campo opcional `detalhes?: string;` em `TransacaoExtrato` (`src/utils/extrato/tipos.ts`), permitindo repassar informações complementares (CPF/CNPJ, DOC, tipo de documento) para a visualização na UI e persistência no storage.
+    - **3. Persistência e Desfazer no Storage (`src/services/storage.ts`)**:
+      - Na importação em lote (`importarExtratoLote`), quando o extrato possui saldo final definido (OFX ou PDF), o saldo do banco é gravado no lote com `origem: 'extrato_pdf'` e o `saldo_referencia` da conta é atualizado atomicamente recalculando o saldo inicial retroativo.
+      - Na operação de desfazer importação (`desfazerImportacao`), se o lote desfeito era a referência ativa da conta, o sistema busca o lote remanescente mais recente com saldo de banco e restaura a referência para ele, ou retrocede ao saldo inicial anterior à importação caso não haja outros lotes com saldo.
+    - **4. Enriquecimento de Observações e UI de Revisão**:
+      - `observacoesHelper.ts`: Adicionado suporte a `detalhes` do extrato bancário na montagem das observações dos lançamentos.
+      - `RevisaoExtrato.tsx`: Exibição dos detalhes adicionais da transação nas linhas da tabela de revisão e modal de detalhes.
+    - **5. Parser Sicoob PDF (`src/utils/extrato/parsers/sicoobPdf.ts`)**:
+      - Conectado o campo `detalhes: entrada.detalhes` na montagem das transações finais retornadas pelo parser puro.
+    - **6. Suíte de Testes Automatizados `scripts/test_parte_22D.ts`** (46 asserções / 100% aprovados):
+      - **Cenário (a)**: Importação de PDF A (01-15/10) e depois PDF B (10-31/10) — saldo de referência final atualizado corretamente para o saldo do PDF B (3900,00) com 2 deduplicações por assinatura fraca e 1 movimentação interna ignorada.
+      - **Cenário (b)**: Ordem inversa — PDF B primeiro, depois PDF A. Como o saldo do PDF B é o mais recente no tempo (31/10 vs 15/10), o saldo de referência final permanece ancorado em 31/10 (3900,00).
+      - **Cenário (c)**: Desfazer lote PDF B — lançamentos do lote B são expurgados e a referência de saldo é imediatamente restaurada para o PDF A (2200,00 em 15/10).
+      - **Cenário (d)**: Movimentações internas ignoradas — extrato contendo apenas movimentações internas (RDC, poupança, capital) gera zero lançamentos financeiros e mantém o saldo inicial perfeitamente consistente com o saldo de referência.
+      - **Cenário (e)**: Isolamento de conta — importação em conta Sicoob não altera lançamentos nem saldos de outras contas cadastradas.
+      - **Cenário (f)**: E2E — integração completa desde a extração sintética dos itens do PDF com `parsearSicoobPdf`, resolução da conta via `resolverConta` e execução em lote com `importarExtratoLote`.
+    - **7. Qualidade de Código, Segurança & Zero Regressão**:
+      - Verificação estrita de ausência de dados sensíveis e privados via git grep (zero ocorrências).
+      - `npx tsc --noEmit`: 0 erros.
+      - `npm run build`: código 0 (sucesso), chunk `pdf` mantido totalmente assíncrono e isolado.
+      - Todos os testes de extratos executados com 100% de sucesso (`test_extrato_dedupe.ts`, `test_parte_21B.ts`, `test_parte_22A.ts`, `test_parte_22B.ts`, `test_parte_22C.ts`, `test_parte_22D.ts`).
+    - **Data e hora da alteração**: 26/10/2026 19:30:00
+    - **Arquivos criados**: `scripts/test_parte_22D.ts`.
+    - **Arquivos modificados**: `src/types/index.ts`, `src/utils/extrato/tipos.ts`, `src/utils/extrato/parsers/sicoobPdf.ts`, `src/services/storage.ts`, `src/components/ImportarExtratoModal.tsx`, `src/components/extrato/RevisaoExtrato.tsx`, `src/components/extrato/HistoricoImportacoes.tsx`, `src/utils/extrato/observacoesHelper.ts`, `scripts/test_parte_21B.ts`, `RESUMO_MESTRE.md`.
+  - **Parte 22C – Regras de Classificação do Sicoob e Movimentações Internas (Aplicação, Poupança, Capital)**:
+    - **Objetivo**: Implementar o catálogo de regras de classificação para extratos do Banco Sicoob (`756`), registrar em `REGRAS_POR_BANCO` e generalizar o tratamento de movimentações internas na interface do usuário (substituindo termos exclusivos "Contamax" por nomenclatura genérica multibanço quando o extrato for do Sicoob).
+    - **1. Regras do Sicoob em `src/utils/extrato/regras/sicoob.ts`**:
+      - `REGRAS_SICOOB`: Conjunto ordenado de regras que casam contra a `descricaoNormalizada`:
+        - **Movimentações internas** (`natureza: 'movimentacao_interna'`, `tipoLancamentoSugerido: 'transferencia'`, `categoriaSugeridaNome: undefined`):
+          - `/APLICACAO RDC|RESGATE RDC|RESG RDC|APLIC RDC/i` (aplicações e resgates em RDC)
+          - `/TRANSF POUPANCA/i` (transferências de/para poupança)
+          - `/SUBS INTEG|INTEGRALIZ|COTA CAPITAL/i` (subscrição e integralização de cotas de capital)
+        - **Tarifas bancárias** (`natureza: 'tarifa_bancaria'`, `tipoLancamentoSugerido: 'despesa'`, `categoriaSugeridaNome: 'Taxas bancárias'`):
+          - `/\bTARIFA|\bCESTA\b|\bIOF\b|JUROS/i`
+        - **Recebimentos** (`natureza: 'recebimento'`, `tipoLancamentoSugerido: 'receita'`, `categoriaSugeridaNome: 'Outras receitas'`):
+          - `/^DEP DIN|^CR ANT|CREDITO PIX|CRED PIX|RECEBIMENTO PIX|PIX RECEBID/i`
+        - **Pagamentos** (`natureza: 'pagamento'`, `tipoLancamentoSugerido: 'despesa'`, `categoriaSugeridaNome: 'Outras despesas'`):
+          - `/DEBITO PIX|DEB PIX|PAGAMENTO PIX|PIX ENVIAD|PIX EMITID|PAGAMENTO BOLETO|LIQUIDACAO BOLETO/i`
+      - Documentados os padrões confirmados em extratos reais (`DEP DIN AG`, `CR ANT MSTD`, `DEB PARC SUBS INTEG`, `APLICACAO RDC`, `DEB TRANSF POUPANCA`) e os padrões prováveis. Transações sem correspondência retornam `natureza: 'indefinido'`.
+    - **2. Registro em `src/utils/extrato/classificarTransacao.ts` e exportações em `index.ts`**:
+      - `REGRAS_POR_BANCO['756'] = REGRAS_SICOOB`.
+      - Exportado `REGRAS_SICOOB` em `src/utils/extrato/index.ts`.
+    - **3. Generalização de Movimentações Internas na UI (`RevisaoExtrato.tsx`)**:
+      - Detecção de banco do extrato (`isSantander`, `isSicoob`).
+      - Nome sugerido de conta de aplicação: `'Santander Contamax (Aplicação)'` para Santander ('033'), `'Sicoob Aplicação'` para Sicoob ('756') e `'Conta de Aplicação'` para outros.
+      - Rótulo do botão de filtro de status: `'Internas (Contamax)'` apenas para Santander ('033'); `'Movimentações internas (aplicação, poupança, capital)'` para Sicoob/demais.
+      - Alertas, resumo expandido e seletor de tratamento adaptados dinamicamente para o banco correspondente.
+    - **4. Suíte de Testes Automatizados `scripts/test_parte_22C.ts`** (4 blocos / 100% aprovados):
+      - **Bloco 1**: Classificação correta de todas as 12 descrições com banco '756' (DEP DIN AG, CR ANT MSTD, DEB PARC SUBS INTEG, APLICACAO RDC, DEB TRANSF POUPANCA, CRED TRANSF POUPANCA, DEB TARIFA PACOTE, DEB IOF, CRED PIX, DEB PIX, LIQUIDACAO BOLETO, XYZ DESCONHECIDO).
+      - **Bloco 2**: Isolamento estrito de regras — padrões exclusivos do Sicoob não afetam o banco Santander ('033') permanecendo `indefinido`.
+      - **Bloco 3**: Regras existentes do Santander ('033') preservadas intactas sem nenhuma regressão.
+      - **Bloco 4**: Movimentações internas no tratamento padrão "ignorar" não geram lançamento e mantêm o saldo real perfeitamente correto.
+    - **5. Qualidade de Código & Verificação Completa**:
+      - `npx tsc --noEmit`: 0 erros.
+      - `npm run build`: código 0 (sucesso), chunks de PDF mantidos isolados fora do bundle principal.
+      - Todas as suítes de teste de extratos executadas e aprovadas com 100%:
+        - `test_parte_22C.ts`: 30 asserções / 4 blocos aprovados.
+        - `test_parte_22B.ts`: 6 testes aprovados.
+        - `test_parte_22A.ts`: 30 asserções aprovadas.
+        - `test_parte_21B.ts`: 48 asserções aprovadas.
+        - `test_extrato_parsers.ts`: 51 asserções aprovadas.
+        - `test_extrato_dedupe.ts`: 32 asserções aprovadas.
+        - Total acumulado: 197 testes/asserções sem nenhuma falha.
+    - **Data e hora da alteração**: 26/10/2026 18:58:00
+    - **Arquivos criados**: `src/utils/extrato/regras/sicoob.ts`, `scripts/test_parte_22C.ts`.
+    - **Arquivos modificados**: `src/utils/extrato/classificarTransacao.ts`, `src/utils/extrato/index.ts`, `src/components/extrato/RevisaoExtrato.tsx`, `scripts/test_parte_22A.ts`, `scripts/test_parte_22B.ts`, `RESUMO_MESTRE.md`.
+
+  - **Parte 22B – Parser do extrato PDF do Sicoob (função pura) e Registro de Banco**:
+    - **Objetivo**: Implementar o parser puro para extratos em PDF do Sicoob (código 756) e registrar o banco em `bancos.ts`, com conferência matemática de saldo contra `SALDO ANTERIOR` e `SALDO DO DIA`, além de tolerância a C/D colado ou avulso.
+    - **1. Parser puro em `src/utils/extrato/parsers/sicoobPdf.ts`**:
+      - Função pura `parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido` que processa itens de texto sem importar ou depender de pdfjs.
+      - Exportada a classe de erro customizada `ErroConciliacao extends Error` para falhas na verificação de saldo.
+      - Extração do cabeçalho Sicoob: Banco Sicoob (`756`), Cooperativa (`agencia`), Conta e dígito (`conta` e `acctIdBruto`), Titular e Período (validação de período máximo de 366 dias).
+      - Inferência de ano para datas no formato `dd/mm` ou `dd/mm/aaaa`, considerando virada de ano em relação ao período do extrato.
+      - Agrupamento em blocos por linha de data e linha de controle (`SALDO ANTERIOR`, `SALDO DO DIA`, `SALDO BLOQ.ANTERIOR`, `CHEQUE ESPECIAL`, `RESUMO`), com suporte a linhas de controle com ou sem item de data precedendo.
+      - Tratamento flexível de indicador de Débito/Crédito tanto colado ao valor monetário (`1.500,00C` / `200,00D`) quanto em item subsequente isolado (`C` / `D`). Descarte de valores com sinal `*` (saldo bloqueado/informativo).
+      - Extração de `contraparte`, `documento` (`DOC.:`) e detalhes da transação sem contaminar a descrição original e normalizada.
+      - Atribuição determinística de `ordemNoDia` e geração do `idTemporario` (`pdf_{data}_L{linhaOrigem}_{ordemNoDia}`).
+      - **Conferência de Saldo**: Validação estrita entre `SALDO ANTERIOR`, soma dos movimentos de débito/crédito e cada `SALDO DO DIA`. Dispara `ErroConciliacao` com mensagem clara e explicativa caso haja qualquer divergência matemática > R$ 0,005 (evitando perda silenciosa de transações).
+      - Extração do `saldoFinal` baseado no último `SALDO DO DIA` apurado.
+    - **2. Registro do Banco Sicoob em `src/utils/extrato/bancos.ts`**:
+      - `BANCO_SICOOB`: código Febraban `756`, nome `'Sicoob'`, formatos suportados `['pdf']`.
+      - Detecção de conteúdo: formato `pdf` e presença de `"SICOOB"` e `"EXTRATO CONTA CORRENTE"` nos itens do cabeçalho.
+      - Adicionado a `BANCOS_REGISTRADOS`.
+    - **3. Exportações em `src/utils/extrato/index.ts`**:
+      - Exportado `parsearSicoobPdf`, `ErroConciliacao` e `BANCO_SICOOB`.
+    - **4. Suíte de testes automatizados `scripts/test_parte_22B.ts`** (6 cenários / 100% aprovados):
+      - Cenário 1: Extrato válido completo com créditos, débitos, detalhes de DOC e contraparte.
+      - Cenário 2: Tratamento de C/D colado vs C/D em item separado.
+      - Cenário 3: Linhas de controle ignoradas como transações (SALDO ANTERIOR, SALDO DO DIA, SALDO BLOQ.ANTERIOR, CHEQUE ESPECIAL, RESUMO).
+      - Cenário 4: Conferência de saldo com sucesso quando a matemática bate perfeitamente.
+      - Cenário 5: Disparo de `ErroConciliacao` quando a matemática não bate (simulação de item ausente/linha perdida).
+      - Cenário 6: Detecção do banco em `bancos.ts` via `contexto.itensPdf` (positiva, negativa por banco, negativa por formato e execução de parser).
+    - **5. Build & Regressão**:
+      - `npm run build`: compilado com sucesso, chunk de PDF mantido isolado.
+      - `scripts/test_parte_22A.ts`: 30/30 testes passaram.
+      - `scripts/test_parte_22B.ts`: 6/6 testes passaram.
+      - `scripts/test_parte_21B.ts`: 48/48 testes passaram.
+    - **Data e hora da alteração**: 26/10/2026 18:45:00
+    - **Arquivos criados**: `src/utils/extrato/parsers/sicoobPdf.ts`, `scripts/test_parte_22B.ts`.
+    - **Arquivos modificados**: `src/utils/extrato/bancos.ts`, `src/utils/extrato/index.ts`, `RESUMO_MESTRE.md`.
+
+  - **Parte 22A – Infraestrutura PDF no Módulo de Extratos**:
+    - **Objetivo**: Preparar toda a infraestrutura para receber extratos em formato PDF (sem ainda registrar nenhum banco concreto). As partes 22B–22D adicionarão o parser específico do Sicoob.
+    - **1. Dependências já instaladas** (verificado): `pdfjs-dist` versão exata `4.10.38` (sem `^`), `pdf-lib ^1.17.1` como devDependency para geração de PDFs nos testes.
+    - **2. Novo tipo `ItemPdf` e `FormatoExtrato` atualizado** (`src/utils/extrato/tipos.ts`):
+      - `FormatoExtrato` passa a ser `'ofx' | 'xlsx' | 'pdf'`.
+      - Nova interface `ItemPdf { pagina: number; texto: string; x: number; xFim: number; y: number }` com `y` medido do TOPO da página.
+      - `ContextoDeteccao` ganhou o campo `itensPdf?: ItemPdf[]`.
+    - **3. Atualização de todos os tipos que usavam `'ofx' | 'xlsx'`**:
+      - `src/types/index.ts`: `OrigemImportacao.formato`, `RegistroImportacao.formato`, `ParamsImportacaoLote.formato`.
+      - `src/utils/extrato/observacoesHelper.ts`: `DadosFormatacaoImportacao.formato`, `CamposOrigemDetalhados.formato`, cast interno.
+      - `src/components/extrato/RevisaoExtrato.tsx`: `ItemRevisaoExtrato.formato`, `RevisaoExtratoProps.extratosComConta[].formato`.
+      - `scripts/test_parte_21B.ts`, `scripts/test_extrato_dedupe.ts`: funções locais com parâmetro de formato.
+    - **4. Novo arquivo `src/utils/extrato/leitorPdf.ts`**:
+      - Exporta `extrairItensPdf(buffer: ArrayBuffer): Promise<ItemPdf[]>`.
+      - Carregamento dinâmico (import()) do pdfjs — **chunk separado no build**, fora do bundle principal.
+      - No navegador: resolve o worker via `new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).href`.
+      - No Node (testes via tsx): usa `pdfjs-dist/legacy/build/pdf.mjs` sem worker.
+      - Passa cópia do buffer (`buffer.slice(0)`) para evitar desanexação pelo worker.
+      - Y calculado do topo: `y = alturaPagina − transform[5]`.
+      - Erros em português: senha → `"PDF protegido por senha."`, sem texto → `"PDF sem texto selecionável (imagem ou digitalizado). Baixe o extrato em PDF diretamente pelo app do banco."`.
+      - Preserva estritamente a ordem do fluxo de texto do PDF (não reordena).
+    - **5. `detectarBanco.ts` atualizado**:
+      - `identificarFormatoPorConteudo`: detecta `%PDF-` (bytes `25 50 44 46 2d`) como `'pdf'`.
+      - Mensagem de erro atualizada para citar OFX, XLSX **e PDF**.
+      - `detectarBancoEFormato` tornado **assíncrono** (`async/await`) para suportar a extração de PDF.
+      - Para `'pdf'`: preenche `contexto.itensPdf` chamando `extrairItensPdf`.
+      - PDF de banco desconhecido → lança `"Banco emissor não suportado..."` (comportamento esperado).
+    - **6. `src/utils/extrato/index.ts`**: exporta `leitorPdf`; `lerExtrato` aguarda `detectarBancoEFormato` com `await`.
+    - **7. UI atualizada**:
+      - `ImportarExtratoModal.tsx`: `accept` do input inclui `.pdf`; texto "OFX, XLSX ou PDF"; ícone `FileText` vermelho para PDF.
+      - `HistoricoImportacoes.tsx`: tabela desktop e cards mobile tratam `formato === 'pdf'` com `FileText` vermelho; OFX usa `FileCode` azul.
+    - **8. Verificação do build**:
+      - `dist/assets/pdf.worker.min-yatZIOMy.mjs` → worker em chunk separado ✅
+      - `dist/assets/pdf-7iXkmoil.js` → pdfjs em chunk separado ✅
+      - Bundle principal sem pdfjs incorporado ✅
+    - **9. Suíte de testes `scripts/test_parte_22A.ts`** (30 asserções / 0 falhas):
+      - **Bloco 1**: Magic bytes `%PDF-`, OFX e XLSX detectados corretamente; arquivo aleatório lança `ErroBancoNaoSuportado` com mensagem que cita OFX, XLSX e PDF.
+      - **Bloco 2**: PDF gerado em memória com pdf-lib; `extrairItensPdf` retorna 6 itens **na ordem de desenho** com x e y dentro de ±1 do esperado; `xFim > x`; item acima da data tem y menor.
+      - **Bloco 3**: PDF de banco desconhecido → `ErroBancoNaoSuportado`.
+      - **Bloco 4**: PDF sem texto → erro específico "sem texto selecionável".
+      - **Bloco 5**: Arquivo inválido via `lerExtrato` → `ErroBancoNaoSuportado`.
+      - **Bloco 6**: OFX e XLSX continuam funcionando (regressão) após `detectarBancoEFormato` virar assíncrona.
+    - **tsc**: 0 erros; `npm run build`: ✓ código 0.
+    - **Data e hora da alteração**: 26/10/2026 18:25:00
+    - **Arquivos criados**: `src/utils/extrato/leitorPdf.ts`, `scripts/test_parte_22A.ts`.
+    - **Arquivos modificados**: `src/utils/extrato/tipos.ts`, `src/utils/extrato/detectarBanco.ts`, `src/utils/extrato/index.ts`, `src/types/index.ts`, `src/utils/extrato/observacoesHelper.ts`, `src/components/extrato/RevisaoExtrato.tsx`, `src/components/ImportarExtratoModal.tsx`, `src/components/extrato/HistoricoImportacoes.tsx`, `scripts/test_parte_21B.ts`, `scripts/test_extrato_dedupe.ts`, `package.json`, `RESUMO_MESTRE.md`.
+
+
   - **Parte 21B – Saldo de Referência Automático, Retroativo e Reversível (Substitui "só na primeira importação" da Parte 18C)**:
     - **Objetivo Central**: O usuário nunca informa saldo inicial manualmente. O app armazena o último saldo real conhecido do banco (`saldo_referencia`) e recalcula o saldo inicial automaticamente após cada importação (e após Desfazer), independentemente da ordem cronológica em que os arquivos forem importados.
     - **1. Tipo `ContaBancaria` (`src/types/index.ts`)**:
@@ -42,7 +198,7 @@
 
   - **Parte 21A-ter – Sanitização de Dados Reais por Fictícios e Homologação dos Testes**:
     - **Higienização de Dados Reais**:
-      - Substituição de dados reais (agência 3749 -> 0001, conta 13004696-4 / 130046964 -> 99999999-9 / 999999999, ACCTID 0001999999999, saldos reais -7.377,22 e -8.545,77 por valores equivalentes -5.432,10 e -4.321,10 com limite 5.000) em todos os fixtures, scripts geradores, suíte de testes e componentes de interface.
+      - Substituição de dados reais (agência XXXX -> 0001, conta XXXXXXXX-X / XXXXXXXXX -> 99999999-9 / 999999999, ACCTID 0001999999999, saldos fictícios por valores equivalentes com limite 5.000) em todos os fixtures, scripts geradores, suíte de testes e componentes de interface.
       - Garantia de estrita fidelidade matemática nos testes de cálculo de saldo sem afrouxar nenhuma asserção.
     - **Data e hora da alteração**: 25/10/2026 08:35:00
     - **Arquivos modificados**: `scripts/gerar_fixtures.ts`, `scripts/fixtures/extrato_sintetico_santander.ofx`, `scripts/fixtures/extrato_sintetico_santander.xlsx`, `scripts/test_extrato_parsers.ts`, `scripts/test_extrato_dedupe.ts`, `scripts/test_extrato_regras.ts`, `scripts/test_extrato_e2e.ts`, `scripts/test_resolver_conta.ts`, `scripts/test_isolamento_importacao.ts`, `scripts/test_parte_15H.ts`, `scripts/test_parte_15I.ts`, `scripts/test_parte_15J.ts`, `scripts/test_parte_16C.ts`, `scripts/test_parte_16F.ts`, `scripts/test_parte_18A.ts`, `scripts/test_parte_18B.ts`, `scripts/test_parte_18C.ts`, `scripts/test_parte_21A.ts`, `src/components/ImportarExtratoModal.tsx`, `src/components/extrato/RevisaoExtrato.tsx`, `src/pages/ContasBancarias.tsx`, `src/utils/extrato/resolverConta.ts`, `src/utils/extrato/tipos.ts`, `RESUMO_MESTRE.md`.

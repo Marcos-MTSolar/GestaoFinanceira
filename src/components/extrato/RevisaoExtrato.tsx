@@ -62,7 +62,7 @@ export interface ItemRevisaoExtrato {
   transacao: TransacaoExtrato;
   bancoCodigo: string;
   contaId: string;
-  formato: 'ofx' | 'xlsx';
+  formato: 'ofx' | 'xlsx' | 'pdf';
   statusDeduplicacao: StatusClassificacao;
   lancamentoExistenteId?: string;
   lancamentoExistente?: Lancamento;
@@ -86,12 +86,12 @@ interface RevisaoExtratoProps {
     extrato: ExtratoLido;
     contaId: string;
     bancoCodigo: string;
-    formato: 'ofx' | 'xlsx';
+    formato: 'ofx' | 'xlsx' | 'pdf';
     saldoInformado?: {
       valor: number;
       data: string;
       isDisponivel?: boolean;
-      origem?: 'ofx_ledgerbal' | 'usuario';
+      origem?: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario';
     };
   }>;
   contas: ContaBancaria[];
@@ -107,7 +107,7 @@ interface RevisaoExtratoProps {
       valor: number;
       data: string;
       isDisponivel?: boolean;
-      origem?: 'ofx_ledgerbal' | 'usuario';
+      origem?: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario';
     };
   }) => void;
 }
@@ -120,6 +120,17 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
 }) => {
   const { isAdmin } = useAuth();
   const { formatarValor, ocultarValores } = usePrivacy();
+
+  // Identificação do banco emissor dos extratos em revisão (Parte 22C)
+  const bancoCodigoPrincipal = extratosComConta[0]?.bancoCodigo || extratosComConta[0]?.extrato?.bancoCodigo;
+  const isSantander = bancoCodigoPrincipal === '033';
+  const isSicoob = bancoCodigoPrincipal === '756';
+
+  const nomeSugeridoContaAplicacao = isSantander
+    ? 'Santander Contamax (Aplicação)'
+    : isSicoob
+    ? 'Sicoob Aplicação'
+    : 'Conta de Aplicação';
 
   // Dados mestres do Firestore / cache
   const [categorias, setCategorias] = useState<Categoria[]>([]);
@@ -845,9 +856,9 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       return;
     }
 
-    // PARTE 21B: Contamax em "Ignorar" é o padrão. Apenas se escolher "transferência" exige conta de aplicação.
+    // PARTE 21B/22C: Movimentações internas em "Ignorar" é o padrão. Apenas se escolher "transferência" exige conta de aplicação.
     if (tratamentoContamax === 'transferencia' && !contaAplicacaoId) {
-      alert('Por favor, selecione ou crie a conta de aplicação antes de concluir a revisão das transferências Contamax.');
+      alert(`Por favor, selecione ou crie a conta de aplicação antes de concluir a revisão das transferências ${isSantander ? 'Contamax' : 'internas'}.`);
       return;
     }
 
@@ -876,7 +887,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
     }
 
     let saldoBancoFinal: { valor: number; data: string } | undefined = undefined;
-    let saldoInformadoParam: { valor: number; data: string; isDisponivel?: boolean; origem?: 'ofx_ledgerbal' | 'usuario' } | undefined = undefined;
+    let saldoInformadoParam: { valor: number; data: string; isDisponivel?: boolean; origem?: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario' } | undefined = undefined;
 
     if (saldoRealInformadoEfetivo) {
       saldoBancoFinal = {
@@ -942,15 +953,15 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
     );
   };
 
-  // Criação automática da conta de aplicação Contamax
+  // Criação automática da conta de aplicação (Contamax para Santander ou Aplicação para Sicoob)
   const handleCriarContaContamax = async () => {
     setCriandoContaContamax(true);
     try {
       const novaConta: ContaBancaria = {
-        id: `conta-contamax-${Date.now()}`,
-        nome: 'Santander Contamax (Aplicação)',
-        banco: 'Santander',
-        banco_codigo: '033',
+        id: `conta-aplicacao-${Date.now()}`,
+        nome: nomeSugeridoContaAplicacao,
+        banco: isSantander ? 'Santander' : isSicoob ? 'Sicoob' : (contaPrincipal?.banco || 'Banco'),
+        banco_codigo: isSantander ? '033' : isSicoob ? '756' : (contaPrincipal?.banco_codigo || '000'),
         agencia: contaPrincipal?.agencia || '0001',
         numero_conta: contaPrincipal?.numero_conta ? `${contaPrincipal.numero_conta}-APL` : undefined,
         tipo: 'poupanca',
@@ -958,14 +969,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         data_saldo_inicial: dataMinimaTransacoes || '2026-01-01',
         limite_cheque_especial: 0,
         taxa_juros_cheque_especial_mensal: 0,
-        cor: '#003064',
+        cor: isSantander ? '#CC0000' : '#003064',
         ativa: true,
         criado_em: new Date().toISOString(),
       };
       await dbService.saveConta(novaConta);
       setContaAplicacaoId(novaConta.id);
     } catch (err) {
-      console.error('Erro ao criar conta Contamax:', err);
+      console.error('Erro ao criar conta de aplicação:', err);
     } finally {
       setCriandoContaContamax(false);
     }
@@ -998,11 +1009,11 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       const c = contas.find((cta) => cta.id === id);
       return {
         id,
-        nome: c?.nome || (id === contaAplicacaoId ? 'Santander Contamax (Aplicação)' : 'Conta Selecionada'),
+        nome: c?.nome || (id === contaAplicacaoId ? nomeSugeridoContaAplicacao : 'Conta Selecionada'),
         saldoAtual: c?.saldo_inicial || 0,
       };
     });
-  }, [itens, contas, tratamentoContamax, contaAplicacaoId]);
+  }, [itens, contas, tratamentoContamax, contaAplicacaoId, nomeSugeridoContaAplicacao]);
 
   const periodoGlobal = useMemo(() => {
     const datas = extratosComConta.map((e) => e.extrato.periodo);
@@ -1042,14 +1053,19 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         origem: saldoPasso1.origem || 'usuario',
       };
     }
-    // 2. LEDGERBAL do OFX
+    // 2. Saldo do arquivo (OFX LEDGERBAL ou PDF SALDO DO DIA)
     if (saldoFinalOfx) {
+      // Determina a origem pelo formato do extrato mais recente com saldo
+      const formatoComSaldo = extratosComConta
+        .filter((e) => e.extrato.saldoFinal?.valor !== undefined)
+        .sort((a, b) => (b.extrato.saldoFinal?.data || '').localeCompare(a.extrato.saldoFinal?.data || ''))[0]?.extrato.formato;
+      const origemSaldo: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario' = formatoComSaldo === 'pdf' ? 'extrato_pdf' : 'ofx_ledgerbal';
       return {
         valorBruto: saldoFinalOfx.valor,
         valorReal: saldoFinalOfx.valor,
         data: saldoFinalOfx.data || periodoGlobal.fim || new Date().toISOString().split('T')[0],
         isDisponivel: false,
-        origem: 'ofx_ledgerbal' as const,
+        origem: origemSaldo,
       };
     }
     // 3. Fallback digitado
@@ -1328,7 +1344,9 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                 : 'bg-purple-50/60 border-purple-200 hover:bg-purple-100/50'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold text-purple-800 truncate">Internas (Contamax)</span>
+            <span className="text-[10px] uppercase font-bold text-purple-800 truncate">
+              {isSantander ? 'Internas (Contamax)' : 'Movimentações internas (aplicação, poupança, capital)'}
+            </span>
             <span className="text-xs font-bold text-purple-950 font-num shrink-0">{contadores.internas}</span>
           </button>
 
@@ -1354,19 +1372,21 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         </div>
       </div>
 
-      {/* SELETOR: TRATAMENTO DO CONTAMAX RECOLHÍVEL (Requisito 1 - Parte 15H / 16A) */}
+      {/* SELETOR: TRATAMENTO DE MOVIMENTAÇÕES INTERNAS (Contamax / Aplicação / Poupança) */}
       {impactoContamax.quantidade > 0 && (
         <div className="shrink-0 bg-slate-50 border border-slate-200/90 rounded-xl px-3 py-1.5 transition-all text-xs">
           {contamaxRecolhido ? (
             <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2 text-xs truncate">
                 <span className="w-2 h-2 rounded-full bg-purple-600 shrink-0"></span>
-                <span className="font-serif font-bold text-[#003064]">Tratamento do Contamax:</span>
+                <span className="font-serif font-bold text-[#003064]">
+                  {isSantander ? 'Tratamento do Contamax:' : 'Movimentações internas (aplicação, poupança, capital):'}
+                </span>
                 <span className={`font-medium truncate ${tratamentoContamax === null ? 'text-red-600 font-bold' : 'text-slate-700'}`}>
                   {tratamentoContamax === null ? (
                     '⚠️ Escolha obrigatória antes de concluir'
                   ) : tratamentoContamax === 'ignorar' ? (
-                    'Ignorando movimentações Contamax'
+                    isSantander ? 'Ignorando movimentações Contamax' : 'Ignorando movimentações internas'
                   ) : (
                     `Lançando como transferência para ${
                       contas.find((c) => c.id === contaAplicacaoId)?.nome || 'conta de aplicação'
@@ -1399,7 +1419,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-purple-600"></span>
                   <h4 className="font-serif text-xs font-bold text-[#003064] uppercase tracking-wider">
-                    Tratamento do Contamax ({impactoContamax.quantidade} movimentações detectadas)
+                    {isSantander ? 'Tratamento do Contamax' : 'Movimentações internas (aplicação, poupança, capital)'} ({impactoContamax.quantidade} movimentações detectadas)
                   </h4>
                 </div>
                 <div className="flex items-center gap-3">
@@ -1442,7 +1462,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     />
                     <div>
                       <span className="font-bold text-slate-900 block">
-                        (a) Ignorar movimentações Contamax (Padrão)
+                        (a) Ignorar {isSantander ? 'movimentações Contamax' : 'movimentações internas'} (Padrão)
                       </span>
                       <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
                         Não cria lançamentos na conta corrente para aplicações e resgates automáticos.
@@ -1521,14 +1541,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                           disabled={criandoContaContamax}
                           onClick={handleCriarContaContamax}
                           className="px-2.5 py-1.5 bg-[#003064] hover:bg-[#00204A] disabled:bg-slate-300 text-white rounded-lg text-[11px] font-bold shrink-0 transition-colors shadow-2xs cursor-pointer"
-                          title="Cria automaticamente a conta Santander Contamax (Aplicação) com saldo inicial 0"
+                          title={`Cria automaticamente a conta ${nomeSugeridoContaAplicacao} com saldo inicial 0`}
                         >
-                          {criandoContaContamax ? 'Criando...' : '+ Criar conta Contamax (Aplicação)'}
+                          {criandoContaContamax ? 'Criando...' : `+ Criar ${isSantander ? 'conta Contamax (Aplicação)' : 'conta de Aplicação'}`}
                         </button>
                       </div>
                       {!contaAplicacaoId && (
                         <p className="text-[10px] text-amber-700 font-semibold">
-                          ⚠️ Selecione uma conta existente ou clique em "+ Criar conta Contamax (Aplicação)" para poder concluir.
+                          ⚠️ Selecione uma conta existente ou clique em "+ Criar {isSantander ? 'conta Contamax (Aplicação)' : 'conta de Aplicação'}" para poder concluir.
                         </p>
                       )}
                     </div>
@@ -1830,6 +1850,12 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                           <span className="truncate">
                             {item.transacao.contraparte}
                           </span>
+                        </div>
+                      )}
+
+                      {item.transacao.detalhes && (
+                        <div className="text-[10px] text-slate-500 mt-0.5 truncate" title={`Detalhes: ${item.transacao.detalhes}`}>
+                          {item.transacao.detalhes}
                         </div>
                       )}
 
@@ -2158,6 +2184,12 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     {item.transacao.contraparte && (
                       <p className="text-[11px] text-[#1A4A85] font-medium mt-0.5">
                         {item.transacao.contraparte}
+                      </p>
+                    )}
+
+                    {item.transacao.detalhes && (
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        {item.transacao.detalhes}
                       </p>
                     )}
                   </div>

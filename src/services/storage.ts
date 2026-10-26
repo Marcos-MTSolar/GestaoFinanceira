@@ -3463,6 +3463,7 @@ export const dbService = {
             descricaoOriginal: item.transacao.descricaoOriginal,
             contraparte: item.transacao.contraparte,
             documento: item.transacao.documento,
+            detalhes: item.transacao.detalhes,
             fitid: item.transacao.fitid,
             bancoCodigo: params.bancoCodigo,
             bancoNome: params.bancoNome,
@@ -3564,6 +3565,7 @@ export const dbService = {
           descricaoOriginal: item.transacao.descricaoOriginal,
           contraparte: item.transacao.contraparte,
           documento: item.transacao.documento,
+          detalhes: item.transacao.detalhes,
           fitid: item.transacao.fitid,
           bancoCodigo: params.bancoCodigo,
           bancoNome: params.bancoNome,
@@ -3608,6 +3610,7 @@ export const dbService = {
             nome_arquivo: params.nomeArquivo,
             data_importacao: dataHoraImportacaoAtual,
             documento: item.transacao.documento,
+            detalhes: item.transacao.detalhes,
             contraparte: item.transacao.contraparte,
             descricao_original: item.transacao.descricaoOriginal,
           },
@@ -3761,14 +3764,19 @@ export const dbService = {
     const infoSaldo = params.saldoInformado || params.saldoBanco;
     let saldoRealInformado: number | undefined = undefined;
     let dataSaldoInformado: string | undefined = undefined;
-    let origemSaldoInformado: 'ofx_ledgerbal' | 'usuario' | undefined = undefined;
+    let origemSaldoInformado: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario' | undefined = undefined;
 
     if (infoSaldo && infoSaldo.valor !== undefined) {
       dataSaldoInformado = infoSaldo.data || params.periodo.fim || new Date().toISOString().split('T')[0];
       saldoRealInformado = infoSaldo.valor;
-      origemSaldoInformado = (infoSaldo as any).origem === 'ofx_ledgerbal' || params.formato === 'ofx'
-        ? 'ofx_ledgerbal'
-        : 'usuario';
+      const origemFornecida = (infoSaldo as any).origem;
+      if (origemFornecida === 'extrato_pdf' || (params.formato === 'pdf' && origemFornecida !== 'usuario')) {
+        origemSaldoInformado = 'extrato_pdf';
+      } else if (origemFornecida === 'ofx_ledgerbal' || (params.formato === 'ofx' && origemFornecida !== 'usuario')) {
+        origemSaldoInformado = 'ofx_ledgerbal';
+      } else {
+        origemSaldoInformado = 'usuario';
+      }
 
       // Persiste o saldo do banco trazido por este lote
       registroLote.saldo_banco = {

@@ -112,9 +112,11 @@ export interface ResultadoClassificacao {
 // Cada banco registrado em bancos.ts importa e expõe suas regras aqui.
 // ============================================================
 import { REGRAS_SANTANDER } from './regras/santander';
+import { REGRAS_SICOOB } from './regras/sicoob';
 
-const REGRAS_POR_BANCO: Record<string, RegraClassificacaoBanco[]> = {
+export const REGRAS_POR_BANCO: Record<string, RegraClassificacaoBanco[]> = {
   '033': REGRAS_SANTANDER,
+  '756': REGRAS_SICOOB,
 };
 
 // ============================================================

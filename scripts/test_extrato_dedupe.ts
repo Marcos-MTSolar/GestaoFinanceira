@@ -40,7 +40,7 @@ function converterTransacaoEmLancamento(
   contaId: string,
   bancoCodigo: string,
   loteId: string,
-  formato: 'ofx' | 'xlsx',
+  formato: 'ofx' | 'xlsx' | 'pdf',
   categoriaId: string = 'cat-padrao'
 ): Lancamento {
   const assinaturaFraca = gerarAssinaturaFraca({

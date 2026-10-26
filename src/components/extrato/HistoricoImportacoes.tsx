@@ -7,6 +7,7 @@ import { dbService, subscribe } from '../../services/storage';
 import { usePrivacy } from '../../context/PrivacyContext';
 import {
   FileText,
+  FileCode,
   RotateCcw,
   CheckCircle2,
   AlertTriangle,
@@ -334,8 +335,10 @@ export const HistoricoImportacoes: React.FC<HistoricoImportacoesProps> = ({
                         <div className="flex items-center gap-1.5 font-medium text-slate-800 max-w-[200px] truncate" title={imp.nome_arquivo}>
                           {imp.formato === 'xlsx' ? (
                             <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          ) : imp.formato === 'pdf' ? (
+                            <FileText className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                           ) : (
-                            <FileText className="w-3.5 h-3.5 text-[#003064] shrink-0" />
+                            <FileCode className="w-3.5 h-3.5 text-[#003064] shrink-0" />
                           )}
                           <span className="truncate">{imp.nome_arquivo}</span>
                         </div>
@@ -454,8 +457,10 @@ export const HistoricoImportacoes: React.FC<HistoricoImportacoesProps> = ({
                       <div className="flex items-center gap-1.5">
                         {imp.formato === 'xlsx' ? (
                           <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                        ) : imp.formato === 'pdf' ? (
+                          <FileText className="w-4 h-4 text-rose-600" />
                         ) : (
-                          <FileText className="w-4 h-4 text-[#003064]" />
+                          <FileCode className="w-4 h-4 text-[#003064]" />
                         )}
                         <span className="font-bold text-xs text-slate-900 break-all">{imp.nome_arquivo}</span>
                       </div>

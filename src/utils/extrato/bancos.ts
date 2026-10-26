@@ -4,6 +4,7 @@
 import { DefinicaoBanco, ErroBancoNaoSuportado, ExtratoLido } from './tipos';
 import { parsearOfx } from './parsers/ofx';
 import { parsearSantanderXlsx } from './parsers/santanderXlsx';
+import { parsearSicoobPdf } from './parsers/sicoobPdf';
 
 /**
  * Definição do Banco Santander (Código 033)
@@ -60,11 +61,46 @@ export const BANCO_SANTANDER: DefinicaoBanco = {
 };
 
 /**
+ * Definição do Banco Sicoob (Código 756)
+ * Suporta formato PDF (Parte 22B)
+ */
+export const BANCO_SICOOB: DefinicaoBanco = {
+  codigo: '756',
+  nome: 'Sicoob',
+  formatosSuportados: ['pdf'],
+  detectar: (contexto) => {
+    if (contexto.formato !== 'pdf' || !contexto.itensPdf || contexto.itensPdf.length === 0) {
+      return false;
+    }
+    // Verifica se os itens de texto contêm "SICOOB" e "EXTRATO CONTA CORRENTE"
+    const textoCompleto = contexto.itensPdf
+      .slice(0, 40) // primeiros itens suficientes para o cabeçalho
+      .map(i => i.texto.toUpperCase())
+      .join(' ');
+
+    const temSicoob = textoCompleto.includes('SICOOB');
+    const temExtratoContaCorrente = textoCompleto.includes('EXTRATO CONTA CORRENTE');
+
+    return temSicoob && temExtratoContaCorrente;
+  },
+  parser: async (contexto): Promise<ExtratoLido> => {
+    if (contexto.formato !== 'pdf') {
+      throw new ErroBancoNaoSuportado(`Formato "${contexto.formato}" não é suportado pelo Sicoob.`);
+    }
+    if (!contexto.itensPdf || contexto.itensPdf.length === 0) {
+      throw new ErroBancoNaoSuportado('Itens de texto PDF não fornecidos para o parser do Sicoob.');
+    }
+    return parsearSicoobPdf(contexto.itensPdf);
+  }
+};
+
+/**
  * Registro de todos os bancos homologados no sistema
  * Pronto para expansão (outros bancos podem ser plugados aqui)
  */
 export const BANCOS_REGISTRADOS: DefinicaoBanco[] = [
   BANCO_SANTANDER,
+  BANCO_SICOOB,
 ];
 
 /**

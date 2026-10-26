@@ -21,7 +21,8 @@
     "test:18a": "tsx scripts/test_parte_18A.ts",
     "test:18b": "tsx scripts/test_parte_18B.ts",
     "test:18c": "tsx scripts/test_parte_18C.ts",
-    "test:21a": "tsx scripts/test_parte_21A.ts"
+    "test:21a": "tsx scripts/test_parte_21A.ts",
+    "test:22a": "tsx scripts/test_parte_22A.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -32,6 +33,7 @@
     "firebase": "^13.0.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
+    "pdfjs-dist": "4.10.38",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "react-is": "^19.3.0",
@@ -46,6 +48,7 @@
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "pdf-lib": "^1.17.1",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2"

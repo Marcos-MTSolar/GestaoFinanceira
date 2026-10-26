@@ -38,7 +38,7 @@ export interface ContaBancaria {
   saldo_referencia?: {
     valor: number; // saldo real em conta, já sem conversão
     data: string;  // YYYY-MM-DD
-    origem: 'ofx_ledgerbal' | 'usuario';
+    origem: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario';
     lote_id?: string;
   };
 }
@@ -78,10 +78,11 @@ export interface OrigemImportacao {
   conta_id: string;
   fitid?: string;
   assinatura_fraca: string;
-  formato: 'ofx' | 'xlsx';
+  formato: 'ofx' | 'xlsx' | 'pdf';
   nome_arquivo?: string;
   data_importacao?: string;
   documento?: string;
+  detalhes?: string;
   contraparte?: string;
   descricao_original?: string;
 }
@@ -160,7 +161,7 @@ export interface RegistroImportacao {
   banco_codigo: string;
   conta_id: string;
   nome_arquivo: string;
-  formato: 'ofx' | 'xlsx';
+  formato: 'ofx' | 'xlsx' | 'pdf';
   periodo: { inicio: string; fim: string };
   totais: {
     lancadas: number;
@@ -171,7 +172,7 @@ export interface RegistroImportacao {
     total_creditos: number;
     total_debitos: number;
   };
-  saldo_banco?: { valor: number; data: string; origem?: 'ofx_ledgerbal' | 'usuario' };
+  saldo_banco?: { valor: number; data: string; origem?: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario' };
   saldo_sistema_antes?: number;
   saldo_sistema_depois?: number;
   status: 'concluida' | 'desfeita' | 'parcial';
@@ -195,7 +196,7 @@ export interface ParamsImportacaoLote {
   contaId: string;
   bancoCodigo: string;
   bancoNome?: string;
-  formato: 'ofx' | 'xlsx';
+  formato: 'ofx' | 'xlsx' | 'pdf';
   nomeArquivo: string;
   periodo: { inicio: string; fim: string };
   /** Conta de aplicação explicitamente escolhida pelo usuário para transferências Contamax */
@@ -220,6 +221,7 @@ export interface ParamsImportacaoLote {
       descricaoNormalizada: string;
       contraparte?: string;
       documento?: string;
+      detalhes?: string;
       ordemNoDia: number;
     };
     acao: 'incluir' | 'ignorar' | 'vincular';
@@ -242,7 +244,7 @@ export interface ParamsImportacaoLote {
     valor: number;
     data: string;
     isDisponivel?: boolean;
-    origem?: 'ledgerbal' | 'digitado' | 'ofx_ledgerbal' | 'usuario';
+    origem?: 'ledgerbal' | 'digitado' | 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario';
   };
 }
 
@@ -287,7 +289,7 @@ export interface ResultadoImportacaoLote {
   saldoReferenciaConta?: {
     valor: number;
     data: string;
-    origem: 'ofx_ledgerbal' | 'usuario';
+    origem: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario';
     lote_id?: string;
   };
   /** Erro de conferência caso o saldo do app não coincida com o saldo informado (Parte 18C) */

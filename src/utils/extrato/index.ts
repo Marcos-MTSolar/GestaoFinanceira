@@ -9,16 +9,19 @@ export * from './bancos';
 export * from './detectarBanco';
 export * from './parsers/ofx';
 export * from './parsers/santanderXlsx';
+export * from './parsers/sicoobPdf';
 export * from './resolverConta';
 export * from './assinatura';
 export * from './classificarDuplicatas';
 export * from './classificarTransacao';
 export * from './regras/santander';
+export * from './regras/sicoob';
 export * from './inferirFormaPagamento';
 export * from './saldoInicialHelper';
+export * from './leitorPdf';
 
 /**
- * Lê e processa um extrato bancário (OFX ou XLSX) a partir de seu ArrayBuffer.
+ * Lê e processa um extrato bancário (OFX, XLSX ou PDF) a partir de seu ArrayBuffer.
  * Detecta o banco e o formato exclusivamente pelo conteúdo do arquivo.
  *
  * @param arquivo Buffer binário do arquivo importado
@@ -29,6 +32,6 @@ export async function lerExtrato(
   arquivo: ArrayBuffer,
   nomeArquivo: string
 ): Promise<ExtratoLido> {
-  const { banco, contexto } = detectarBancoEFormato(arquivo, nomeArquivo);
+  const { banco, contexto } = await detectarBancoEFormato(arquivo, nomeArquivo);
   return banco.parser(contexto, arquivo);
 }

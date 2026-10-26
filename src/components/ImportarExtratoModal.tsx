@@ -6,6 +6,7 @@ import {
   UploadCloud,
   FileSpreadsheet,
   FileCode,
+  FileText,
   CheckCircle2,
   AlertTriangle,
   AlertCircle,
@@ -328,7 +329,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
           data: saldoInfo.data || a.extrato!.saldoFinal?.data || a.extrato!.periodo.fim || new Date().toISOString().split('T')[0],
           isDisponivel: a.extrato!.saldoFinal?.valor !== undefined ? false : saldoInfo.incluiLimiteChequeEspecial,
           origem: a.extrato!.saldoFinal?.valor !== undefined && valorNum === a.extrato!.saldoFinal.valor
-            ? ('ofx_ledgerbal' as const)
+            ? (a.extrato!.formato === 'pdf' ? ('extrato_pdf' as const) : ('ofx_ledgerbal' as const))
             : ('usuario' as const)
         } : undefined
       };
@@ -345,7 +346,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
       valor: number;
       data: string;
       isDisponivel?: boolean;
-      origem?: 'ofx_ledgerbal' | 'usuario';
+      origem?: 'ofx_ledgerbal' | 'extrato_pdf' | 'usuario';
     };
   }) => {
     setGravando(true);
@@ -950,7 +951,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
               ref={inputRef}
               type="file"
               multiple
-              accept=".ofx,.qfx,.xlsx"
+              accept=".ofx,.qfx,.xlsx,.pdf"
               onChange={handleFileInput}
               className="hidden"
             />
@@ -963,7 +964,7 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                   Arraste seus extratos aqui ou <span className="text-[#1A4A85] underline">clique para selecionar</span>
                 </p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Formatos aceitos: <strong>OFX</strong>, <strong>QFX</strong> e <strong>XLSX</strong> (Santander e homologados). Múltiplos arquivos permitidos.
+                  Formatos aceitos: <strong>OFX</strong>, <strong>XLSX</strong> ou <strong>PDF</strong> (Santander e homologados). Múltiplos arquivos permitidos.
                 </p>
               </div>
             </div>
@@ -1007,8 +1008,10 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                       {/* Linha Superior: Nome do Arquivo e Botão Remover */}
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-center gap-2.5 min-w-0">
-                          {item.arquivo.name.toLowerCase().endsWith('.xlsx') ? (
+                          {item.arquivo.name.toLowerCase().endsWith('.xlsx') || item.extrato?.formato === 'xlsx' ? (
                             <FileSpreadsheet className="w-5 h-5 text-emerald-600 shrink-0" />
+                          ) : item.arquivo.name.toLowerCase().endsWith('.pdf') || item.extrato?.formato === 'pdf' ? (
+                            <FileText className="w-5 h-5 text-rose-600 shrink-0" />
                           ) : (
                             <FileCode className="w-5 h-5 text-[#1A4A85] shrink-0" />
                           )}
@@ -1140,23 +1143,28 @@ export const ImportarExtratoModal: React.FC<ImportarExtratoModalProps> = ({
                               )}
                             </div>
 
-                            {/* PARTE 21B: Assistente Automático de Saldo de Referência */}
+                            {/* PARTE 21B / 22D: Assistente Automático de Saldo de Referência */}
                             {contaEscolhida && (() => {
-                              const ehOfx = item.extrato?.formato === 'ofx' || item.extrato?.saldoFinal?.valor !== undefined;
+                              const ehComSaldo = item.extrato?.saldoFinal?.valor !== undefined;
                               const saldoInfo = saldosInformadosPasso1[item.id] || {
                                 valor: '',
                                 data: item.extrato?.saldoFinal?.data || item.extrato?.periodo.fim || '',
                                 incluiLimiteChequeEspecial: false
                               };
 
-                              if (ehOfx) {
-                                // Para OFX: o saldo vem diretamente do arquivo (LEDGERBAL), sem seletor de limite
+                              if (ehComSaldo) {
+                                const tituloSaldo = item.extrato?.formato === 'pdf'
+                                  ? 'Saldo do extrato PDF (SALDO DO DIA detectado)'
+                                  : item.extrato?.formato === 'ofx'
+                                    ? 'Saldo do arquivo OFX (LEDGERBAL detectado)'
+                                    : 'Saldo detectado no arquivo';
+
                                 return (
                                   <div className="p-3 bg-blue-50/80 border border-blue-200 rounded-xl space-y-1.5 text-xs text-blue-950">
                                     <div className="flex items-center justify-between">
                                       <span className="font-bold text-[#003064] text-[11px] flex items-center gap-1.5">
                                         <CheckCircle2 className="w-3.5 h-3.5 text-blue-600" />
-                                        Saldo do arquivo OFX (LEDGERBAL detectado)
+                                        {tituloSaldo}
                                       </span>
                                       <span className="text-[10px] bg-blue-100 text-[#003064] font-semibold px-2 py-0.5 rounded-md">
                                         Automático

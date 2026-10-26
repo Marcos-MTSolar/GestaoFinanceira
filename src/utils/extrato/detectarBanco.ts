@@ -6,10 +6,12 @@ import {
   FormatoExtrato,
   ContextoDeteccao,
   DefinicaoBanco,
-  ErroBancoNaoSuportado
+  ErroBancoNaoSuportado,
+  ItemPdf
 } from './tipos';
 import { BANCOS_REGISTRADOS } from './bancos';
 import { decodificarOfxBuffer } from './parsers/ofx';
+import { extrairItensPdf } from './leitorPdf';
 
 /**
  * Identifica o formato do arquivo exclusivamente pelo seu conteúdo binário / assinatura (magic bytes).
@@ -32,6 +34,17 @@ export function identificarFormatoPorConteudo(arquivo: ArrayBuffer): FormatoExtr
     return 'xlsx';
   }
 
+  // Assinatura PDF (%PDF-)
+  if (
+    bytes[0] === 0x25 && // %
+    bytes[1] === 0x50 && // P
+    bytes[2] === 0x44 && // D
+    bytes[3] === 0x46 && // F
+    bytes[4] === 0x2d    // -
+  ) {
+    return 'pdf';
+  }
+
   // Verifica marcadores textuais de extrato OFX (SGML 1.x ou XML 2.x)
   const limiteLeituraTexto = Math.min(arquivo.byteLength, 1024);
   const cabecalhoTexto = new TextDecoder('latin1').decode(new Uint8Array(arquivo.slice(0, limiteLeituraTexto)));
@@ -47,7 +60,7 @@ export function identificarFormatoPorConteudo(arquivo: ArrayBuffer): FormatoExtr
   }
 
   throw new ErroBancoNaoSuportado(
-    'Formato de arquivo não reconhecido pelo conteúdo. O sistema suporta apenas extratos OFX (.ofx/.qfx) e planilhas Excel (.xlsx).'
+    'Formato de arquivo não reconhecido pelo conteúdo. O sistema suporta apenas extratos OFX (.ofx/.qfx), planilhas Excel (.xlsx) e arquivos PDF (.pdf).'
   );
 }
 
@@ -60,14 +73,15 @@ export interface ResultadoDeteccao {
 /**
  * Detecta o banco emissor e prepara o contexto de leitura analisando estritamente o conteúdo do arquivo.
  */
-export function detectarBancoEFormato(
+export async function detectarBancoEFormato(
   arquivo: ArrayBuffer,
   nomeArquivo?: string
-): ResultadoDeteccao {
+): Promise<ResultadoDeteccao> {
   const formato = identificarFormatoPorConteudo(arquivo);
 
   let textoOfx: string | undefined = undefined;
   let linhasXlsx: unknown[][] | undefined = undefined;
+  let itensPdf: ItemPdf[] | undefined = undefined;
 
   if (formato === 'ofx') {
     textoOfx = decodificarOfxBuffer(arquivo);
@@ -82,12 +96,15 @@ export function detectarBancoEFormato(
     } catch {
       throw new ErroBancoNaoSuportado('Falha ao processar estrutura da planilha Excel.');
     }
+  } else if (formato === 'pdf') {
+    itensPdf = await extrairItensPdf(arquivo);
   }
 
   const contexto: ContextoDeteccao = {
     formato,
     textoOfx,
     linhasXlsx,
+    itensPdf,
     nomeArquivo
   };
 

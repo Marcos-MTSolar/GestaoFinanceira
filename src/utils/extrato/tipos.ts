@@ -1,7 +1,15 @@
 // MT Solar - Gestão Financeira
 // Módulo de Extratos - Definições de Tipos e Contratos (Parte 15A)
 
-export type FormatoExtrato = 'ofx' | 'xlsx';
+export type FormatoExtrato = 'ofx' | 'xlsx' | 'pdf';
+
+export interface ItemPdf {
+  pagina: number;
+  texto: string;
+  x: number;
+  xFim: number;
+  y: number; // medido a partir do TOPO da página
+}
 
 export type TipoTransacaoExtrato = 'credito' | 'debito';
 
@@ -15,6 +23,7 @@ export interface TransacaoExtrato {
   descricaoNormalizada: string; // maiúscula, sem acento, espaços colapsados, sem números variáveis
   contraparte?: string;
   documento?: string;
+  detalhes?: string;
   ordemNoDia: number; // posição entre transações idênticas do mesmo dia (0, 1, 2... regra determinística)
   linhaOrigem: number; // número da linha de origem no extrato/arquivo
 }
@@ -55,6 +64,7 @@ export interface ContextoDeteccao {
   formato: FormatoExtrato;
   textoOfx?: string;
   linhasXlsx?: unknown[][];
+  itensPdf?: ItemPdf[];
   nomeArquivo?: string;
 }
 
