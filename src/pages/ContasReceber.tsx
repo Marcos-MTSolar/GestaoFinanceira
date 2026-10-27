@@ -5,6 +5,7 @@ import { usePrivacy } from '../context/PrivacyContext';
 import { formatarMoeda, formatarDataBR, obterHojeISO } from '../utils/formatters';
 import { Lancamento, ContaBancaria, Categoria, Contato, Projeto } from '../types';
 import { ModalPagarReceber } from '../components/ModalPagarReceber';
+import { ModalConfirmarExclusao } from '../components/ModalConfirmarExclusao';
 import {
   ArrowUpCircle,
   AlertTriangle,
@@ -18,16 +19,22 @@ import {
   TrendingUp,
   Search,
   User,
-  SunMedium
+  SunMedium,
+  Edit2,
+  Trash2,
 } from 'lucide-react';
 
 interface ContasReceberProps {
   onNovoLancamento: () => void;
+  onEditarLancamento: (id: string) => void;
 }
 
 type GrupoVencimento = 'atrasadas' | 'hoje' | '7dias' | '30dias' | 'futuras';
 
-export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }) => {
+export const ContasReceber: React.FC<ContasReceberProps> = ({
+  onNovoLancamento,
+  onEditarLancamento,
+}) => {
   const { isAdmin } = useAuth();
   const { formatarValor } = usePrivacy();
 
@@ -43,6 +50,21 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
   // Modal de Recebimento com Simulação
   const [modalReceberAberto, setModalReceberAberto] = useState(false);
   const [lancamentosParaReceber, setLancamentosParaReceber] = useState<Lancamento[]>([]);
+
+  // Modal de Exclusão Escopada
+  const [modalExclusaoAberto, setModalExclusaoAberto] = useState(false);
+  const [lancamentoParaExcluir, setLancamentoParaExcluir] = useState<Lancamento | null>(null);
+
+  const handleAbrirExclusao = (l: Lancamento) => {
+    if (!isAdmin) return;
+    setLancamentoParaExcluir(l);
+    setModalExclusaoAberto(true);
+  };
+
+  const handleConfirmarExclusao = (escopo: 'so_esta' | 'futuras' | 'todas') => {
+    if (!lancamentoParaExcluir) return;
+    dbService.excluirLancamentosComEscopo(lancamentoParaExcluir.id, escopo);
+  };
 
   // Filtros
   const [busca, setBusca] = useState('');
@@ -315,16 +337,38 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
                     </td>
 
                     <td className="py-3 px-4 text-right whitespace-nowrap">
-                      {isAdmin && (
-                        <button
-                          onClick={() => handleReceberIndividual(r)}
-                          type="button"
-                          className="px-3 py-1 bg-[#16A34A] hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-2xs border-b border-emerald-800 transition-all cursor-pointer flex items-center gap-1 ml-auto"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Receber</span>
-                        </button>
-                      )}
+                      <div className="flex items-center justify-end gap-1.5">
+                        {isAdmin && (
+                          <button
+                            onClick={() => handleReceberIndividual(r)}
+                            type="button"
+                            className="px-3 py-1 bg-[#16A34A] hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-2xs border-b border-emerald-800 transition-all cursor-pointer flex items-center gap-1"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Receber</span>
+                          </button>
+                        )}
+                        {isAdmin && r.origem !== 'folha' && r.origem !== 'transferencia' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onEditarLancamento(r.id)}
+                              title="Editar Lançamento"
+                              className="p-1 text-slate-400 hover:text-[#003064] hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAbrirExclusao(r)}
+                              title="Excluir Lançamento"
+                              className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -575,6 +619,14 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({ onNovoLancamento }
           carregarDados();
           setSelecionados([]);
         }}
+      />
+
+      {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO ESCOPADA */}
+      <ModalConfirmarExclusao
+        isOpen={modalExclusaoAberto}
+        onClose={() => setModalExclusaoAberto(false)}
+        lancamento={lancamentoParaExcluir}
+        onConfirmar={handleConfirmarExclusao}
       />
 
     </div>

@@ -119,6 +119,38 @@ export interface RegraImportacao {
   usos: number;
 }
 
+/**
+ * Modelo de recorrência mensal automática (Parte 23B).
+ * Em vez de gerar 12 lançamentos de uma vez, o sistema mantém este modelo
+ * e gera 1 lançamento por mês automaticamente.
+ */
+export interface RecorrenciaLancamento {
+  id: string;
+  tipo: 'despesa' | 'receita';
+  /** Descrição limpa, sem sufixo como "[MENSAL 1/12]" */
+  descricao: string;
+  valor: number;
+  /** Frequência da recorrência */
+  frequencia: 'semanal' | 'mensal' | 'anual';
+  /** Data de início no formato YYYY-MM-DD; define o dia do vencimento */
+  data_inicio: string;
+  conta_id: string;
+  categoria_id: string;
+  contato_id?: string;
+  projeto_id?: string;
+  forma_pagamento: FormaPagamento;
+  observacoes?: string;
+  ativa: boolean;
+  /** Data de encerramento no formato YYYY-MM-DD (opcional) */
+  data_encerramento?: string;
+  /**
+   * Última competência (YYYY-MM) para a qual lançamentos foram gerados.
+   * A próxima geração começa no mês seguinte a este.
+   */
+  ultima_competencia_gerada: string;
+  criado_em: string;
+}
+
 export interface Lancamento {
   id: string;
   tipo: TipoLancamento;
@@ -147,6 +179,8 @@ export interface Lancamento {
   funcionario_id?: string;
   folha_id?: string;
   origem_importacao?: OrigemImportacao;
+  /** Competência (YYYY-MM) à qual este lançamento pertence (Parte 23B) */
+  competencia?: string;
   criado_em: string;
 }
 

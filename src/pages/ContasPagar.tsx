@@ -5,6 +5,7 @@ import { usePrivacy } from '../context/PrivacyContext';
 import { formatarMoeda, formatarDataBR, obterHojeISO } from '../utils/formatters';
 import { Lancamento, ContaBancaria, Categoria, Contato } from '../types';
 import { ModalPagarReceber } from '../components/ModalPagarReceber';
+import { ModalConfirmarExclusao } from '../components/ModalConfirmarExclusao';
 import {
   ArrowDownCircle,
   AlertTriangle,
@@ -19,16 +20,22 @@ import {
   TrendingDown,
   Layers,
   Search,
-  Filter
+  Filter,
+  Edit2,
+  Trash2,
 } from 'lucide-react';
 
 interface ContasPagarProps {
   onNovoLancamento: () => void;
+  onEditarLancamento: (id: string) => void;
 }
 
 type GrupoVencimento = 'atrasadas' | 'hoje' | '7dias' | '30dias' | 'futuras';
 
-export const ContasPagar: React.FC<ContasPagarProps> = ({ onNovoLancamento }) => {
+export const ContasPagar: React.FC<ContasPagarProps> = ({
+  onNovoLancamento,
+  onEditarLancamento,
+}) => {
   const { isAdmin } = useAuth();
   const { formatarValor } = usePrivacy();
 
@@ -43,6 +50,21 @@ export const ContasPagar: React.FC<ContasPagarProps> = ({ onNovoLancamento }) =>
   // Modal de Pagamento / Simulação
   const [modalPagarAberto, setModalPagarAberto] = useState(false);
   const [lancamentosParaPagar, setLancamentosParaPagar] = useState<Lancamento[]>([]);
+
+  // Modal de Exclusão Escopada
+  const [modalExclusaoAberto, setModalExclusaoAberto] = useState(false);
+  const [lancamentoParaExcluir, setLancamentoParaExcluir] = useState<Lancamento | null>(null);
+
+  const handleAbrirExclusao = (l: Lancamento) => {
+    if (!isAdmin) return;
+    setLancamentoParaExcluir(l);
+    setModalExclusaoAberto(true);
+  };
+
+  const handleConfirmarExclusao = (escopo: 'so_esta' | 'futuras' | 'todas') => {
+    if (!lancamentoParaExcluir) return;
+    dbService.excluirLancamentosComEscopo(lancamentoParaExcluir.id, escopo);
+  };
 
   // Filtros
   const [busca, setBusca] = useState('');
@@ -312,16 +334,38 @@ export const ContasPagar: React.FC<ContasPagarProps> = ({ onNovoLancamento }) =>
                     </td>
 
                     <td className="py-3 px-4 text-right whitespace-nowrap">
-                      {isAdmin && (
-                        <button
-                          onClick={() => handlePagarIndividual(d)}
-                          type="button"
-                          className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold shadow-2xs border-b border-red-800 transition-all cursor-pointer flex items-center gap-1 ml-auto"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Pagar</span>
-                        </button>
-                      )}
+                      <div className="flex items-center justify-end gap-1.5">
+                        {isAdmin && (
+                          <button
+                            onClick={() => handlePagarIndividual(d)}
+                            type="button"
+                            className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold shadow-2xs border-b border-red-800 transition-all cursor-pointer flex items-center gap-1"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Pagar</span>
+                          </button>
+                        )}
+                        {isAdmin && d.origem !== 'folha' && d.origem !== 'transferencia' && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onEditarLancamento(d.id)}
+                              title="Editar Lançamento"
+                              className="p-1 text-slate-400 hover:text-[#003064] hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAbrirExclusao(d)}
+                              title="Excluir Lançamento"
+                              className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -575,6 +619,14 @@ export const ContasPagar: React.FC<ContasPagarProps> = ({ onNovoLancamento }) =>
           carregarDados();
           setSelecionados([]);
         }}
+      />
+
+      {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO ESCOPADA */}
+      <ModalConfirmarExclusao
+        isOpen={modalExclusaoAberto}
+        onClose={() => setModalExclusaoAberto(false)}
+        lancamento={lancamentoParaExcluir}
+        onConfirmar={handleConfirmarExclusao}
       />
 
     </div>

@@ -22,7 +22,10 @@
     "test:18b": "tsx scripts/test_parte_18B.ts",
     "test:18c": "tsx scripts/test_parte_18C.ts",
     "test:21a": "tsx scripts/test_parte_21A.ts",
-    "test:22a": "tsx scripts/test_parte_22A.ts"
+    "test:22a": "tsx scripts/test_parte_22A.ts",
+    "test:23a": "tsx scripts/test_parte_23A.ts",
+    "test:23b": "tsx scripts/test_parte_23B.ts",
+    "test:23c": "tsx scripts/test_parte_23C.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

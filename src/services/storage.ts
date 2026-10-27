@@ -45,6 +45,7 @@ import {
   Contato,
   Projeto,
   Lancamento,
+  RecorrenciaLancamento,
   UsuarioAutorizado,
   ConfiguracoesEmpresa,
   ResumoSaldoConta,
@@ -84,6 +85,14 @@ import { montarBalanco, ItemManualBalanco } from '../utils/balanco';
 import { gerarAssinaturaFraca } from '../utils/extrato/assinatura';
 import { inferirFormaPagamento } from '../utils/extrato/inferirFormaPagamento';
 import {
+  selecionarParaExcluir,
+  EscopoExclusao,
+  planejarGeracao,
+  encerrarRecorrencia,
+  aplicarEdicaoNosProximos,
+  atualizarModeloRecorrencia,
+} from '../utils/recorrencia';
+import {
   gerarDescricaoCurta,
   formatarObservacoesImportacao,
   complementarObservacoesEnriquecimento,
@@ -111,6 +120,7 @@ const FIRESTORE_COLLECTIONS = {
   HISTORICO: 'historico_auditoria',
   REGRAS_IMPORTACAO: 'regras_importacao',
   IMPORTOES: 'importacoes',
+  RECORRENCIAS: 'recorrencias',
 };
 
 const STORAGE_KEYS = {
@@ -176,6 +186,8 @@ let cacheHistorico: RegistroAuditoria[] = [];
 let cacheConfiguracoes: ConfiguracoesEmpresa | null = null;
 let cacheRegrasImportacao: RegraImportacao[] = [];
 let cacheImportacoes: RegistroImportacao[] = [];
+// Parte 23B: modelos de recorrência automática
+let cacheRecorrencias: RecorrenciaLancamento[] = [];
 let usuarioAtualCache: UsuarioAutorizado | null = null;
 
 let isCarregadoState = false;
@@ -227,7 +239,7 @@ export const dbService = {
   iniciarListeners(): void {
     if (unsubscribers.length > 0) return;
 
-    let colecoesRestantes = 12; // incrementado para incluir regras_importacao e importacoes
+    let colecoesRestantes = 13; // 12 coleções anteriores + 1 para recorrencias (Parte 23B)
     const marcarCarregado = () => {
       colecoesRestantes--;
       if (colecoesRestantes <= 0) {
@@ -385,6 +397,19 @@ export const dbService = {
           () => marcarCarregado()
         )
       );
+
+      // Parte 23B: Modelos de recorrência automática
+      unsubscribers.push(
+        onSnapshot(
+          collection(db, FIRESTORE_COLLECTIONS.RECORRENCIAS),
+          (snap) => {
+            cacheRecorrencias = snap.docs.map((d) => d.data() as RecorrenciaLancamento);
+            notify('recorrencias');
+            marcarCarregado();
+          },
+          () => marcarCarregado()
+        )
+      );
     } catch (e) {
       isCarregadoState = true;
       notify('carregando');
@@ -412,6 +437,7 @@ export const dbService = {
     cacheConfiguracoes = null;
     cacheRegrasImportacao = [];
     cacheImportacoes = [];
+    cacheRecorrencias = [];
     usuarioAtualCache = null;
     localStorage.removeItem(STORAGE_KEYS.USUARIO_ATUAL);
 
@@ -811,6 +837,91 @@ export const dbService = {
     return cacheLancamentos.find((l) => l.id === id);
   },
 
+  // ─── Parte 23B: Recorrências automáticas ─────────────────────────────────
+
+  /** Retorna todos os modelos de recorrência cadastrados. */
+  getRecorrencias(): RecorrenciaLancamento[] {
+    return cacheRecorrencias;
+  },
+
+  /** Salva (cria ou atualiza) um modelo de recorrência. */
+  saveRecorrencia(rec: RecorrenciaLancamento): RecorrenciaLancamento {
+    const docId = rec.id || `rec-${Date.now()}`;
+    const item: RecorrenciaLancamento = {
+      ...rec,
+      id: docId,
+      criado_em: rec.criado_em || new Date().toISOString(),
+    };
+
+    setDoc(doc(db, FIRESTORE_COLLECTIONS.RECORRENCIAS, docId), item, { merge: true }).catch((e) => {
+      console.warn('Erro async saveRecorrencia:', e);
+      avisarFalhaGravacao('saveRecorrencia', e);
+    });
+
+    const idx = cacheRecorrencias.findIndex((r) => r.id === docId);
+    if (idx >= 0) cacheRecorrencias[idx] = item;
+    else cacheRecorrencias.push(item);
+    notify('recorrencias');
+    return item;
+  },
+
+  /** Remove um modelo de recorrência. Os lançamentos gerados permanecem. */
+  deleteRecorrencia(id: string): void {
+    deleteDoc(doc(db, FIRESTORE_COLLECTIONS.RECORRENCIAS, id)).catch((e) => {
+      console.warn('Erro async deleteRecorrencia:', e);
+    });
+    cacheRecorrencias = cacheRecorrencias.filter((r) => r.id !== id);
+    notify('recorrencias');
+  },
+
+  /**
+   * Gera lançamentos pendentes para todos os modelos de recorrência ativos.
+   *
+   * - Só roda se dbService.isCarregado() for verdadeiro.
+   * - Para cada modelo ativo, planeja os lançamentos via planejarGeracao (pura).
+   * - Grava apenas os lançamentos novos (idempotente: rodar duas vezes não duplica).
+   * - Avança ultima_competencia_gerada do modelo após a gravação.
+   * - Lançamento já excluído pelo usuário não reaparece (a competência já avançou).
+   *
+   * @param hojeISO - Data de hoje no formato 'YYYY-MM-DD'
+   * @returns Número de lançamentos criados
+   */
+  gerarRecorrenciasPendentes(hojeISO: string): number {
+    if (!this.isCarregado()) return 0;
+
+    const modelos = cacheRecorrencias.filter((r) => r.ativa);
+    const todosLancamentos = cacheLancamentos;
+    let totalCriados = 0;
+
+    for (const modelo of modelos) {
+      // Planeja lançamentos a gerar (função pura, idempotente)
+      const novos = planejarGeracao(modelo, todosLancamentos, hojeISO);
+
+      if (novos.length === 0) continue;
+
+      // Grava cada novo lançamento
+      for (const lanc of novos) {
+        this.saveLancamento(lanc);
+        totalCriados++;
+      }
+
+      // Determinar a nova ultima_competencia_gerada (maior competência gerada)
+      const competenciasGeradas = novos.map((l) => l.competencia || l.data_vencimento.slice(0, 7));
+      const novaUltimaCompetencia = competenciasGeradas.reduce(
+        (max, c) => (c > max ? c : max),
+        modelo.ultima_competencia_gerada
+      );
+
+      if (novaUltimaCompetencia > modelo.ultima_competencia_gerada) {
+        this.saveRecorrencia({ ...modelo, ultima_competencia_gerada: novaUltimaCompetencia });
+      }
+    }
+
+    return totalCriados;
+  },
+
+  // ─── Fim Parte 23B ────────────────────────────────────────────────────────
+
   saveLancamento(lancamento: Lancamento): Lancamento {
     const docId = lancamento.id || `lanc-${Date.now()}`;
     const item: Lancamento = {
@@ -917,21 +1028,24 @@ export const dbService = {
     return this.saveLancamento(lancamento);
   },
 
-  excluirLancamentoERecorrencias(id: string): void {
-    const target = cacheLancamentos.find((l) => l.id === id);
-    if (!target) return;
-
-    if (target.grupo_recorrencia_id || target.grupo_parcelas_id) {
-      const grupoId = target.grupo_recorrencia_id || target.grupo_parcelas_id;
-      const vinculados = cacheLancamentos.filter(
-        (l) => l.grupo_recorrencia_id === grupoId || l.grupo_parcelas_id === grupoId
-      );
-      for (const item of vinculados) {
-        this.deleteLancamento(item.id);
-      }
-    } else {
-      this.deleteLancamento(id);
+  excluirLancamentosComEscopo(id: string, escopo: 'so_esta' | 'futuras' | 'todas'): number {
+    const alvo = cacheLancamentos.find((l) => l.id === id);
+    const ids = selecionarParaExcluir(cacheLancamentos, id, escopo);
+    for (const itemId of ids) {
+      this.deleteLancamento(itemId);
     }
+
+    // Parte 23C: quando existir o modelo, as opções 'futuras' e 'todas' também encerram a recorrência
+    if (alvo?.grupo_recorrencia_id && (escopo === 'futuras' || escopo === 'todas')) {
+      const modelo = cacheRecorrencias.find((r) => r.id === alvo.grupo_recorrencia_id);
+      if (modelo) {
+        const hojeISO = new Date().toISOString().split('T')[0];
+        this.saveRecorrencia(encerrarRecorrencia(modelo, hojeISO));
+      }
+    }
+
+    notify('lancamentos');
+    return ids.length;
   },
 
   pagarLancamento(id: string, dataPagamento: string, contaId?: string): Lancamento | null {
@@ -3037,6 +3151,8 @@ export const dbService = {
         lancamentos_folha: this.getLancamentosFolha(),
         configuracoes: this.getConfiguracoes(),
         historico: this.getHistoricoAuditoria(),
+        // Parte 23B: modelos de recorrência automática
+        recorrencias: this.getRecorrencias(),
       },
     };
     return JSON.stringify(backup, null, 2);
@@ -3070,6 +3186,10 @@ export const dbService = {
       }
       if (dados.configuracoes) {
         this.saveConfiguracoes(dados.configuracoes);
+      }
+      // Parte 23B: restaurar modelos de recorrência automática
+      if (Array.isArray(dados.recorrencias)) {
+        dados.recorrencias.forEach((r: RecorrenciaLancamento) => this.saveRecorrencia(r));
       }
 
       this.registrarAlteracao('sistema', 'importacao', 'Backup JSON importado e sincronizado com a nuvem');

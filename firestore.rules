@@ -95,6 +95,12 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Parte 23B: Modelos de recorrência automática (geração 1 lançamento/mês)
+    match /recorrencias/{doc} {
+      allow read: if isUsuarioAutorizado();
+      allow write: if isAdmin();
+    }
+
     // Nega por padrão qualquer outra coleção não declarada
     match /{document=**} {
       allow read, write: if false;

@@ -1,8 +1,115 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 26/10/2026 19:30:00 (Parte 22D – Importar o PDF do Sicoob de ponta a ponta)
+**Última Atualização:** 27/10/2026 05:35:00 (Parte 23C – Editar e Excluir Lançamentos de Recorrência)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
+  - **Parte 23C – Editar e excluir lançamentos de recorrência (aplicar aos próximos meses, encerrar)**:
+    - **Objetivo**: Permitir a edição e exclusão de lançamentos periódicos com escopo nos próximos meses e encerramento automático da recorrência para modelos cadastrados (`recorrencias`), mantendo grupos legados sem modelo operando estritamente com a lógica da Parte 23A.
+    - **1. Funções Puras de Recorrência (`src/utils/recorrencia.ts`)**:
+      - `aplicarEdicaoNosProximos(lancamentos: Lancamento[], alvo: Lancamento, alteracoes: Partial<Lancamento>): Lancamento[]`: função pura que aplica as alterações em todos os lançamentos PENDENTES do mesmo grupo de recorrência com vencimento maior ou igual ao do alvo (`data_vencimento >= alvo.data_vencimento`). Nunca altera lançamentos pagos (mesmo futuros), nunca altera anteriores ao editado, e nunca altera lançamentos de origem 'folha' ou 'transferencia'. Se o dia do vencimento mudar, adapta o dia para cada mês da série, limitando ao último dia do mês (ex.: dia 31 em fevereiro vira 28, ou 29 em bissexto; dia 31 em meses de 30 dias vira 30).
+      - `atualizarModeloRecorrencia(modelo: RecorrenciaLancamento, alteracoes: Partial<Lancamento>): RecorrenciaLancamento`: função pura que atualiza o modelo de recorrência (`descricao`, `valor`, `conta_id`, `categoria_id`, `contato_id`, `projeto_id`, `forma_pagamento`, `observacoes`) e, se o dia de vencimento mudou, atualiza a `data_inicio` com o novo dia mantendo a consistência com gerações futuras.
+      - `encerrarRecorrencia(modelo: RecorrenciaLancamento, dataEncerramentoISO?: string): RecorrenciaLancamento`: função pura que desativa o modelo (`ativa = false`, `data_encerramento = hoje`).
+      - `processarExclusaoRecorrencia(modelo, escopo, dataHojeISO)`: função pura que encerra o modelo se escopo for 'futuras' ou 'todas', e mantém o modelo ativo se for 'so_esta'.
+      - `podeEditarProximos(lancamento, modelos)`: função pura que valida se o lançamento possui `grupo_recorrencia_id` E existe o modelo correspondente em `recorrencias`. Retorna `false` para grupos antigos legados sem modelo.
+      - `ajustarDataInicioComNovoDia(dataInicioOriginal, novoDia)`: helper puro para recalcular data_inicio com o novo dia.
+    - **2. Modal de Edição (`src/pages/Lancamentos.tsx`)**:
+      - Quando o lançamento sendo editado tem `grupo_recorrencia_id` E existe o modelo correspondente em `recorrencias` (`podeEditarProximos = true`), exibe no topo do modal duas opções de escopo:
+        - "Só este lançamento" (padrão)
+        - "Este e os próximos meses"
+      - Quando "Este e os próximos meses" é selecionado ao salvar:
+        - Atualiza o modelo de recorrência via `atualizarModeloRecorrencia` e salva no Firestore/storage.
+        - Aplica as alterações aos lançamentos pendentes com `vencimento >= alvo` via `aplicarEdicaoNosProximos` e persiste no Firestore/storage.
+        - Preserva lançamentos já pagos e anteriores ao editado.
+      - Grupos antigos (sem modelo) não mostram a opção de escopo.
+    - **3. Modal de Confirmação de Exclusão (`src/components/ModalConfirmarExclusao.tsx`)**:
+      - Quando existir o modelo de recorrência, as opções passam a exibir claramente o encerramento da recorrência:
+        - "Só este lançamento" (apaga só o lançamento do mês, a recorrência continua gerando os próximos).
+        - "Este e os próximos (e parar de gerar novos meses)" (remove este e os futuros pendentes e encerra a recorrência).
+        - "Todos os pendentes do grupo (e parar de gerar novos meses)" (remove os pendentes do grupo e encerra a recorrência).
+    - **4. Storage e Encerramento na Exclusão (`src/services/storage.ts`)**:
+      - No método `excluirLancamentosComEscopo`, quando existir modelo de recorrência e o escopo for `'futuras'` ou `'todas'`, encerra automaticamente a recorrência (`ativa = false`, `data_encerramento = hoje`), impedindo a geração de competências futuras.
+      - No escopo `'so_esta'`, o lançamento do mês é removido e o modelo permanece ativo (a competência já avançada garante que o mês excluído não volta).
+    - **5. Suíte de Testes Automatizados `scripts/test_parte_23C.ts`** (43 asserções / 100% aprovados):
+      - "Só este": altera apenas 1 lançamento e preserva os demais.
+      - "Próximos": altera pendentes com vencimento >= alvo e preserva pagos e anteriores.
+      - Mudança de dia de vencimento de 31 para 15.
+      - Mudança de dia de vencimento de 15 para 31 com limitação ao fim do mês em fevereiro (28 em anos normais e 29 em bissextos).
+      - Exclusão com escopo 'futuras' e 'todas' encerram o modelo, e 'so_esta' não encerra.
+      - Grupo antigo sem modelo não mostra a opção (`podeEditarProximos = false`).
+    - **Data e hora da alteração**: 27/10/2026 05:35:00
+    - **Arquivos criados**: `scripts/test_parte_23C.ts`.
+    - **Arquivos modificados**: `src/utils/recorrencia.ts`, `src/services/storage.ts`, `src/pages/Lancamentos.tsx`, `src/components/ModalConfirmarExclusao.tsx`, `package.json`, `RESUMO_MESTRE.md`.
+  - **Parte 23B – Recorrência Mensal Automática (Modelo de Recorrência e Geração Mês a Mês)**:
+    - **Objetivo**: Substituir o comportamento legado de gerar 12 lançamentos de uma vez no modo "Recorrente" por um modelo de recorrência leve (`RecorrenciaLancamento`), gerando apenas a 1ª ocorrência na criação e gerando os lançamentos seguintes mês a mês de forma automática, idempotente e segura, suportando despesas e receitas.
+    - **1. Tipagem (`src/types/index.ts`)**:
+      - Criação da interface `RecorrenciaLancamento` (`id`, `tipo`, `descricao`, `valor`, `frequencia`, `data_inicio`, `conta_id`, `categoria_id`, `contato_id?`, `projeto_id?`, `forma_pagamento`, `observacoes?`, `ativa`, `data_encerramento?`, `ultima_competencia_gerada`, `criado_em`).
+      - Adição do campo opcional `competencia?: string` (formato 'YYYY-MM') na interface `Lancamento`.
+    - **2. Funções Puras de Recorrência (`src/utils/recorrencia.ts`)**:
+      - `datasDoMes(frequencia, dataInicio, mesAlvo, dataEncerramento?)`: cálculo exato dos vencimentos dentro de um mês de competência. Trata dia 31 adaptando para o último dia do mês (28/29 em fevereiro, 30 em meses de 30 dias), frequência anual no mês de aniversário e frequência semanal (todas as semanas incidentes no mês).
+      - `planejarGeracao(modelos, lancamentosExistentes, mesAtual, limiteMeses)`: função pura que planeja os lançamentos a gerar de forma determinística, com IDs previsíveis (`lanc-rec-${modelo.id}-${dataVencimento}`). Respeita limites, idempotência (não duplica se já gerado, mesmo que tenha sido excluído ou pago), preserva lançamentos já quitados e avança a `ultima_competencia_gerada` dos modelos ativos.
+    - **3. Storage e Sincronização Firestore (`src/services/storage.ts`)**:
+      - Coleção `recorrencias` adicionada em `FIRESTORE_COLLECTIONS`.
+      - Cache em memória `cacheRecorrencias` e listener em tempo real `initRecorrenciasListener`.
+      - Métodos `getRecorrencias()`, `saveRecorrencia(modelo)` e `deleteRecorrencia(id)`.
+      - Método `gerarRecorrenciasPendentes(hojeISO?)`: idempotente, planeja a geração via funções puras, persiste apenas os novos lançamentos pendentes, atualiza o modelo de recorrência e notifica os assinantes de `lancamentos` e `recorrencias`.
+      - Suporte completo no backup JSON (`exportarBackupCompletoJSON`) e restauração (`importarBackupCompletoJSON`).
+    - **4. Formulário de Lançamentos (`src/pages/Lancamentos.tsx`)**:
+      - No modo "Recorrente" (para despesas ou receitas), ao salvar, não gera mais 12 registros de uma vez. Cria o modelo `RecorrenciaLancamento` e apenas o lançamento da primeira competência (com `competencia` e `grupo_recorrencia_id` apontando para o ID do modelo). O modo "Parcelado" permanece inalterado.
+      - Atualização do texto explicativo na interface para orientar o usuário sobre a geração mensal contínua.
+    - **5. Gatilho Automático na Aplicação (`src/App.tsx`)**:
+      - Efeito executado ao iniciar a aplicação e no evento `visibilitychange` (ao retornar o foco à aba) para usuários com papel de administrador.
+      - Utilização de `useRef` para proteção contra execuções concorrentes ou duplicadas no mesmo dia.
+    - **6. Regras de Segurança Firestore (`firestore.rules`)**:
+      - Adicionada regra para `/recorrencias/{doc}` permitindo leitura para usuários autorizados e escrita apenas para administradores.
+    - **7. Suíte de Testes Automatizados `scripts/test_parte_23B.ts`** (41 asserções / 100% aprovados):
+      - Ajuste de dia 31 em meses de 28, 29 (bissexto), 30 e 31 dias.
+      - Frequência anual no mês correspondente e em anos subsequentes.
+      - Frequência semanal (4 e 5 ocorrências mensais).
+      - Não geração antes de `data_inicio` ou após `data_encerramento`.
+      - Catch-up de múltiplos meses atrasados (com teto de 12 meses).
+      - Idempotência absoluta em execuções repetidas.
+      - Lançamentos excluídos não ressurgem (competência já marcada).
+      - Lançamentos pagos não sofrem sobreposição.
+      - Desativação de modelos inativos.
+      - Virada de ano (dezembro para janeiro).
+      - IDs determinísticos.
+    - **Data e hora da alteração**: 27/10/2026 04:35:00
+    - **Arquivos criados**: `scripts/test_parte_23B.ts`.
+    - **Arquivos modificados**: `src/types/index.ts`, `src/utils/recorrencia.ts`, `src/services/storage.ts`, `src/pages/Lancamentos.tsx`, `src/App.tsx`, `firestore.rules`, `package.json`, `RESUMO_MESTRE.md`.
+  - **Parte 23A – Botões Editar e Excluir em Contas a Pagar e Contas a Receber + Corrigir o Escopo da Exclusão**:
+    - **Objetivo**: Disponibilizar botões de ação para Editar (lápis) e Excluir (lixeira) diretamente nas páginas de Contas a Pagar e Contas a Receber (somente perfil administrador e excluindo lançamentos de origem 'folha' e 'transferencia'), integrar com o modal de confirmação de exclusão escopada e corrigir o cálculo e aplicação do escopo de exclusão ('so_esta', 'futuras', 'todas') através de uma função pura determinística, eliminando o método legado obsoleto `excluirLancamentoERecorrencias`.
+    - **1. Função Pura `selecionarParaExcluir` (`src/utils/recorrencia.ts`)**:
+      - Implementação da função pura `selecionarParaExcluir(lancamentos: Lancamento[], alvoId: string, escopo: 'so_esta'|'futuras'|'todas'): string[]`.
+      - Resolução de grupo através de `alvo.grupo_recorrencia_id || alvo.grupo_parcelas_id`.
+      - Escopo `'so_esta'`: retorna estritamente `[alvo.id]`.
+      - Escopo `'futuras'`: inclui o alvo mais membros do grupo com `status === 'pendente'` e `data_vencimento > alvo.data_vencimento`.
+      - Escopo `'todas'`: inclui o alvo mais todos os membros do grupo com `status === 'pendente'`.
+      - Regra estrita: membros já pagos NUNCA são incluídos (com exceção única do próprio alvo se escolhido pelo usuário). Lançamentos com origem `'folha'` ou `'transferencia'` são preservados e nunca incluídos. Sem IDs repetidos.
+    - **2. Storage e Exclusão em Lote (`src/services/storage.ts`)**:
+      - Removida função sem uso `excluirLancamentoERecorrencias`.
+      - Criado método `excluirLancamentosComEscopo(id: string, escopo: 'so_esta'|'futuras'|'todas'): number`, utilizando a função pura e invocando `deleteLancamento` para cada item selecionado, preservando limpeza de folha órfã, notificando os subscribers de `'lancamentos'` e retornando o total excluído.
+    - **3. Modal de Confirmação de Exclusão (`src/components/ModalConfirmarExclusao.tsx`)**:
+      - Novos textos claros e descritivos nas opções: "Só este lançamento", "Este e os próximos pendentes", "Todos os pendentes do grupo (os já pagos são mantidos)".
+      - Contagem dinâmica em tempo real pré-confirmação com a quantidade exata de lançamentos que serão excluídos no escopo selecionado.
+      - Alerta em destaque caso o lançamento alvo já esteja liquidado/pago: *"Este lançamento já está pago; excluí-lo altera o saldo da conta."*
+    - **4. Contas a Pagar e Contas a Receber (`ContasPagar.tsx` e `ContasReceber.tsx`)**:
+      - Inseridos botões de ícone Editar (`Edit2`) e Excluir (`Trash2`) na coluna Ação (somente administrador).
+      - Ocultação dos botões de edição e exclusão para lançamentos com origem `'folha'` e `'transferencia'`.
+      - Exclusão abre `ModalConfirmarExclusao`, acionando `dbService.excluirLancamentosComEscopo` e atualizando a interface automaticamente via reatividade do `subscribe('lancamentos')`.
+    - **5. Navegação e Edição Externa Integrada (`App.tsx` e `Lancamentos.tsx`)**:
+      - `App.tsx` repassa `onEditarLancamento(id)` para `ContasPagar` e `ContasReceber`.
+      - `App.tsx` gerencia os estados `lancamentoEditarId` e `paginaRetorno` ('pagar' ou 'receber'), navegando para a aba de Lançamentos com a prop `lancamentoEditarExternoId`.
+      - `Lancamentos.tsx` busca o registro pelo ID num `useEffect` e abre o modal de edição (`abrirModalEditar`). Ao salvar ou cancelar, o `App.tsx` limpa os estados e retorna automaticamente à página de origem.
+    - **6. Suíte de Testes Automatizados `scripts/test_parte_23A.ts`** (29 asserções / 100% aprovados):
+      - Alvo sem grupo em todos os escopos e alvo inexistente.
+      - Grupo com 5 membros (2 pagos e 3 pendentes) testado em 'so_esta', 'futuras' e 'todas' mantendo pagos intactos.
+      - Alvo pago escolhido deliberadamente pelo usuário.
+      - Preservação estrita de lançamentos com origem 'folha' e 'transferencia'.
+      - Grupos por `grupo_parcelas_id` e `grupo_recorrencia_id`.
+      - Deduplicação de IDs.
+    - **Data e hora da alteração**: 26/10/2026 20:20:00
+    - **Arquivos criados**: `src/utils/recorrencia.ts`, `scripts/test_parte_23A.ts`.
+    - **Arquivos modificados**: `src/services/storage.ts`, `src/pages/Lancamentos.tsx`, `src/components/ModalConfirmarExclusao.tsx`, `src/pages/ContasPagar.tsx`, `src/pages/ContasReceber.tsx`, `src/App.tsx`, `package.json`, `RESUMO_MESTRE.md`.
   - **Parte 22D – Importar o PDF do Sicoob de ponta a ponta (Conta, Saldo Automático, Observações, Histórico e Desfazer)**:
     - **Objetivo**: Integrar o suporte a arquivos PDF do Banco Sicoob (`756`) de ponta a ponta no sistema de conciliação e gestão financeira, contemplando resolução automática de conta, captura de saldo de referência (`extrato_pdf`), gravação e restauração de saldo ao desfazer importação, enriquecimento de observações/histórico com detalhes bancários e preservação de isolamento multi-lote/multi-conta.
     - **1. Saldo Automático Generalizado (`ImportarExtratoModal.tsx`)**:

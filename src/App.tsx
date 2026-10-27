@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { PrivacyProvider } from './context/PrivacyContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { dbService, subscribe } from './services/storage';
+import { obterHojeISO } from './utils/formatters';
 import { Sidebar, PaginaId } from './components/Sidebar';
 import { Header } from './components/Header';
 import { MobileBottomNav } from './components/MobileBottomNav';
@@ -38,6 +40,51 @@ const AppContent: React.FC = () => {
   const [paginaAtiva, setPaginaAtiva] = useState<PaginaId>('painel');
   const [sidebarMobileAberta, setSidebarMobileAberta] = useState(false);
   const [modalNovoLancamentoAberto, setModalNovoLancamentoAberto] = useState(false);
+  const [lancamentoEditarId, setLancamentoEditarId] = useState<string | null>(null);
+  const [paginaRetorno, setPaginaRetorno] = useState<'pagar' | 'receber' | null>(null);
+
+  // Ref para garantir que gerarRecorrenciasPendentes rode apenas UMA vez por carregamento
+  const geracaoRodouRef = useRef(false);
+  // Ref para controlar quando o visibilitychange deve disparar nova geração (mudou o dia)
+  const ultimoDiaGeracaoRef = useRef<string>('');
+
+  // Parte 23B: Gerar recorrências pendentes após o carregamento (admin only)
+  useEffect(() => {
+    if (!dbService.isCarregado() || !dbService.isUsuarioAdmin()) return;
+    if (geracaoRodouRef.current) return;
+    geracaoRodouRef.current = true;
+    const hoje = obterHojeISO();
+    ultimoDiaGeracaoRef.current = hoje;
+    dbService.gerarRecorrenciasPendentes(hoje);
+  }, []);
+
+  // Parte 23B: Re-gerar quando o usuário retorna à aba, se o dia mudou
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!dbService.isCarregado() || !dbService.isUsuarioAdmin()) return;
+      const hoje = obterHojeISO();
+      if (hoje !== ultimoDiaGeracaoRef.current) {
+        ultimoDiaGeracaoRef.current = hoje;
+        dbService.gerarRecorrenciasPendentes(hoje);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  // Parte 23B: Reagir quando o sistema sinalizar que terminou de carregar
+  useEffect(() => {
+    const unsub = subscribe('carregando', () => {
+      if (!dbService.isCarregado() || !dbService.isUsuarioAdmin()) return;
+      if (geracaoRodouRef.current) return;
+      geracaoRodouRef.current = true;
+      const hoje = obterHojeISO();
+      ultimoDiaGeracaoRef.current = hoje;
+      dbService.gerarRecorrenciasPendentes(hoje);
+    });
+    return () => unsub();
+  }, []);
 
   if (carregando) {
     return (
@@ -70,7 +117,16 @@ const AppContent: React.FC = () => {
         return (
           <Lancamentos
             modalNovoAbertoExterno={modalNovoLancamentoAberto}
-            onFecharModalExterno={() => setModalNovoLancamentoAberto(false)}
+            onFecharModalExterno={() => {
+              setModalNovoLancamentoAberto(false);
+              setLancamentoEditarId(null);
+              if (paginaRetorno) {
+                const destino = paginaRetorno;
+                setPaginaRetorno(null);
+                setPaginaAtiva(destino);
+              }
+            }}
+            lancamentoEditarExternoId={lancamentoEditarId}
           />
         );
       case 'pagar':
@@ -80,6 +136,11 @@ const AppContent: React.FC = () => {
               setPaginaAtiva('lancamentos');
               setModalNovoLancamentoAberto(true);
             }}
+            onEditarLancamento={(id) => {
+              setLancamentoEditarId(id);
+              setPaginaRetorno('pagar');
+              setPaginaAtiva('lancamentos');
+            }}
           />
         );
       case 'receber':
@@ -88,6 +149,11 @@ const AppContent: React.FC = () => {
             onNovoLancamento={() => {
               setPaginaAtiva('lancamentos');
               setModalNovoLancamentoAberto(true);
+            }}
+            onEditarLancamento={(id) => {
+              setLancamentoEditarId(id);
+              setPaginaRetorno('receber');
+              setPaginaAtiva('lancamentos');
             }}
           />
         );

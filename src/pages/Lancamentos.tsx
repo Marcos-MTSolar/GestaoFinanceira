@@ -6,6 +6,7 @@ import { formatarMoeda, formatarDataBR, estaAtrasado } from '../utils/formatters
 import { exportarLancamentosCSV } from '../utils/csvExporter';
 import {
   Lancamento,
+  RecorrenciaLancamento,
   TipoLancamento,
   StatusLancamento,
   FormaPagamento,
@@ -15,11 +16,17 @@ import {
   Projeto,
   RegistroImportacao
 } from '../types';
+import { obterHojeISO } from '../utils/formatters';
 import { obterNomeBanco, extrairCamposOrigem } from '../utils/extrato/observacoesHelper';
 import { Modal } from '../components/Modal';
 import { ModalPagarReceber } from '../components/ModalPagarReceber';
 import { ModalConfirmarExclusao } from '../components/ModalConfirmarExclusao';
 import { ImportarExtratoModal } from '../components/ImportarExtratoModal';
+import {
+  aplicarEdicaoNosProximos,
+  atualizarModeloRecorrencia,
+  podeEditarProximos,
+} from '../utils/recorrencia';
 import {
   ReceiptText,
   Plus,
@@ -53,12 +60,14 @@ interface LancamentosProps {
   modalNovoAbertoExterno?: boolean;
   onFecharModalExterno?: () => void;
   tipoFixo?: TipoLancamento;
+  lancamentoEditarExternoId?: string | null;
 }
 
 export const Lancamentos: React.FC<LancamentosProps> = ({
   modalNovoAbertoExterno = false,
   onFecharModalExterno,
   tipoFixo,
+  lancamentoEditarExternoId,
 }) => {
   const { isAdmin } = useAuth();
   const { formatarValor } = usePrivacy();
@@ -109,6 +118,8 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
 
   // FORMULÁRIO DE LANÇAMENTO
   const [tipo, setTipo] = useState<TipoLancamento>(tipoFixo || 'receita');
+  const [recorrencias, setRecorrencias] = useState<RecorrenciaLancamento[]>([]);
+  const [escopoEdicao, setEscopoEdicao] = useState<'so_este' | 'proximos'>('so_este');
   const [descricao, setDescricao] = useState('');
   const [valor, setValor] = useState('');
   const [dataVencimento, setDataVencimento] = useState(
@@ -151,6 +162,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
     setContatos(dbService.getContatos());
     setProjetos(dbService.getProjetos());
     setImportacoes(dbService.getImportacoes());
+    setRecorrencias(dbService.getRecorrencias());
 
     if (c.length > 0 && !contaId) {
       setContaId(c[0].id);
@@ -165,6 +177,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
     const unsubCon = subscribe('contatos', carregarDados);
     const unsubP = subscribe('projetos', carregarDados);
     const unsubImp = subscribe('importacoes', carregarDados);
+    const unsubR = subscribe('recorrencias', carregarDados);
 
     return () => {
       unsubL();
@@ -173,6 +186,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
       unsubCon();
       unsubP();
       unsubImp();
+      unsubR();
     };
   }, []);
 
@@ -205,8 +219,18 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
     }
   }, [modalNovoAbertoExterno]);
 
+  useEffect(() => {
+    if (lancamentoEditarExternoId) {
+      const lanc = dbService.getLancamentoById(lancamentoEditarExternoId);
+      if (lanc) {
+        abrirModalEditar(lanc);
+      }
+    }
+  }, [lancamentoEditarExternoId]);
+
   const abrirModalNovo = () => {
     setLancamentoEditando(null);
+    setEscopoEdicao('so_este');
     setTipo(tipoFixo || 'receita');
     setDescricao('');
     setValor('');
@@ -235,6 +259,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
 
   const abrirModalEditar = (l: Lancamento) => {
     setLancamentoEditando(l);
+    setEscopoEdicao('so_este');
     setTipo(l.tipo);
     setDescricao(l.descricao);
     setValor(String(l.valor));
@@ -370,70 +395,138 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
         dbService.saveLancamento(novaParcela);
       }
     }
-    // 2. Recorrência (gerar os próximos 12 lançamentos)
+    // 2. Recorrência (Parte 23B): cria o MODELO e a 1ª ocorrência na data informada
     else if (modoCondicao === 'recorrente' && !lancamentoEditando) {
-      const grupoRecId = 'grp-rec-' + Date.now();
-      const dataBase = new Date(dataVencimento + 'T12:00:00');
-      const QUANTIDADE_RECORRENCIAS = 12;
+      const recId = 'rec-' + Date.now();
 
-      for (let i = 1; i <= QUANTIDADE_RECORRENCIAS; i++) {
-        const dataVenc = new Date(dataBase);
-        if (tipoRecorrencia === 'semanal') {
-          dataVenc.setDate(dataBase.getDate() + (i - 1) * 7);
-        } else if (tipoRecorrencia === 'anual') {
-          dataVenc.setFullYear(dataBase.getFullYear() + (i - 1));
-        } else {
-          // mensal
-          dataVenc.setMonth(dataBase.getMonth() + (i - 1));
-        }
-        const vencIso = dataVenc.toISOString().split('T')[0];
-
-        const novoRecorrente: Lancamento = {
-          id: `lanc-rec-${Date.now()}-${i}`,
-          tipo,
-          descricao: `${descricao.trim()} [${tipoRecorrencia.toUpperCase()} ${i}/12]`,
-          valor: val,
-          data_vencimento: vencIso,
-          data_pagamento: i === 1 && status === 'pago' ? (dataPagamento || vencIso) : null,
-          status: i === 1 && status === 'pago' ? 'pago' : 'pendente',
-          conta_id: contaEfetivaId,
-          categoria_id: categoriaId,
-          contato_id: contatoId || undefined,
-          projeto_id: projetoId || undefined,
-          forma_pagamento: formaPagamento,
-          recorrencia: tipoRecorrencia,
-          grupo_recorrencia_id: grupoRecId,
-          observacoes,
-          origem: 'manual',
-          criado_em: new Date().toISOString(),
-        };
-        dbService.saveLancamento(novoRecorrente);
-      }
-    }
-    // 3. Lançamento Individual / Edição
-    else {
-      const registro: Lancamento = {
-        id: lancamentoEditando ? lancamentoEditando.id : 'lanc-' + Date.now(),
+      // Cria o modelo de recorrência (ultima_competencia_gerada = mês da data informada)
+      const modelo: RecorrenciaLancamento = {
+        id: recId,
         tipo,
         descricao: descricao.trim(),
         valor: val,
-        data_vencimento: dataVencimento,
-        data_pagamento: status === 'pago' ? (dataPagamento || dataVencimento) : null,
-        status,
+        frequencia: tipoRecorrencia,
+        data_inicio: dataVencimento,
         conta_id: contaEfetivaId,
         categoria_id: categoriaId,
         contato_id: contatoId || undefined,
         projeto_id: projetoId || undefined,
         forma_pagamento: formaPagamento,
-        recorrencia: modoCondicao === 'parcelado' ? 'parcelado' : modoCondicao === 'recorrente' ? tipoRecorrencia : 'nenhuma',
-        observacoes,
-        origem: lancamentoEditando?.origem || 'manual',
-        criado_em: lancamentoEditando?.criado_em || new Date().toISOString(),
-        // A5: preservar vínculos de folha ao editar
-        ...(lancamentoEditando?.folha_id ? { folha_id: lancamentoEditando.folha_id } : {}),
-        ...(lancamentoEditando?.funcionario_id ? { funcionario_id: lancamentoEditando.funcionario_id } : {}),
+        observacoes: observacoes || undefined,
+        ativa: true,
+        ultima_competencia_gerada: dataVencimento.slice(0, 7), // 'YYYY-MM'
+        criado_em: new Date().toISOString(),
       };
-      dbService.saveLancamento(registro);
+      dbService.saveRecorrencia(modelo);
+
+      // Cria a 1ª ocorrência (na data informada)
+      const primeiraOcorrencia: Lancamento = {
+        id: `lanc-rec-${recId}-${dataVencimento}`,
+        tipo,
+        descricao: descricao.trim(),
+        valor: val,
+        data_vencimento: dataVencimento,
+        data_pagamento: status === 'pago' ? (dataPagamento || dataVencimento) : null,
+        status: status === 'pago' ? 'pago' : 'pendente',
+        conta_id: contaEfetivaId,
+        categoria_id: categoriaId,
+        contato_id: contatoId || undefined,
+        projeto_id: projetoId || undefined,
+        forma_pagamento: formaPagamento,
+        recorrencia: tipoRecorrencia,
+        grupo_recorrencia_id: recId,
+        observacoes: observacoes || undefined,
+        origem: 'manual',
+        competencia: dataVencimento.slice(0, 7),
+        criado_em: new Date().toISOString(),
+      };
+      dbService.saveLancamento(primeiraOcorrencia);
+    }
+    // 3. Lançamento Individual / Edição
+    else {
+      const temModelo = lancamentoEditando ? podeEditarProximos(lancamentoEditando, recorrencias) : false;
+      if (lancamentoEditando && temModelo && escopoEdicao === 'proximos') {
+        const modelo = recorrencias.find((r) => r.id === lancamentoEditando.grupo_recorrencia_id);
+        const alteracoes: Partial<Lancamento> = {
+          descricao: descricao.trim(),
+          valor: val,
+          conta_id: contaEfetivaId,
+          categoria_id: categoriaId,
+          contato_id: contatoId || undefined,
+          projeto_id: projetoId || undefined,
+          forma_pagamento: formaPagamento,
+          observacoes: observacoes || undefined,
+          data_vencimento: dataVencimento,
+        };
+
+        // 1. Atualiza o modelo de recorrência
+        if (modelo) {
+          const modeloAtualizado = atualizarModeloRecorrencia(modelo, alteracoes);
+          dbService.saveRecorrencia(modeloAtualizado);
+        }
+
+        // 2. Atualiza todos os lançamentos PENDENTES do grupo com vencimento >= alvo
+        const todos = dbService.getLancamentos();
+        const atualizados = aplicarEdicaoNosProximos(todos, lancamentoEditando, alteracoes);
+        for (const item of atualizados) {
+          const original = todos.find((l) => l.id === item.id);
+          if (original && JSON.stringify(original) !== JSON.stringify(item)) {
+            if (item.id === lancamentoEditando.id) {
+              dbService.saveLancamento({
+                ...item,
+                status,
+                data_pagamento: status === 'pago' ? (dataPagamento || dataVencimento) : null,
+              });
+            } else {
+              dbService.saveLancamento(item);
+            }
+          }
+        }
+
+        // Se o alvo já estiver pago, aplicarEdicaoNosProximos o preserva, mas salva alterações do form no alvo pago
+        if (lancamentoEditando.status === 'pago') {
+          dbService.saveLancamento({
+            ...lancamentoEditando,
+            descricao: descricao.trim(),
+            valor: val,
+            conta_id: contaEfetivaId,
+            categoria_id: categoriaId,
+            contato_id: contatoId || undefined,
+            projeto_id: projetoId || undefined,
+            forma_pagamento: formaPagamento,
+            observacoes: observacoes || undefined,
+            data_vencimento: dataVencimento,
+            data_pagamento: dataPagamento || lancamentoEditando.data_pagamento,
+          });
+        }
+      } else {
+        const registro: Lancamento = {
+          id: lancamentoEditando ? lancamentoEditando.id : 'lanc-' + Date.now(),
+          tipo,
+          descricao: descricao.trim(),
+          valor: val,
+          data_vencimento: dataVencimento,
+          data_pagamento: status === 'pago' ? (dataPagamento || dataVencimento) : null,
+          status,
+          conta_id: contaEfetivaId,
+          categoria_id: categoriaId,
+          contato_id: contatoId || undefined,
+          projeto_id: projetoId || undefined,
+          forma_pagamento: formaPagamento,
+          recorrencia: modoCondicao === 'parcelado' ? 'parcelado' : modoCondicao === 'recorrente' ? tipoRecorrencia : (lancamentoEditando?.recorrencia || 'nenhuma'),
+          grupo_recorrencia_id: lancamentoEditando?.grupo_recorrencia_id,
+          grupo_parcelas_id: lancamentoEditando?.grupo_parcelas_id,
+          parcela_atual: lancamentoEditando?.parcela_atual,
+          total_parcelas: lancamentoEditando?.total_parcelas,
+          observacoes,
+          origem: lancamentoEditando?.origem || 'manual',
+          criado_em: lancamentoEditando?.criado_em || new Date().toISOString(),
+          // A5: preservar vínculos de folha ao editar
+          ...(lancamentoEditando?.folha_id ? { folha_id: lancamentoEditando.folha_id } : {}),
+          ...(lancamentoEditando?.funcionario_id ? { funcionario_id: lancamentoEditando.funcionario_id } : {}),
+        };
+        dbService.saveLancamento(registro);
+      }
     }
 
     fecharModal();
@@ -453,7 +546,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
 
   const handleConfirmarExclusao = (escopo: 'so_esta' | 'futuras' | 'todas') => {
     if (!lancamentoParaExcluir) return;
-    dbService.deleteLancamento(lancamentoParaExcluir.id, escopo);
+    dbService.excluirLancamentosComEscopo(lancamentoParaExcluir.id, escopo);
   };
 
   // Abrir Modal de Pagamento / Recebimento com Simulação
@@ -1230,6 +1323,62 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
       >
         <form onSubmit={salvarLancamento} className="space-y-4">
           
+          {/* PARTE 23C: Opções de escopo de edição de recorrência quando existe modelo */}
+          {lancamentoEditando && podeEditarProximos(lancamentoEditando, recorrencias) && (
+            <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl space-y-2">
+              <label className="block text-xs font-bold text-[#003064]">
+                Este lançamento faz parte de uma recorrência periódica. Aplicar alterações a:
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <label
+                  className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                    escopoEdicao === 'so_este'
+                      ? 'bg-white border-[#003064] shadow-xs ring-1 ring-[#003064]'
+                      : 'bg-white/60 border-slate-200 hover:bg-white'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="escopo-edicao"
+                    value="so_este"
+                    checked={escopoEdicao === 'so_este'}
+                    onChange={() => setEscopoEdicao('so_este')}
+                    className="mt-0.5 text-[#003064] focus:ring-[#003064]"
+                  />
+                  <div>
+                    <strong className="text-slate-800 block">Só este lançamento</strong>
+                    <span className="text-slate-500 text-[11px]">
+                      Altera apenas este mês. Os próximos meses continuarão inalterados.
+                    </span>
+                  </div>
+                </label>
+
+                <label
+                  className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                    escopoEdicao === 'proximos'
+                      ? 'bg-white border-[#003064] shadow-xs ring-1 ring-[#003064]'
+                      : 'bg-white/60 border-slate-200 hover:bg-white'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="escopo-edicao"
+                    value="proximos"
+                    checked={escopoEdicao === 'proximos'}
+                    onChange={() => setEscopoEdicao('proximos')}
+                    className="mt-0.5 text-[#003064] focus:ring-[#003064]"
+                  />
+                  <div>
+                    <strong className="text-slate-800 block">Este e os próximos meses</strong>
+                    <span className="text-slate-500 text-[11px]">
+                      Atualiza o modelo da recorrência e todos os lançamentos futuros pendentes.
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+          )}
+          
           {/* ABAS COLORIDAS: RECEITA (VERDE) E DESPESA (VERMELHO) */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -1626,20 +1775,22 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
               )}
 
               {modoCondicao === 'recorrente' && (
-                <div className="flex items-center gap-3 pt-1 border-t border-slate-200 text-xs">
-                  <span className="text-slate-600 font-medium">Repetir a cada:</span>
-                  <select
-                    value={tipoRecorrencia}
-                    onChange={(e) => setTipoRecorrencia(e.target.value as any)}
-                    className="px-2 py-1 text-xs border border-slate-300 rounded-lg bg-white"
-                  >
-                    <option value="mensal">Mês (Mensal)</option>
-                    <option value="semanal">Semana (Semanal)</option>
-                    <option value="anual">Ano (Anual)</option>
-                  </select>
-                  <span className="text-slate-500 text-[11px]">
-                    O sistema gerará automaticamente os próximos 12 lançamentos programados.
-                  </span>
+                <div className="flex flex-col gap-2 pt-1 border-t border-slate-200">
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className="text-slate-600 font-medium">Repetir a cada:</span>
+                    <select
+                      value={tipoRecorrencia}
+                      onChange={(e) => setTipoRecorrencia(e.target.value as any)}
+                      className="px-2 py-1 text-xs border border-slate-300 rounded-lg bg-white"
+                    >
+                      <option value="mensal">Mês (Mensal)</option>
+                      <option value="semanal">Semana (Semanal)</option>
+                      <option value="anual">Ano (Anual)</option>
+                    </select>
+                  </div>
+                  <p className="text-[11px] text-slate-400 italic">
+                    🔄 Os próximos meses aparecem automaticamente no início de cada mês.
+                  </p>
                 </div>
               )}
             </div>
