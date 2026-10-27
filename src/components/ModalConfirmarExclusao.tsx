@@ -36,13 +36,14 @@ export const ModalConfirmarExclusao: React.FC<ModalConfirmarExclusaoProps> = ({
     return selecionarParaExcluir(lista, lancamento.id, escopo);
   }, [lista, lancamento, escopo]);
 
-  if (!isOpen || !lancamento) return null;
-
-  const temGrupo = !!(lancamento.grupo_parcelas_id || lancamento.grupo_recorrencia_id);
   const modeloRecorrencia = useMemo(() => {
     if (!lancamento?.grupo_recorrencia_id) return null;
     return dbService.getRecorrencias().find((r) => r.id === lancamento.grupo_recorrencia_id) || null;
-  }, [lancamento]);
+  }, [lancamento?.grupo_recorrencia_id]);
+
+  if (!isOpen || !lancamento) return null;
+
+  const temGrupo = !!(lancamento.grupo_parcelas_id || lancamento.grupo_recorrencia_id);
   const alvoPago = lancamento.status === 'pago';
   const qtdExcluir = idsParaExcluir.length;
 

@@ -1,8 +1,32 @@
 # RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 27/10/2026 05:35:00 (Parte 23C – Editar e Excluir Lançamentos de Recorrência)
+**Última Atualização:** 27/10/2026 05:55:00 (Parte 23E – Correção Urgente de Hook Condicional React #310)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
+  - **Parte 23E – Correção urgente: erro React #310 ao clicar em Excluir (hook depois de return antecipado)**:
+    - **Sintoma & Causa Raiz**:
+      - Ao clicar em "Excluir" em Contas a Pagar ou Lançamentos, ocorria quebra com o erro React #310 (*Rendered more hooks than during the previous render*).
+      - Em `src/components/ModalConfirmarExclusao.tsx`, o hook `useMemo` de `modeloRecorrencia` (introduzido na Parte 23C) estava localizado APÓS a cláusula de retorno antecipado `if (!isOpen || !lancamento) return null;`. Com o modal fechado, o componente executava 3 hooks; ao abrir o modal, executava 4 hooks, violando a regra fundamental dos hooks do React (*Rules of Hooks*).
+    - **1. Correção no Componente (`src/components/ModalConfirmarExclusao.tsx`)**:
+      - O `useMemo` de `modeloRecorrencia` foi movido para o topo do componente, antes de qualquer cláusula de retorno antecipado (`return null`), tratando `lancamento` nulo ou indefinido internamente (`lancamento?.grupo_recorrencia_id`).
+      - Nenhum hook (useState, useEffect, useMemo, useRef, useCallback) fica posicionado após retorno ou dentro de condições/laços.
+      - Validação de invariância do número e ordem de hooks nos 3 cenários do modal:
+        1. *Modal fechado*: 4 hooks executados (`useState` -> `useEffect` -> `useMemo` idsParaExcluir -> `useMemo` modeloRecorrencia) e retorno antecipado de `null`.
+        2. *Modal aberto para lançamento sem grupo*: 4 hooks idênticos executados -> renderiza modal com escopo de exclusão padrão.
+        3. *Modal aberto para lançamento com modelo de recorrência*: 4 hooks idênticos executados -> renderiza modal com avisos e opções de encerramento da recorrência.
+    - **2. Auditoria nos Componentes Alterados nas Partes 23A–23C**:
+      - Foram minuciosamente inspecionados: `src/components/ModalConfirmarExclusao.tsx`, `src/pages/ContasPagar.tsx`, `src/pages/ContasReceber.tsx`, `src/pages/Lancamentos.tsx`, `src/pages/Configuracoes.tsx`, `src/components/ModalPagarReceber.tsx` e `src/App.tsx`.
+      - Todos os hooks de todos esses componentes estão estritamente no topo dos componentes, incondicionais e antes de qualquer retorno antecipado.
+    - **3. Configuração do Linter de Hooks (`eslint-plugin-react-hooks`)**:
+      - O projeto não possuía ESLint configurado previamente.
+      - Foi instalado o `eslint` e `eslint-plugin-react-hooks` com parser `@babel/eslint-parser` compatível com TypeScript/TSX, com configuração estrita e minimalista em `eslint.config.js` focada exclusivamente na regra `react-hooks/rules-of-hooks: error`.
+      - Adicionado o comando npm no `package.json`: `"lint:hooks": "eslint \"src/**/*.{ts,tsx}\""`.
+      - Executado nos componentes do projeto: **0 erros e 0 avisos**.
+    - **4. Lição Crítica Aprendida**:
+      - ⚠️ **"tsc e build não detectam hook condicional; rodar o lint de hooks"**.
+      - O compilador TypeScript (`tsc --noEmit`) e o bundler (`vite build`) verificam apenas tipagem estática e sintaxe, não tendo capacidade de detectar violações de ordem ou chamada condicional de hooks em runtime. É mandatório rodar `npm run lint:hooks` em cada etapa e antes de entregas.
+    - **Data e hora da alteração**: 27/10/2026 05:55:00
+    - **Arquivos modificados**: `src/components/ModalConfirmarExclusao.tsx`, `package.json`, `eslint.config.js`, `RESUMO_MESTRE.md`.
   - **Parte 23C – Editar e excluir lançamentos de recorrência (aplicar aos próximos meses, encerrar)**:
     - **Objetivo**: Permitir a edição e exclusão de lançamentos periódicos com escopo nos próximos meses e encerramento automático da recorrência para modelos cadastrados (`recorrencias`), mantendo grupos legados sem modelo operando estritamente com a lógica da Parte 23A.
     - **1. Funções Puras de Recorrência (`src/utils/recorrencia.ts`)**:
