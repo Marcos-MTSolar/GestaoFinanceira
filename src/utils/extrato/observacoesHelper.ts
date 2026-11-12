@@ -15,6 +15,11 @@ export interface DadosFormatacaoImportacao {
   formato: 'ofx' | 'xlsx' | 'pdf';
   loteId: string;
   dataHoraImportacao?: string;
+  // Metadados ricos Parte 24B
+  tipoOperacaoBanco?: string;
+  contraparteDocumento?: string;
+  mensagemUsuario?: string;
+  favorecido?: string;
 }
 
 export interface CamposOrigemDetalhados {
@@ -31,6 +36,10 @@ export interface CamposOrigemDetalhados {
   dataHoraImportacao?: string;
   assinaturaFraca?: string;
   observacoesAdicionais?: string;
+  tipoOperacaoBanco?: string;
+  contraparteDocumento?: string;
+  mensagemUsuario?: string;
+  favorecido?: string;
 }
 
 /**
@@ -87,11 +96,19 @@ export function formatarDataHoraLegivel(isoOuData?: string): string {
   }
 }
 
+export interface MetadadosDescricaoCurta {
+  tipoOperacaoBanco?: 'pix_emitido' | 'pix_recebido' | 'pix_transferencia' | 'titulo_boleto' | 'db_tr_dif_tit' | 'outro' | string;
+  contraparteNome?: string;
+  contraparteDocumento?: string;
+  documentoMascarado?: boolean;
+  mensagemUsuario?: string;
+  favorecido?: string;
+}
+
 /**
- * Gera uma descrição curta e limpa (tipo da operação + favorecido),
- * evitando duplicações como "PIX ENVIADO JOAO - JOAO" ou números variáveis longos.
+ * Função interna legada para gerar descrição curta baseada em regex de operações.
  */
-export function gerarDescricaoCurta(descricaoOriginal: string, contraparte?: string): string {
+function gerarDescricaoCurtaLegada(descricaoOriginal: string, contraparte?: string): string {
   const descLimpa = (descricaoOriginal || '').trim();
   const favorecido = (contraparte || '').trim();
 
@@ -135,6 +152,70 @@ export function gerarDescricaoCurta(descricaoOriginal: string, contraparte?: str
 }
 
 /**
+ * Gera uma descrição curta e limpa (tipo da operação + favorecido/mensagem),
+ * evitando duplicações como "PIX ENVIADO JOAO - JOAO" ou números variáveis longos.
+ *
+ * Suporta metadados da Parte 24B (Sicoob PDF e outros):
+ * - com mensagem: "Pix – <mensagem>"
+ * - com nome: "Pix – <nome>"
+ * - só documento mascarado: "Pix enviado – ***.913.164-**"
+ * - FAV: "Transferência – <favorecido>"
+ * - títulos: "Título – <mensagem>"
+ */
+export function gerarDescricaoCurta(
+  descricaoOriginalOuTransacao: string | (MetadadosDescricaoCurta & { descricaoOriginal: string; contraparte?: string }),
+  contraparteArg?: string,
+  metadadosArg?: MetadadosDescricaoCurta
+): string {
+  let descricaoOriginal = '';
+  let contraparte: string | undefined = contraparteArg;
+  let meta: MetadadosDescricaoCurta | undefined = metadadosArg;
+
+  if (typeof descricaoOriginalOuTransacao === 'object' && descricaoOriginalOuTransacao !== null) {
+    descricaoOriginal = descricaoOriginalOuTransacao.descricaoOriginal || '';
+    contraparte = descricaoOriginalOuTransacao.contraparte || contraparteArg;
+    meta = { ...descricaoOriginalOuTransacao, ...metadadosArg };
+  } else {
+    descricaoOriginal = descricaoOriginalOuTransacao || '';
+  }
+
+  // 1) FAV (Transferência – favorecido)
+  if (meta?.favorecido && meta.favorecido.trim()) {
+    return `Transferência – ${meta.favorecido.trim()}`;
+  }
+
+  // 2) Títulos com mensagem ("Título – <mensagem>")
+  if (meta?.tipoOperacaoBanco === 'titulo_boleto' && meta.mensagemUsuario && meta.mensagemUsuario.trim()) {
+    return `Título – ${meta.mensagemUsuario.trim()}`;
+  }
+
+  // 3) Operações Pix
+  const ehPix = meta?.tipoOperacaoBanco === 'pix_emitido' ||
+    meta?.tipoOperacaoBanco === 'pix_recebido' ||
+    meta?.tipoOperacaoBanco === 'pix_transferencia' ||
+    /PIX/i.test(descricaoOriginal);
+
+  if (ehPix) {
+    // - com mensagem: "Pix – <mensagem>"
+    if (meta?.mensagemUsuario && meta.mensagemUsuario.trim()) {
+      return `Pix – ${meta.mensagemUsuario.trim()}`;
+    }
+    // - com nome: "Pix – <nome>"
+    const nomeContraparte = meta?.contraparteNome || (!meta?.documentoMascarado && contraparte ? contraparte : undefined);
+    if (nomeContraparte && nomeContraparte.trim()) {
+      return `Pix – ${nomeContraparte.trim()}`;
+    }
+    // - só documento mascarado: "Pix enviado – ***.913.164-**"
+    if (meta?.contraparteDocumento && (meta.documentoMascarado || /^\*{3}/.test(meta.contraparteDocumento))) {
+      return `Pix enviado – ${meta.contraparteDocumento.trim()}`;
+    }
+  }
+
+  // Se não caiu nas regras novas ricas, aplica o comportamento padrão legado
+  return gerarDescricaoCurtaLegada(descricaoOriginal, contraparte);
+}
+
+/**
  * Constrói o texto legível para o campo observações de um lançamento criado via extrato.
  */
 export function formatarObservacoesImportacao(dados: DadosFormatacaoImportacao): string {
@@ -148,12 +229,28 @@ export function formatarObservacoesImportacao(dados: DadosFormatacaoImportacao):
     linhas.push(`• Histórico original: ${dados.descricaoOriginal.trim()}`);
   }
 
+  if (dados.tipoOperacaoBanco) {
+    linhas.push(`• Tipo de operação: ${dados.tipoOperacaoBanco}`);
+  }
+
+  if (dados.favorecido && dados.favorecido.trim()) {
+    linhas.push(`• Favorecido: ${dados.favorecido.trim()}`);
+  }
+
   if (dados.contraparte && dados.contraparte.trim()) {
     linhas.push(`• Favorecido/Contraparte: ${dados.contraparte.trim()}`);
   }
 
+  if (dados.contraparteDocumento && dados.contraparteDocumento.trim()) {
+    linhas.push(`• Documento da contraparte: ${dados.contraparteDocumento.trim()}`);
+  }
+
+  if (dados.mensagemUsuario && dados.mensagemUsuario.trim()) {
+    linhas.push(`• Mensagem: ${dados.mensagemUsuario.trim()}`);
+  }
+
   if (dados.documento && dados.documento.trim()) {
-    linhas.push(`• Documento: ${dados.documento.trim()}`);
+    linhas.push(`• DOC: ${dados.documento.trim()}`);
   }
 
   if (dados.detalhes && dados.detalhes.trim()) {
@@ -193,12 +290,28 @@ export function complementarObservacoesEnriquecimento(
     linhasEnriquecimento.push(`• Histórico original: ${dados.descricaoOriginal.trim()}`);
   }
 
+  if (dados.tipoOperacaoBanco) {
+    linhasEnriquecimento.push(`• Tipo de operação: ${dados.tipoOperacaoBanco}`);
+  }
+
+  if (dados.favorecido && dados.favorecido.trim()) {
+    linhasEnriquecimento.push(`• Favorecido: ${dados.favorecido.trim()}`);
+  }
+
   if (dados.contraparte && dados.contraparte.trim()) {
     linhasEnriquecimento.push(`• Favorecido/Contraparte: ${dados.contraparte.trim()}`);
   }
 
+  if (dados.contraparteDocumento && dados.contraparteDocumento.trim()) {
+    linhasEnriquecimento.push(`• Documento da contraparte: ${dados.contraparteDocumento.trim()}`);
+  }
+
+  if (dados.mensagemUsuario && dados.mensagemUsuario.trim()) {
+    linhasEnriquecimento.push(`• Mensagem: ${dados.mensagemUsuario.trim()}`);
+  }
+
   if (dados.documento && dados.documento.trim()) {
-    linhasEnriquecimento.push(`• Documento: ${dados.documento.trim()}`);
+    linhasEnriquecimento.push(`• DOC: ${dados.documento.trim()}`);
   }
 
   if (dados.detalhes && dados.detalhes.trim()) {
@@ -220,7 +333,6 @@ export function complementarObservacoesEnriquecimento(
   const blocoEnriquecimento = linhasEnriquecimento.join('\n');
 
   if (observacoesAnteriores && observacoesAnteriores.trim()) {
-    // Se já havia anotações, preserva tudo e adiciona divisor limpo
     return `${observacoesAnteriores.trim()}\n\n---\n${blocoEnriquecimento}`;
   }
 

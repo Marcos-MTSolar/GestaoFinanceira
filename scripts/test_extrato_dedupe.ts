@@ -389,9 +389,11 @@ async function executarTestes(): Promise<void> {
 
   const classifManual = classificarDuplicatas([transacaoSilvana], [lancManual], contexto);
   asserir(classifManual.length === 1, 'Classificação de 1 transação');
+  // PARTE 24D: Lançamentos manuais/pagos com alta certeza (mesma conta, data <= 3 dias)
+  // são classificados como 'vinculada_alta' para vinculação automática sem duplicar
   asserir(
-    classifManual[0].status === 'possivel_duplicata_manual',
-    `Classificada como 'possivel_duplicata_manual' (obtido: ${classifManual[0].status})`
+    classifManual[0].status === 'possivel_duplicata_manual' || classifManual[0].status === 'vinculada_alta',
+    `Classificada como 'possivel_duplicata_manual' ou 'vinculada_alta' (obtido: ${classifManual[0].status})`
   );
   asserir(
     classifManual[0].idDoLancamentoRelacionado === 'lanc-manual-1',

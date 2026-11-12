@@ -32,7 +32,9 @@ export function inferirFormaPagamento(
     d.includes('TITULO') ||
     d.includes('COB ') ||
     d.includes('PAGAMENTO DE TITULO') ||
-    d.includes('PAG BOLETO')
+    d.includes('PAG BOLETO') ||
+    d.includes('TIT.COMPE') ||
+    d.includes('TIT COMPE')
   ) {
     return 'boleto';
   }
@@ -57,7 +59,8 @@ export function inferirFormaPagamento(
     d.includes('APLICACAO') ||
     d.includes('RESGATE') ||
     d.includes('TEF') ||
-    natureza === 'movimentacao_interna'
+    natureza === 'movimentacao_interna' ||
+    natureza === 'transferencia_propria'
   ) {
     return 'transferencia';
   }

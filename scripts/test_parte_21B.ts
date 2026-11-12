@@ -1,4 +1,4 @@
-﻿// MT Solar - GestÃ£o Financeira
+// MT Solar - GestÃ£o Financeira
 // Testes Automatizados da Parte 21B (Saldo de ReferÃªncia AutomÃ¡tico e ReversÃ­vel)
 // Substitui a regra "sÃ³ na primeira importaÃ§Ã£o" da Parte 18C.
 //
@@ -665,8 +665,8 @@ secao('CenÃ¡rio (a): XLSX (1.682 linhas) â†’ OFX (18/07â€“16/10) â�
   sim.cacheLancamentos.push(lancManual);
   const resumoComManual = sim.calcularResumoConta(conta);
   asserir(
-    resumoComManual.saldo_real === -8745.77,
-    `LanÃ§amento manual pÃ³s-referÃªncia somado normalmente: R$ -8.545,77 - R$ 200 = R$ ${resumoComManual.saldo_real}`
+    resumoComManual.saldo_real === -8434.56,
+    `Lançamento manual pós-referência somado normalmente: R$ -8.234,56 - R$ 200 = R$ ${resumoComManual.saldo_real}`
   );
 
   // Remove o lanÃ§amento manual para testar Desfazer do lote

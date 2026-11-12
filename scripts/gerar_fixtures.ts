@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import * as XLSX from 'xlsx';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 
 const dirFixtures = path.resolve('scripts/fixtures');
 if (!fs.existsSync(dirFixtures)) {
@@ -348,3 +349,199 @@ XLSX.utils.book_append_sheet(workbook, worksheet, 'Extrato');
 const caminhoXlsx = path.join(dirFixtures, 'extrato_sintetico_santander.xlsx');
 XLSX.writeFile(workbook, caminhoXlsx);
 console.log(`✓ Fixture XLSX gerado: ${caminhoXlsx} (37 transações válidas + linha TOTAL)`);
+
+// ----------------------------------------------------------------------------
+// 3. PDF SICOOB SINTÉTICO COMPLETO (Parte 24B - Quirks reais, metadados ricos e futuros)
+// ----------------------------------------------------------------------------
+export async function gerarFixtureSicoobPdfCompleto(): Promise<string> {
+  const doc = await PDFDocument.create();
+  const alturaA4 = 841.89;
+  const page = doc.addPage([595.28, alturaA4]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+
+  const toBottom = (yTopo: number) => alturaA4 - yTopo;
+
+  const draw = (texto: string, x: number, yTopo: number, size = 9) => {
+    page.drawText(texto, {
+      x,
+      y: toBottom(yTopo),
+      size,
+      font,
+    });
+  };
+
+  // Cabeçalho
+  draw('SICOOB', 115, 25, 11);
+  draw('SISTEMA DE COOPERATIVAS DE CRÉDITO DO BRASIL', 160, 25, 9);
+  draw('SISBR', 450, 25, 9);
+  draw('EXTRATO CONTA CORRENTE', 115, 42, 10);
+  draw('COOP.:', 115, 58, 9);
+  draw('1234-5 / SICOOB EXEMPLO', 160, 58, 9);
+  draw('CONTA:', 115, 72, 9);
+  draw('987.654-3 / EMPRESA FICTICIA SOLAR LTDA', 160, 72, 9);
+  draw('CNPJ:', 115, 86, 9);
+  draw('34.892.105/0001-44', 160, 86, 9);
+  draw('PERÍODO:', 115, 100, 9);
+  draw('01/10/2026 - 31/10/2026', 160, 100, 9);
+  draw('HISTÓRICO DE MOVIMENTAÇÃO', 115, 118, 10);
+  draw('DATA', 115, 134, 9);
+  draw('HISTÓRICO', 154, 134, 9);
+  draw('VALOR', 430, 134, 9);
+
+  // Saldo Anterior
+  let y = 150;
+  draw('SALDO ANTERIOR', 154, y);
+  draw('10.000,00C', 430, y);
+
+  // M1: PIX EMIT.OUTRA IF (C/D colado no valor)
+  y += 16;
+  draw('02/10', 115, y);
+  draw('PIX EMIT.OUTRA IF', 154, y);
+  draw('500,00D', 430, y);
+  y += 10;
+  draw('Pagamento Pix', 154, y);
+  y += 10;
+  draw('***.791.454-**', 154, y);
+  y += 10;
+  draw('almoco', 154, y);
+  y += 10;
+  draw('DOC.: Pix', 154, y);
+
+  // M2: PIX RECEB.OUTRA IF (C/D em item separado + DOC colado)
+  y += 16;
+  draw('03/10', 115, y);
+  draw('PIX RECEB.OUTRA IF', 154, y);
+  draw('1.200,00', 430, y);
+  draw('C', 473, y);
+  y += 10;
+  draw('Recebimento Pix', 154, y);
+  y += 10;
+  draw('JOAO PEREIRA FICTICIO', 154, y);
+  y += 10;
+  draw('***.537.894-**DOC.: Pix', 154, y);
+
+  // M3: 1ª Transferência MSM para o próprio CNPJ
+  y += 16;
+  draw('04/10', 115, y);
+  draw('PIX.EMIT.OUT IF-MSM', 154, y);
+  draw('300,00D', 430, y);
+  y += 10;
+  draw('Transferência Pix', 154, y);
+  y += 10;
+  draw('EMPRESA FICTICIA SOLAR LTDA', 154, y);
+  y += 10;
+  draw('34.892.105 0001-44', 154, y);
+  y += 10;
+  draw('DOC.: Pix', 154, y);
+
+  // M4: 2ª Transferência MSM para o próprio CNPJ
+  y += 16;
+  draw('04/10', 115, y);
+  draw('PIX.EMIT.OUT IF-MSM', 154, y);
+  draw('200,00D', 430, y);
+  y += 10;
+  draw('Transferência Pix', 154, y);
+  y += 10;
+  draw('EMPRESA FICTICIA SOLAR LTDA', 154, y);
+  y += 10;
+  draw('34.892.105 0001-44', 154, y);
+  y += 10;
+  draw('DOC.: Pix', 154, y);
+
+  // M5: 3ª Transferência MSM para o próprio CNPJ
+  y += 16;
+  draw('04/10', 115, y);
+  draw('PIX.EMIT.OUT IF-MSM', 154, y);
+  draw('100,00D', 430, y);
+  y += 10;
+  draw('Transferência Pix', 154, y);
+  y += 10;
+  draw('EMPRESA FICTICIA SOLAR LTDA', 154, y);
+  y += 10;
+  draw('34.892.105 0001-44', 154, y);
+  y += 10;
+  draw('DOC.: Pix', 154, y);
+
+  // M6: DB.TR.C.DIF.TIT.INT com FAV
+  y += 16;
+  draw('05/10', 115, y);
+  draw('DB.TR.C.DIF.TIT.INT', 154, y);
+  draw('750,00D', 430, y);
+  y += 10;
+  draw('FAV.: FORNECEDOR ESTRUTURAS SOLAR LTDA', 154, y);
+  y += 10;
+  draw('Transferência Pix', 154, y);
+  y += 10;
+  draw('EMPRESA FICTICIA SOLAR LTDA', 154, y);
+  y += 10;
+  draw('34.892.105 0001-44', 154, y);
+  y += 10;
+  draw('DOC.: 98765432', 154, y);
+
+  // M7: DÉB.TIT.COMPE.EFETI (boleto com mensagem multilinha)
+  y += 16;
+  draw('06/10', 115, y);
+  draw('DÉB.TIT.COMPE.EFETI', 154, y);
+  draw('180,50D', 430, y);
+  y += 10;
+  draw('Apartamento de marcos', 154, y);
+  y += 10;
+  draw('aluguel outubro', 154, y);
+  y += 10;
+  draw('DOC.: 12345678', 154, y);
+
+  // M8: PIX RECEB.OUTRA IF (CNPJ com espaço de terceiro)
+  y += 16;
+  draw('07/10', 115, y);
+  draw('PIX RECEB.OUTRA IF', 154, y);
+  draw('2.500,00C', 430, y);
+  y += 10;
+  draw('Recebimento Pix', 154, y);
+  y += 10;
+  draw('CLIENTE PARQUE SOLAR SA', 154, y);
+  y += 10;
+  draw('11.357.423 0001-80', 154, y);
+  y += 10;
+  draw('DOC.: Pix', 154, y);
+
+  // SALDO DO DIA (07/10)
+  // 10000 - 500 + 1200 - 300 - 200 - 100 - 750 - 180.50 + 2500 = 11.669,50
+  y += 18;
+  draw('07/10', 115, y);
+  draw('SALDO DO DIA', 154, y);
+  draw('11.669,50C', 430, y);
+
+  // SEÇÃO RESUMO (não pode gerar transações)
+  y += 20;
+  draw('RESUMO', 115, y);
+  y += 10;
+  draw('0,00DTARIFAS VENCIDAS', 154, y);
+  y += 10;
+  draw('0,00DCHEQUE ESPECIAL', 154, y);
+
+  // SEÇÃO LANÇAMENTOS FUTUROS (não entra em transações nem no saldo)
+  y += 20;
+  draw('LANÇAMENTOS FUTUROS', 115, y);
+  y += 14;
+  draw('17/11/26', 115, y);
+  draw('DÉB.TIT.COMPE.EFETI', 154, y);
+  draw('68,17D', 430, y);
+  y += 10;
+  draw('DOC.: 12507989', 154, y);
+  y += 14;
+  draw('20/11/26', 115, y);
+  draw('DÉB.TIT.COMPE.EFETI', 154, y);
+  draw('125,00D', 430, y);
+  y += 10;
+  draw('DOC.: 99887766', 154, y);
+
+  const pdfBytes = await doc.save();
+  const caminhoPdf = path.join(dirFixtures, 'sicoob_sintetico_completo.pdf');
+  fs.writeFileSync(caminhoPdf, Buffer.from(pdfBytes));
+  console.log(`✓ Fixture PDF Sicoob gerado: ${caminhoPdf} (8 transações, saldo 11.669,50, resumo, 2 lançamentos futuros)`);
+  return caminhoPdf;
+}
+
+gerarFixtureSicoobPdfCompleto().catch(err => {
+  console.error('Erro ao gerar fixture Sicoob PDF:', err);
+});

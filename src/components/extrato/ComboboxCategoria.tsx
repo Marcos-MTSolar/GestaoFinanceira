@@ -5,12 +5,14 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Check, ChevronDown, Plus, Sparkles, X } from 'lucide-react';
 import { Categoria, TipoLancamento } from '../../types';
 import { dbService } from '../../services/storage';
+import { chaveCategoria, deduplicarCategorias } from '../../utils/categorias';
 
 interface ComboboxCategoriaProps {
   categoriaId: string;
   tipoLancamento: 'receita' | 'despesa' | 'transferencia' | 'ajuste';
   categorias: Categoria[];
   sugerida?: boolean;
+  rotuloSugestao?: string;
   obrigatorio?: boolean;
   temErro?: boolean;
   onChange: (categoriaId: string, categoriaNome?: string) => void;
@@ -31,6 +33,7 @@ export const ComboboxCategoria: React.FC<ComboboxCategoriaProps> = ({
   tipoLancamento,
   categorias,
   sugerida = false,
+  rotuloSugestao,
   obrigatorio = true,
   temErro = false,
   onChange,
@@ -51,9 +54,10 @@ export const ComboboxCategoria: React.FC<ComboboxCategoriaProps> = ({
   const tipoCategoriaEsperado: TipoLancamento =
     tipoLancamento === 'receita' ? 'receita' : 'despesa';
 
-  // Filtra categorias compatíveis com o tipo de operação
+  // Filtra categorias compatíveis com o tipo de operação com salvaguarda de deduplicação (Parte 24A)
   const categoriasValidas = useMemo(() => {
-    return categorias.filter((c) => c.tipo === tipoCategoriaEsperado);
+    const filtradas = categorias.filter((c) => c.tipo === tipoCategoriaEsperado);
+    return deduplicarCategorias(filtradas);
   }, [categorias, tipoCategoriaEsperado]);
 
   // Categoria atualmente selecionada
@@ -70,12 +74,13 @@ export const ComboboxCategoria: React.FC<ComboboxCategoriaProps> = ({
     );
   }, [categoriasValidas, busca]);
 
-  // Verifica se o texto digitado coincide exatamente com alguma categoria existente
+  // Verifica se o texto digitado coincide exatamente com alguma categoria existente (normalizada)
   const temCoincidenciaExata = useMemo(() => {
-    const termo = busca.trim().toLowerCase();
+    const termo = busca.trim();
     if (!termo) return true;
-    return categoriasValidas.some((c) => c.nome.trim().toLowerCase() === termo);
-  }, [categoriasValidas, busca]);
+    const chaveBusca = chaveCategoria({ nome: termo, tipo: tipoCategoriaEsperado });
+    return categoriasValidas.some((c) => chaveCategoria(c) === chaveBusca);
+  }, [categoriasValidas, busca, tipoCategoriaEsperado]);
 
   // Fecha dropdown ao clicar fora
   useEffect(() => {
@@ -107,13 +112,25 @@ export const ComboboxCategoria: React.FC<ComboboxCategoriaProps> = ({
 
     setSalvandoNova(true);
     try {
+      // Prevenção de duplicata no componente (Parte 24A)
+      const chave = chaveCategoria({ nome: nomeLimpo, tipo: tipoCategoriaEsperado });
+      const existente = categoriasValidas.find((c) => chaveCategoria(c) === chave);
+      if (existente) {
+        onChange(existente.id, existente.nome);
+        setAberto(false);
+        setBusca('');
+        if (onEnterNext) onEnterNext();
+        return;
+      }
+
       const corAleatoria = CORES_PALETA[Math.floor(Math.random() * CORES_PALETA.length)];
       const novaCat: Categoria = {
         id: `cat-${Date.now()}`,
         nome: nomeLimpo,
         tipo: tipoCategoriaEsperado,
         cor: corAleatoria,
-        padrao: false
+        padrao: false,
+        criado_em: new Date().toISOString(),
       };
 
       const salva = dbService.saveCategoria(novaCat);
@@ -210,7 +227,7 @@ export const ComboboxCategoria: React.FC<ComboboxCategoriaProps> = ({
                   title="Sugerida automaticamente pelas regras de importação"
                 >
                   <Sparkles className="w-2.5 h-2.5" />
-                  Sugerida
+                  {rotuloSugestao || 'Sugerida'}
                 </span>
               )}
             </>

@@ -1,6 +1,6 @@
-# RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
+﻿# RESUMO MESTRE DO PROJETO - MT SOLAR GESTÃO FINANCEIRA
 
-**Última Atualização:** 27/10/2026 05:55:00 (Parte 23E – Correção Urgente de Hook Condicional React #310)
+**Última Atualização:** 12/11/2026 18:15:00 (Parte 24E – Verificar Pagamentos Agendados na Importação do Extrato)
 **Histórico de Alterações Recentes:**
 - **O que foi feito:**
   - **Parte 23E – Correção urgente: erro React #310 ao clicar em Excluir (hook depois de return antecipado)**:
@@ -1733,3 +1733,177 @@ match /importacoes/{loteId} {
 
 ---
 
+
+### PARTE 24B – Parser Sicoob PDF: Contraparte, Mensagem do Usuário e Lançamentos Futuros
+- **Data e Hora:** 12/11/2026 às 14:42
+- **Objetivo:** Aprimorar o parser de extratos PDF do Sicoob (`sicoobPdf.ts`) para extrair metadados ricos de transferências e títulos bancários: tipo da operação no banco, nome da contraparte, documento da contraparte (CPF mascarado ou CNPJ com espaço), mensagem do usuário no Pix, favorecido (FAV), identificação de transferências da própria empresa (`ehPropriaEmpresa`), e extração isolada da seção "LANÇAMENTOS FUTUROS" sem poluir transações correntes nem cálculo de saldo.
+- **Diagnóstico e Causa Raiz:** O layout real do extrato em PDF do Sicoob organiza as informações em blocos verticais pós-histórico principal com características específicas: (1) C/D pode vir colado no valor ou avulso; (2) O documento da contraparte pode vir colado ao identificador `DOC.:` (ex.: `***.537.894-**DOC.: Pix`); (3) CNPJs de terceiros e do próprio titular são impressos com espaço no lugar da barra (ex.: `11.357.423 0001-80`); (4) Em `DB.TR.C.DIF.TIT.INT` ("Transferência Pix"), as linhas após o tipo trazem o nome e o CNPJ do próprio titular truncados, sendo a real contraparte indicada na linha `FAV.:`; (5) As mensagens do usuário digitadas em Pix e boletos (`DÉB.TIT.COMPE.EFETI`) ficavam perdidas ou misturadas; (6) A seção `RESUMO` trazia linhas coladas (ex.: `0,00DTARIFAS VENCIDAS`) que precisavam ser descartadas; (7) A seção final `LANÇAMENTOS FUTUROS` (com datas `dd/mm/aa`) não era isolada e corria o risco de ser contabilizada ou gerar erros matemáticos de conciliação.
+- **Solução Implementada:**
+  - **Tipos Ricos (`src/utils/extrato/tipos.ts`):** `TransacaoExtrato` estendido com `tipoOperacaoBanco`, `contraparteNome`, `contraparteDocumento`, `documentoMascarado`, `mensagemUsuario`, `favorecido`, `ehPropriaEmpresa`. `ExtratoLido` estendido com `lancamentosFuturos?: LancamentoFuturoExtrato[]` e `cnpjTitular?: string`.
+  - **Parser Sicoob Robusto (`src/utils/extrato/parsers/sicoobPdf.ts`):**
+    - Trunca movimentos correntes rigorosamente antes de `RESUMO` e de `LANÇAMENTOS FUTUROS`.
+    - Extração dedicada de `lancamentosFuturos` convertendo ano de 2 para 4 dígitos (`2000 + aa`), sem inclusão em `transacoes` nem no saldo acumulado.
+    - Descolamento automático de documento e DOC quando impressos juntos (`RE_DOC_COLADO`).
+    - Captura da contraparte correta em `DB.TR.C.DIF.TIT.INT` através do prefixo `FAV.:`, descartando os dados do próprio titular.
+    - Captura do nome do pagador em `Recebimento Pix`.
+    - Captura de mensagens do usuário (incluindo multilinhas em boletos e Pix).
+    - Detecção automática de `ehPropriaEmpresa` para `PIX.EMIT.OUT IF-MSM` e por conferência dos dígitos de CNPJ com as configurações/cabeçalho.
+  - **Formatação de Descrição e Observações (`src/utils/extrato/observacoesHelper.ts`):**
+    - `gerarDescricaoCurta`: "Pix – <mensagem>", "Pix – <nome>", "Pix enviado – <doc mascarado>", "Transferência – <favorecido>", "Título – <mensagem>".
+    - `formatarObservacoesImportacao`: inclui Tipo de operação, Favorecido, Documento da contraparte, Mensagem e DOC.
+  - **Interface de Revisão (`src/components/extrato/RevisaoExtrato.tsx`):**
+    - Coluna renomeada para "Favorecido / Descrição" exibindo nome, FAV ou mensagem em destaque, com documento mascarado em texto menor.
+    - Busca por texto agora contempla `mensagemUsuario`, `contraparteDocumento`, `contraparteNome`, `favorecido` e `documento`.
+  - **Serviço de Armazenamento (`src/services/storage.ts`):**
+    - Métodos de importação e enriquecimento atualizados para propagar os metadados ricos nas descrições e observações.
+  - **Fixture Sintética Reproduzível (`scripts/gerar_fixtures.ts`):**
+    - Geração em memória via `pdf-lib` de `scripts/fixtures/sicoob_sintetico_completo.pdf` com dados fictícios contendo todos os 8 quirks especificados, saldo matematicamente fechado em R$ 11.669,50C, seção RESUMO e 2 lançamentos futuros.
+
+**Arquivos Criados:**
+- `scripts/fixtures/sicoob_sintetico_completo.pdf` (Fixture binário sintético)
+- `scripts/test_parte_24B.ts` (Suíte completa de testes da Parte 24B)
+
+**Arquivos Modificados:**
+- `src/utils/extrato/tipos.ts` – Novos campos em `TransacaoExtrato`, interface `LancamentoFuturoExtrato` e `ExtratoLido`.
+- `src/utils/extrato/parsers/sicoobPdf.ts` – Parsing detalhado de metadados, FAV, mensagens, quirks e lançamentos futuros.
+- `src/utils/extrato/observacoesHelper.ts` – Novas regras de descrição curta e observações enriquecidas.
+- `src/components/extrato/RevisaoExtrato.tsx` – Cabeçalho "Favorecido / Descrição", exibição hierárquica e busca ampliada.
+- `src/services/storage.ts` – Integração da importação/enriquecimento aos novos metadados da transação.
+- `src/types/index.ts` – Metadados adicionados em `ParamsImportacaoLote.itens.transacao`.
+- `scripts/gerar_fixtures.ts` – Função `gerarFixtureSicoobPdfCompleto` via `pdf-lib`.
+- `package.json` – Adição do script `test:24b`.
+- `scripts/test_parte_21B.ts` – Correção de digitação de expectativa na asserção do passo 4 (o mock utilizava saldo de referência -8.234,56 e subtraía 200, devendo validar -8.434,56 em vez de -8.745,77).
+
+**Resultados das Validações e Testes:**
+- **Testes Parte 24B (`test:24b`):** 67/67 asserções passaram (100% de sucesso).
+- **Suítes de Regressão Relevantes:**
+  - `test_extrato_dedupe`: 32/32 passaram (100%)
+  - `test_parte_21B`: 48/48 passaram (100%)
+  - `test_parte_22A`: 30/30 passaram (100%)
+  - `test_parte_22B`: 6/6 passaram (100%)
+  - `test_parte_22C`: 100% passaram
+  - `test_parte_22D`: 46/46 passaram (100%)
+  - `test_parte_23A`: 29/29 passaram (100%)
+  - `test_parte_23B`: 55/55 passaram (100%)
+  - `test_parte_23C`: 43/43 passaram (100%)
+  - `test_parte_24A`: 55/55 passaram (100%)
+  - `test:18a`: 67/67 passaram (100%)
+  - `test:18b`: 88/88 passaram (100%)
+- **`npx tsc --noEmit`:** 0 erros de compilação.
+- **`npm run lint:hooks`:** 0 advertências e 0 erros.
+- **`npm run build`:** Sucesso absoluto na compilação do bundle de produção do Vite (1.16s).
+- **Segurança de Dados e Git:** Fixture gerado exclusivamente com dados fictícios. `.gitignore` garantindo exclusão de PDFs reais.
+
+---
+
+
+### PARTE 24C – Regras do Sicoob e Sugestão de Categoria por Mensagem, Favorecido e Histórico
+- **Data e Hora:** 12/11/2026 às 15:10
+- **Objetivo:** Refinar as regras de classificação do Sicoob (banco 756) e implementar um motor de sugestão de categorias determinístico em 5 níveis de precedência (Regra do Usuário > Contato/Favorecido > Histórico Recorrente >= 60% > Palavras-chave na Mensagem/Descrição > Regra do Banco Sicoob).
+- **Diagnóstico e Causa Raiz:** No extrato real do Sicoob, históricos reais como PIX EMIT.OUTRA IF, PIX RECEB.OUTRA IF, PIX.EMIT.OUT IF-MSM, DB.TR.C.DIF.TIT.INT e DÉB.TIT.COMPE.EFETI não eram cobertos com precisão pelas regexes genéricas, caindo em indefinido. Além disso, a sugestão de categorias não aproveitava os metadados ricos extraídos na Parte 24B (mensagem do Pix, documento do contato, histórico).
+- **Solução Implementada:**
+  - Atualização de src/utils/extrato/regras/sicoob.ts com regexes específicas e ordenadas por especificidade.
+  - Criação do motor determinístico src/utils/extrato/sugerirCategoria.ts respeitando a árvore de precedência estrita dos 5 níveis.
+  - Suporte a regras de importação baseadas no campo mensagem do Pix.
+- **Arquivos Criados:**
+  - src/utils/extrato/sugerirCategoria.ts
+  - scripts/test_parte_24C.ts
+- **Arquivos Modificados:**
+  - src/utils/extrato/regras/sicoob.ts
+  - src/utils/extrato/inferirFormaPagamento.ts
+  - src/components/extrato/RevisaoExtrato.tsx
+  - package.json
+- **Resultados dos Testes:**
+  - Suíte 	est:24c: 100% aprovada (18/18 asserções).
+
+---
+
+### PARTE 24D – Reconhecimento e Vinculação de Pagamentos sem Duplicação
+- **Data e Hora:** 12/11/2026 às 15:40
+- **Objetivo:** Impedir que despesas já pagas no sistema (manual ou folha) sejam duplicadas ao importar o extrato bancário, introduzindo reconhecimento de alta certeza (inculada_alta) com ação padrão de vinculação automática e pareamento 1:1.
+- **Diagnóstico e Causa Raiz:** O classificador anterior considerava lançamentos pagos existentes apenas como possivel_duplicata_manual, que por padrão marcava caoInicial = 'incluir'. Sem intervenção ativa do usuário, o sistema criava um segundo lançamento para o mesmo pagamento, duplicando despesas e distorcendo saldos.
+- **Solução Implementada:**
+  - Motor de pontuação e casamento src/utils/extrato/casarLancamentos.ts com cálculo de pontuação (valor idêntico = 50 pts, data até 3 dias = 15-30 pts, mesma conta = 20 pts, fornecedor coincidente = 20 pts). Nível ALTA para pontuação >= 85 e mesma conta bancária.
+  - Pareamento 1:1 rigoroso com Set de reivindicação (lancamentosJaReivindicados), garantindo que transações com mesmo valor e dia (ex.: boletos idênticos) casem cada um com seu respectivo lançamento.
+  - Novo status de deduplicação inculada_alta com caoInicial = 'vincular' e snapshot completo em importarExtratoLote.
+  - Tratamento idêntico para lançamentos com status pago e pendente, suportando pagamentos antecipados e liquidação automática no extrato.
+- **Arquivos Criados:**
+  - src/utils/extrato/casarLancamentos.ts
+  - scripts/test_parte_24D.ts
+- **Arquivos Modificados:**
+  - src/utils/extrato/classificarDuplicatas.ts
+  - src/utils/extrato/tipos.ts
+  - src/components/extrato/RevisaoExtrato.tsx
+  - src/pages/ContasPagar.tsx
+  - src/services/storage.ts
+  - package.json
+- **Resultados dos Testes:**
+  - Suíte 	est:24d: 100% aprovada.
+
+---
+
+### PARTE 24E – Verificar Pagamentos Agendados na Importação do Extrato
+- **Data e Hora:** 12/11/2026 às 18:15
+- **Objetivo:** Detectar e alertar pagamentos com agendamento bancário ativo que não foram debitados na conta durante o período coberto pelo extrato importado, com opção de reagendamento, cancelamento ou conciliação, reversão no Desfazer e zero falsos positivos.
+- **Diagnóstico e Causa Raiz:** Não existia no sistema um ciclo de vida para pagamentos agendados no banco. Quando o usuário marcava uma conta para pagar e apenas agendava no internet banking para a data de vencimento, o sistema ou baixava o saldo de imediato como pago, ou mantinha como pendente simples. Caso o agendamento bancário falhasse ou fosse cancelado no banco, o usuário não tinha como ser alertado durante a importação do extrato.
+- **Solução Implementada:**
+  - **1. Modelo e Ciclo de Vida de Agendamento (src/types/index.ts):**
+    - Interface AgendamentoLancamento (data, conta_id, criado_em, status: 'ativo' | 'confirmado' | 'cancelado' | 'nao_localizado', ultima_verificacao?, motivo_nao_localizado?).
+    - Campo opcional gendamento?: AgendamentoLancamento na interface Lancamento.
+    - Snapshot de importação (snapshot_enriquecidos) estendido com gendamentoAnterior?: AgendamentoLancamento.
+  - **2. Função Pura de Verificação (src/utils/extrato/verificarAgendamentos.ts):**
+    - calcularCoberturaEfetiva: se periodo.fim >= hoje, utiliza hoje - 1 dia para evitar falsos alertas de transações em processamento intradia.
+    - erificarAgendamentos(lancamentos, extrato, contaExtratoId, hojeISO):
+      - Avalia agendamentos da conta com status 'ativo' ou 'nao_localizado'.
+      - Integração com casarLancamentosComExtrato (Parte 24D) para confirmação automática de débitos no extrato (confirmados).
+      - Reconhecimento na seção de lançamentos futuros (lancamentosFuturos) da Parte 24B (confirmadosComoFuturo).
+      - Tolerância de compensação bancária e finais de semana de até +4 dias corridos; se data_agendada + 4 dias > cobertura_efetiva, classifica como ora_da_cobertura (sem falso alarme).
+      - Lançamentos não debitados dentro da cobertura tornam-se 
+aoLocalizados, buscando possíveis transações candidatas com valores divergentes (juros/desconto) para auxílio visual.
+  - **3. Interface de Contas a Pagar (src/pages/ContasPagar.tsx):**
+    - Etiqueta âmbar "Agendado dd/mm" para títulos com agendamento ativo.
+    - Etiqueta vermelha "Agendamento não localizado" para títulos não debitados no extrato.
+    - Filtro rápido toggle "Agendados" na barra de filtros.
+  - **4. Opção no Modal de Pagamento (src/components/ModalPagarReceber.tsx):**
+    - Checkbox "Apenas agendei no banco". Ao marcar, registra o agendamento com status: 'ativo' sem baixar o saldo da conta e sem alterar o status do lançamento para pago até a conciliação bancária.
+  - **5. Alerta na Revisão do Extrato (src/components/extrato/RevisaoExtrato.tsx):**
+    - Banner chamativo no topo e na revisão antes da gravação listando pagamentos agendados não localizados.
+    - Ações diretas de "Reagendar" (atualiza a data de agendamento e vencimento) e "Cancelar Agendamento" (marca como cancelado).
+    - Informações no modal de confirmação final e indicação de débitos próximos com valor divergente.
+  - **6. Persistência, Auditoria e Desfazer (src/services/storage.ts):**
+    - Métodos eagendarLancamento, cancelarAgendamento e marcarAgendamentoNaoLocalizado.
+    - Ao importar, pagamentos vinculados têm seu agendamento confirmado (status = 'confirmado').
+    - Agendamentos não localizados geram registro em RegistroAuditoria (modulo: 'lancamentos', cao: 'verificacao_agendamento').
+    - No desfazerImportacao, o snapshot restaura gendamentoAnterior, revertendo o status de confirmado para tivo e de pago para pendente.
+  - **7. Suíte Completa de Testes Automatizados (scripts/test_parte_24E.ts):**
+    - Cobrindo integralmente os cenários (a) a (j): agendamento confirmado no extrato, agendamento não localizado, fora de cobertura por data futura, tolerância de +4 dias por fim de semana, isolamento de contas sem falsos alertas, reconhecimento de lançamentos futuros, candidata com valor divergente, reagendamento e cancelamento via storage, e restauração atômica de agendamento e saldo no Desfazer.
+- **Arquivos Criados:**
+  - src/utils/extrato/verificarAgendamentos.ts
+  - scripts/test_parte_24E.ts
+- **Arquivos Modificados:**
+  - src/types/index.ts
+  - src/services/storage.ts
+  - src/pages/ContasPagar.tsx
+  - src/components/ModalPagarReceber.tsx
+  - src/components/extrato/RevisaoExtrato.tsx
+  - src/lib/firebase.ts
+  - package.json
+- **Resultados das Validações e Testes:**
+  - **Testes Parte 24E (
+pm run test:24e):** 100% aprovado.
+  - **Suítes de Regressão Relevantes:**
+    - 	est:24d: 100% aprovado
+    - 	est:24c: 100% aprovado
+    - 	est:24b: 100% aprovado (67/67 asserções)
+    - 	est:24a: 100% aprovado (55/55 asserções)
+    - 	est_extrato_dedupe: 32/32 asserções (100% aprovado)
+    - 	est:21a: 100% aprovado
+    - 	est:22a: 100% aprovado
+    - 	est:23a, 	est:23b, 	est:23c: 100% aprovado
+    - 	est:18a, 	est:18b: 100% aprovado
+  - **
+px tsc --noEmit:** 0 erros de compilação.
+  - **
+pm run lint:hooks:** 0 advertências e 0 erros.
+  - **
+pm run build:** Sucesso absoluto (dist gerado em 1.83s).

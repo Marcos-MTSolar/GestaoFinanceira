@@ -50,12 +50,18 @@ import {
 import { dbService, subscribe } from '../../services/storage';
 import { usePrivacy } from '../../context/PrivacyContext';
 import { useAuth } from '../../context/AuthContext';
-import { formatarDataBR } from '../../utils/formatters';
+import { formatarDataBR, obterHojeISO } from '../../utils/formatters';
 import { ComboboxCategoria } from './ComboboxCategoria';
+import { sugerirCategoria } from '../../utils/extrato/sugerirCategoria';
 import {
   gerarDescricaoCurta,
   formatarObservacoesImportacao,
 } from '../../utils/extrato/observacoesHelper';
+import {
+  verificarAgendamentos,
+  ResultadoVerificacaoAgendamentos,
+  AgendamentoVerificado,
+} from '../../utils/extrato/verificarAgendamentos';
 
 export interface ItemRevisaoExtrato {
   id: string;
@@ -70,6 +76,7 @@ export interface ItemRevisaoExtrato {
   natureza: NaturezaTransacao;
   sugestaoClassificacao?: SugestaoClassificacao;
   sugestaoAplicada?: boolean;
+  rotuloSugestao?: string;
   acao: 'incluir' | 'ignorar' | 'vincular';
   decisaoManual?: 'vincular' | 'novo' | 'ignorar';
   tipoLancamento: 'receita' | 'despesa' | 'transferencia' | 'ajuste';
@@ -343,39 +350,55 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         let tipoInicial: 'receita' | 'despesa' | 'transferencia' | 'ajuste' =
           transacao.tipo === 'credito' ? 'receita' : 'despesa';
 
-        if (classif.natureza === 'movimentacao_interna') {
+        if (classif.natureza === 'movimentacao_interna' || classif.natureza === 'transferencia_propria') {
           acaoInicial = 'ignorar';
+          tipoInicial = 'transferencia';
         } else if (itemDedupe.status === 'duplicada_exata') {
           acaoInicial = 'ignorar';
-        } else if (itemDedupe.status === 'enriquecer_existente') {
+        } else if (itemDedupe.status === 'enriquecer_existente' || itemDedupe.status === 'vinculada_alta') {
           acaoInicial = 'vincular';
         } else if (itemDedupe.status === 'possivel_duplicata_manual') {
           acaoInicial = 'incluir';
         }
 
-        // Categoria sugerida pelas regras (padrão sem rascunho)
-        let categoriaIdInicial = '';
-        let categoriaNomeInicial: string | undefined = undefined;
-        let sugestaoAplicada = false;
+        // Sugestão Inteligente e Determinística (Parte 24C)
+        const sugestao24C = sugerirCategoria({
+          transacao,
+          bancoCodigo,
+          contaId,
+          categorias,
+          regrasUsuario,
+          contatos,
+          historicoLancamentos: lancamentosExistentes,
+        });
 
-        if (classif.sugestao.categoriaSugeridaId) {
-          const cat = categorias.find((c) => c.id === classif.sugestao.categoriaSugeridaId);
-          if (cat) {
-            categoriaIdInicial = cat.id;
-            categoriaNomeInicial = cat.nome;
-            sugestaoAplicada = true;
-          }
-        } else if (classif.sugestao.categoriaSugeridaNome) {
-          const nomeSugerido = classif.sugestao.categoriaSugeridaNome.toLowerCase().trim();
-          const cat = categorias.find(
-            (c) =>
-              c.nome.toLowerCase().trim() === nomeSugerido ||
-              c.nome.toLowerCase().includes(nomeSugerido)
-          );
-          if (cat) {
-            categoriaIdInicial = cat.id;
-            categoriaNomeInicial = cat.nome;
-            sugestaoAplicada = true;
+        // Categoria sugerida pelas regras/sugestão (padrão sem rascunho)
+        let categoriaIdInicial = sugestao24C.categoriaId || '';
+        let categoriaNomeInicial = sugestao24C.categoriaNome;
+        let rotuloSugestaoInicial = sugestao24C.rotuloBadge;
+        let contatoIdSugeridoInicial = sugestao24C.contatoId || classif.sugestao.contatoId;
+        let sugestaoAplicada = !!categoriaIdInicial;
+
+        if (!categoriaIdInicial) {
+          if (classif.sugestao.categoriaSugeridaId) {
+            const cat = categorias.find((c) => c.id === classif.sugestao.categoriaSugeridaId);
+            if (cat) {
+              categoriaIdInicial = cat.id;
+              categoriaNomeInicial = cat.nome;
+              sugestaoAplicada = true;
+            }
+          } else if (classif.sugestao.categoriaSugeridaNome) {
+            const nomeSugerido = classif.sugestao.categoriaSugeridaNome.toLowerCase().trim();
+            const cat = categorias.find(
+              (c) =>
+                c.nome.toLowerCase().trim() === nomeSugerido ||
+                c.nome.toLowerCase().includes(nomeSugerido)
+            );
+            if (cat) {
+              categoriaIdInicial = cat.id;
+              categoriaNomeInicial = cat.nome;
+              sugestaoAplicada = true;
+            }
           }
         }
 
@@ -391,23 +414,30 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         // (duplicatas recém-detectadas contra lançamentos atuais NÃO recebem escolhas antigas)
         let categoriaIdFinal = categoriaIdInicial;
         let categoriaNomeFinal = categoriaNomeInicial;
+        let rotuloSugestaoFinal = rotuloSugestaoInicial;
         let sugestaoAplicadaFinal = sugestaoAplicada;
         let acaoFinal = acaoInicial;
         let tipoFinal: 'receita' | 'despesa' | 'transferencia' | 'ajuste' = tipoInicial;
         let projetoIdFinal: string | undefined = undefined;
-        let contatoIdFinal: string | undefined = classif.sugestao.contatoId;
+        let contatoIdFinal: string | undefined = contatoIdSugeridoInicial;
         let lembrarRegraFinal = false;
 
         if (escolhasSalvas) {
           const escolha = escolhasSalvas[transacao.idTemporario];
           // Reaplica escolha apenas se a transação ainda é 'nova' (não se tornou duplicata)
-          if (escolha && itemDedupe.status === 'nova' && classif.natureza !== 'movimentacao_interna') {
+          if (
+            escolha &&
+            itemDedupe.status === 'nova' &&
+            classif.natureza !== 'movimentacao_interna' &&
+            classif.natureza !== 'transferencia_propria'
+          ) {
             acaoFinal = escolha.acao;
             tipoFinal = escolha.tipoLancamento;
             if (escolha.categoriaId) {
               categoriaIdFinal = escolha.categoriaId;
               categoriaNomeFinal = escolha.categoriaNome;
               sugestaoAplicadaFinal = false;
+              rotuloSugestaoFinal = undefined;
             }
             if (escolha.projetoId) projetoIdFinal = escolha.projetoId;
             if (escolha.contatoId) contatoIdFinal = escolha.contatoId;
@@ -428,9 +458,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
           natureza: classif.natureza,
           sugestaoClassificacao: classif.sugestao,
           sugestaoAplicada: sugestaoAplicadaFinal,
+          rotuloSugestao: rotuloSugestaoFinal,
           acao: acaoFinal,
           decisaoManual:
-            itemDedupe.status === 'possivel_duplicata_manual' ? 'novo' : undefined,
+            itemDedupe.status === 'vinculada_alta'
+              ? 'vincular'
+              : itemDedupe.status === 'possivel_duplicata_manual'
+              ? 'novo'
+              : undefined,
           tipoLancamento: tipoFinal,
           categoriaId: categoriaIdFinal,
           categoriaNome: categoriaNomeFinal,
@@ -447,13 +482,14 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
     categorias,
     regrasUsuario,
     contatos,
+    lancamentosExistentes,
   ]);
 
   // ---------------------------------------------------------------------------
   // PARTE 16B – Carrega dados mestres + limpeza de rascunhos antigos na montagem
   // ---------------------------------------------------------------------------
   useEffect(() => {
-    setCategorias(dbService.getCategorias());
+    setCategorias(dbService.getCategoriasUnicas());
     setContatos(dbService.getContatos());
     setProjetos(dbService.getProjetos());
     setRegrasUsuario(dbService.getRegrasImportacao());
@@ -583,12 +619,13 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
     let novas = 0;
     let duplicadas = 0;
     let enriquecer = 0;
+    let vinculadasPagas = 0;
     let manuais = 0;
     let internas = 0;
     let semCategoria = 0;
 
     for (const item of itens) {
-      if (item.natureza === 'movimentacao_interna') {
+      if (item.natureza === 'movimentacao_interna' || item.natureza === 'transferencia_propria') {
         internas++;
       } else if (item.statusDeduplicacao === 'nova') {
         novas++;
@@ -596,6 +633,8 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         duplicadas++;
       } else if (item.statusDeduplicacao === 'enriquecer_existente') {
         enriquecer++;
+      } else if (item.statusDeduplicacao === 'vinculada_alta') {
+        vinculadasPagas++;
       } else if (item.statusDeduplicacao === 'possivel_duplicata_manual') {
         manuais++;
       }
@@ -609,8 +648,35 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       }
     }
 
-    return { novas, duplicadas, enriquecer, manuais, internas, semCategoria };
+    return { novas, duplicadas, enriquecer, vinculadasPagas, manuais, internas, semCategoria };
   }, [itens]);
+
+  // Verificação de Pagamentos Agendados no Extrato (Parte 24E)
+  const resultadoAgendamentos = useMemo<ResultadoVerificacaoAgendamentos>(() => {
+    if (!extratosComConta.length || !lancamentosExistentes.length) {
+      return { confirmados: [], confirmadosComoFuturo: [], naoLocalizados: [], foraDaCobertura: [] };
+    }
+    const hoje = obterHojeISO();
+    const todosConfirmados: AgendamentoVerificado[] = [];
+    const todosFuturos: AgendamentoVerificado[] = [];
+    const todosNaoLocalizados: AgendamentoVerificado[] = [];
+    const todosFora: AgendamentoVerificado[] = [];
+
+    for (const item of extratosComConta) {
+      const res = verificarAgendamentos(lancamentosExistentes, item.extrato, item.contaId, hoje);
+      todosConfirmados.push(...res.confirmados);
+      todosFuturos.push(...res.confirmadosComoFuturo);
+      todosNaoLocalizados.push(...res.naoLocalizados);
+      todosFora.push(...res.foraDaCobertura);
+    }
+
+    return {
+      confirmados: todosConfirmados,
+      confirmadosComoFuturo: todosFuturos,
+      naoLocalizados: todosNaoLocalizados,
+      foraDaCobertura: todosFora,
+    };
+  }, [extratosComConta, lancamentosExistentes]);
 
   // Filtra itens
   const itensFiltrados = useMemo(() => {
@@ -622,25 +688,41 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         const bateNormalizada = item.transacao.descricaoNormalizada.toLowerCase().includes(termo);
         const bateContraparte = Boolean(item.transacao.contraparte?.toLowerCase().includes(termo));
         const bateCategoria = Boolean(item.categoriaNome?.toLowerCase().includes(termo));
-        if (!bateOriginal && !bateNormalizada && !bateContraparte && !bateCategoria) {
+        const bateMensagem = Boolean(item.transacao.mensagemUsuario?.toLowerCase().includes(termo));
+        const bateContraparteDoc = Boolean(item.transacao.contraparteDocumento?.toLowerCase().includes(termo));
+        const bateFavorecido = Boolean(item.transacao.favorecido?.toLowerCase().includes(termo));
+        const bateContraparteNome = Boolean(item.transacao.contraparteNome?.toLowerCase().includes(termo));
+        const bateDoc = Boolean(item.transacao.documento?.toLowerCase().includes(termo));
+        if (
+          !bateOriginal &&
+          !bateNormalizada &&
+          !bateContraparte &&
+          !bateCategoria &&
+          !bateMensagem &&
+          !bateContraparteDoc &&
+          !bateFavorecido &&
+          !bateContraparteNome &&
+          !bateDoc
+        ) {
           return false;
         }
       }
 
       // Filtro de Status
-      if (filtroStatus === 'novas' && (item.statusDeduplicacao !== 'nova' || item.natureza === 'movimentacao_interna')) {
+      const ehInterna = item.natureza === 'movimentacao_interna' || item.natureza === 'transferencia_propria';
+      if (filtroStatus === 'novas' && (item.statusDeduplicacao !== 'nova' || ehInterna)) {
         return false;
       }
       if (filtroStatus === 'duplicadas' && item.statusDeduplicacao !== 'duplicada_exata') {
         return false;
       }
-      if (filtroStatus === 'enriquecer' && item.statusDeduplicacao !== 'enriquecer_existente') {
+      if (filtroStatus === 'enriquecer' && item.statusDeduplicacao !== 'enriquecer_existente' && item.statusDeduplicacao !== 'vinculada_alta') {
         return false;
       }
       if (filtroStatus === 'manuais' && item.statusDeduplicacao !== 'possivel_duplicata_manual') {
         return false;
       }
-      if (filtroStatus === 'internas' && item.natureza !== 'movimentacao_interna') {
+      if (filtroStatus === 'internas' && !ehInterna) {
         return false;
       }
       if (filtroStatus === 'incluir' && item.acao !== 'incluir') {
@@ -718,23 +800,30 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
       return;
     }
 
-    // Procura outras transações sem categoria com a mesma descrição normalizada ou mesma contraparte
+    // Procura outras transações sem categoria com a mesma descrição normalizada, contraparte, mensagem ou documento (Parte 24C)
     const padraoAtual = itemAtual.transacao.descricaoNormalizada;
     const contraparteAtual = itemAtual.transacao.contraparte;
+    const mensagemAtual = itemAtual.transacao.mensagemUsuario?.trim();
+    const documentoAtual = itemAtual.transacao.contraparteDocumento?.trim();
+
+    // Chave de semelhança prioritária: contraparte -> mensagem -> documento -> descrição
+    const chaveSemelhanca = contraparteAtual || mensagemAtual || documentoAtual || padraoAtual;
 
     const semelhantesSemCategoria = itens.filter(
-      (i) =>
-        i.id !== idLinha &&
-        i.acao === 'incluir' &&
-        !i.categoriaId &&
-        i.tipoLancamento === itemAtual.tipoLancamento &&
-        (i.transacao.descricaoNormalizada === padraoAtual ||
-          (contraparteAtual && i.transacao.contraparte === contraparteAtual))
+      (i) => {
+        if (i.id === idLinha || i.acao !== 'incluir' || i.categoriaId || i.tipoLancamento !== itemAtual.tipoLancamento) {
+          return false;
+        }
+        if (contraparteAtual && i.transacao.contraparte === contraparteAtual) return true;
+        if (mensagemAtual && i.transacao.mensagemUsuario?.trim() === mensagemAtual) return true;
+        if (documentoAtual && i.transacao.contraparteDocumento?.trim() === documentoAtual) return true;
+        return i.transacao.descricaoNormalizada === padraoAtual;
+      }
     );
 
     if (semelhantesSemCategoria.length > 0) {
       setSugestaoLoteParecidas({
-        descricaoPadrao: contraparteAtual || padraoAtual,
+        descricaoPadrao: chaveSemelhanca,
         categoriaId: novaCategoriaId,
         categoriaNome: novaCategoriaNome,
         quantidade: semelhantesSemCategoria.length,
@@ -870,12 +959,31 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
     const regrasACriar: Array<Omit<RegraImportacao, 'id'>> = [];
     for (const item of itens) {
       if (item.lembrarRegra && item.categoriaId) {
+        // PARTE 24C: Regra com mensagem -> campo 'mensagem'; com documento -> campo 'documento'; contraparte -> 'contraparte'; else 'descricao'
+        let campoRegra: 'mensagem' | 'documento' | 'contraparte' | 'descricao' = 'descricao';
+        let valorRegra = item.transacao.descricaoNormalizada;
+        let operadorRegra: 'contem' | 'comeca_com' | 'igual' = 'comeca_com';
+
+        if (item.transacao.mensagemUsuario?.trim()) {
+          campoRegra = 'mensagem';
+          valorRegra = item.transacao.mensagemUsuario.trim();
+          operadorRegra = 'contem';
+        } else if (item.transacao.contraparteDocumento?.trim()) {
+          campoRegra = 'documento';
+          valorRegra = item.transacao.contraparteDocumento.trim();
+          operadorRegra = 'contem';
+        } else if (item.transacao.contraparte?.trim()) {
+          campoRegra = 'contraparte';
+          valorRegra = item.transacao.contraparte.trim();
+          operadorRegra = 'contem';
+        }
+
         regrasACriar.push({
           banco_codigo: item.bancoCodigo,
           conta_id: item.contaId,
-          campo: item.transacao.contraparte ? 'contraparte' : 'descricao',
-          operador: item.transacao.contraparte ? 'contem' : 'comeca_com',
-          valor: item.transacao.contraparte || item.transacao.descricaoNormalizada,
+          campo: campoRegra,
+          operador: operadorRegra,
+          valor: valorRegra,
           categoria_id: item.categoriaId,
           contato_id: item.contatoId,
           tipoLancamento: item.tipoLancamento === 'receita' ? 'receita' : 'despesa',
@@ -1312,8 +1420,12 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                 : 'bg-blue-50/60 border-blue-200 hover:bg-blue-100/50'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold text-blue-800 truncate">A Enriquecer</span>
-            <span className="text-xs font-bold text-blue-950 font-num shrink-0">{contadores.enriquecer}</span>
+            <span className="text-[10px] uppercase font-bold text-blue-800 truncate">
+              {contadores.vinculadasPagas > 0 ? 'A Enriquecer / Vinculadas' : 'A Enriquecer'}
+            </span>
+            <span className="text-xs font-bold text-blue-950 font-num shrink-0">
+              {contadores.enriquecer + contadores.vinculadasPagas}
+            </span>
           </button>
 
           <button
@@ -1590,6 +1702,79 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
         </div>
       )}
 
+      {/* ALERTA DE AGENDAMENTOS NÃO LOCALIZADOS NO EXTRATO (Parte 24E) */}
+      {resultadoAgendamentos.naoLocalizados.length > 0 && (
+        <div className="shrink-0 bg-rose-50 border border-rose-300 rounded-2xl p-4 shadow-xs text-xs text-rose-950 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-rose-200 flex items-center justify-center text-rose-700 shrink-0 font-bold">
+                <AlertTriangle className="w-4 h-4 text-rose-700" />
+              </div>
+              <div>
+                <h4 className="font-serif font-bold text-sm text-rose-950">
+                  {resultadoAgendamentos.naoLocalizados.length} {resultadoAgendamentos.naoLocalizados.length === 1 ? 'pagamento agendado não foi localizado' : 'pagamentos agendados não foram localizados'} no extrato
+                </h4>
+                <p className="text-[11px] text-rose-800">
+                  Estes lançamentos foram marcados como agendados no banco para a conta e período deste extrato, mas o débito não caiu.
+                </p>
+              </div>
+            </div>
+            <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-rose-200 text-rose-900 shrink-0">
+              Verificação Bancária
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            {resultadoAgendamentos.naoLocalizados.map((item) => (
+              <div
+                key={item.lancamento.id}
+                className="bg-white p-3 rounded-xl border border-rose-200 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-2xs"
+              >
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-slate-800">{item.lancamento.descricao}</span>
+                    <span className="font-num font-bold text-red-600">{formatarValor(item.lancamento.valor)}</span>
+                    <span className="text-[11px] text-slate-500">
+                      (Agendado para: {formatarDataBR(item.lancamento.agendamento?.data || item.lancamento.data_vencimento)})
+                    </span>
+                  </div>
+                  {item.candidataValorDiferente && (
+                    <p className="text-[11px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded inline-block">
+                      💡 Débito próximo encontrado no extrato: R$ {item.candidataValorDiferente.valor.toFixed(2)} em {formatarDataBR(item.candidataValorDiferente.data)} ({item.candidataValorDiferente.descricaoOriginal})
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const novaData = prompt('Informe a nova data para o pagamento agendado (AAAA-MM-DD):', item.lancamento.agendamento?.data);
+                      if (novaData && /^\d{4}-\d{2}-\d{2}$/.test(novaData)) {
+                        dbService.reagendarLancamento(item.lancamento.id, novaData);
+                      }
+                    }}
+                    className="px-2.5 py-1 text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 transition-colors cursor-pointer"
+                  >
+                    Reagendar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm(`Deseja cancelar o agendamento bancário de "${item.lancamento.descricao}"?`)) {
+                        dbService.cancelarAgendamento(item.lancamento.id);
+                      }
+                    }}
+                    className="px-2.5 py-1 text-[11px] font-semibold bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg border border-rose-300 transition-colors cursor-pointer"
+                  >
+                    Cancelar Agendamento
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* BARRA DE FILTROS E BUSCA COMPACTA (RECOLHÍVEL) */}
       <div className="shrink-0 space-y-2">
         <div className="flex items-center justify-between gap-2 text-xs">
@@ -1776,7 +1961,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                 />
               </th>
               <th className="p-2.5 w-24 min-w-[96px] max-w-[96px]">Data</th>
-              <th className="p-2.5 min-w-[220px] max-w-[320px]">Descrição / Contraparte</th>
+              <th className="p-2.5 min-w-[220px] max-w-[320px]">Favorecido / Descrição</th>
               <th className="p-2.5 w-28 min-w-[110px] max-w-[120px] text-right">Valor</th>
               <th className="p-2.5 w-28 min-w-[110px] max-w-[120px]">Natureza</th>
               <th className="p-2.5 w-28 min-w-[110px] max-w-[120px]">Tipo</th>
@@ -1798,16 +1983,21 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                 (item.tipoLancamento === 'receita' || item.tipoLancamento === 'despesa');
               const semCategoriaErro = precisaCategoria && !item.categoriaId;
 
-              const descQueSeraGravada = gerarDescricaoCurta(item.transacao.descricaoOriginal, item.transacao.contraparte);
+              const descQueSeraGravada = gerarDescricaoCurta(item.transacao);
               const obsQueSeraoGravadas = formatarObservacoesImportacao({
                 descricaoOriginal: item.transacao.descricaoOriginal,
                 contraparte: item.transacao.contraparte,
                 documento: item.transacao.documento,
+                detalhes: item.transacao.detalhes,
                 fitid: item.transacao.fitid,
                 bancoCodigo: item.bancoCodigo,
                 nomeArquivo: 'extrato',
                 formato: item.formato,
                 loteId: 'Lote Atual',
+                tipoOperacaoBanco: item.transacao.tipoOperacaoBanco,
+                contraparteDocumento: item.transacao.contraparteDocumento,
+                mensagemUsuario: item.transacao.mensagemUsuario,
+                favorecido: item.transacao.favorecido,
               });
 
               return (
@@ -1838,26 +2028,51 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                       {formatarDataBR(item.transacao.data)}
                     </td>
 
-                    {/* Descrição e Contraparte */}
+                    {/* Favorecido / Descrição */}
                     <td className="p-2 min-w-[220px] max-w-[320px]">
-                      <div className="font-semibold text-slate-800 truncate" title={item.transacao.descricaoOriginal}>
-                        {item.transacao.descricaoOriginal}
-                      </div>
+                      {(() => {
+                        const textoPrincipal =
+                          item.transacao.contraparteNome ||
+                          item.transacao.favorecido ||
+                          item.transacao.mensagemUsuario ||
+                          item.transacao.contraparte ||
+                          item.transacao.descricaoOriginal;
 
-                      {item.transacao.contraparte && (
-                        <div className="flex items-center gap-1 text-[11px] text-[#1A4A85] font-medium mt-0.5 truncate" title={item.transacao.contraparte}>
-                          <User className="w-3 h-3 shrink-0" />
-                          <span className="truncate">
-                            {item.transacao.contraparte}
-                          </span>
-                        </div>
-                      )}
+                        return (
+                          <>
+                            <div className="font-semibold text-slate-800 truncate" title={textoPrincipal}>
+                              {textoPrincipal}
+                            </div>
 
-                      {item.transacao.detalhes && (
-                        <div className="text-[10px] text-slate-500 mt-0.5 truncate" title={`Detalhes: ${item.transacao.detalhes}`}>
-                          {item.transacao.detalhes}
-                        </div>
-                      )}
+                            {textoPrincipal !== item.transacao.descricaoOriginal && (
+                              <div className="text-[11px] text-slate-500 truncate mt-0.5" title={item.transacao.descricaoOriginal}>
+                                {item.transacao.descricaoOriginal}
+                              </div>
+                            )}
+
+                            {item.transacao.contraparteDocumento && (
+                              <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate" title={`Documento: ${item.transacao.contraparteDocumento}`}>
+                                {item.transacao.contraparteDocumento}
+                              </div>
+                            )}
+
+                            {item.transacao.contraparte && item.transacao.contraparte !== textoPrincipal && (
+                              <div className="flex items-center gap-1 text-[11px] text-[#1A4A85] font-medium mt-0.5 truncate" title={item.transacao.contraparte}>
+                                <User className="w-3 h-3 shrink-0" />
+                                <span className="truncate">
+                                  {item.transacao.contraparte}
+                                </span>
+                              </div>
+                            )}
+
+                            {item.transacao.detalhes && (
+                              <div className="text-[10px] text-slate-400 mt-0.5 truncate" title={`Detalhes: ${item.transacao.detalhes}`}>
+                                {item.transacao.detalhes}
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
 
                       {/* Badges de Status da Deduplicação */}
                       <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
@@ -1870,6 +2085,12 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                           <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.2 rounded flex items-center gap-0.5">
                             <Link2 className="w-2.5 h-2.5" />
                             Enriquecer existente
+                          </span>
+                        )}
+                        {item.statusDeduplicacao === 'vinculada_alta' && (
+                          <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.2 rounded flex items-center gap-0.5">
+                            <CheckCircle2 className="w-2.5 h-2.5 text-indigo-600" />
+                            Já lançado – será vinculado sem duplicar
                           </span>
                         )}
                         {item.statusDeduplicacao === 'possivel_duplicata_manual' && (
@@ -1928,7 +2149,9 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     {/* Natureza */}
                     <td className="p-2 w-28 min-w-[110px] max-w-[120px] whitespace-nowrap">
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 uppercase tracking-wider">
-                        {item.natureza.replace('_', ' ')}
+                        {item.natureza === 'transferencia_propria'
+                          ? 'Transferência entre contas próprias'
+                          : item.natureza.replace('_', ' ')}
                       </span>
                     </td>
 
@@ -1954,10 +2177,16 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
 
                     {/* Categoria Obrigatória */}
                     <td className="p-2 w-64 min-w-[240px] max-w-[280px]">
-                      {item.natureza === 'movimentacao_interna' || item.tipoLancamento === 'transferencia' ? (
+                      {item.natureza === 'movimentacao_interna' ||
+                      item.natureza === 'transferencia_propria' ||
+                      item.tipoLancamento === 'transferencia' ? (
                         <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-medium">
                           <ArrowRightLeft className="w-3.5 h-3.5 shrink-0 text-indigo-600" />
-                          <span className="truncate">Transferência (não requer categoria)</span>
+                          <span className="truncate">
+                            {item.natureza === 'transferencia_propria'
+                              ? 'Transferência entre contas próprias'
+                              : 'Transferência (não requer categoria)'}
+                          </span>
                         </div>
                       ) : (
                         <ComboboxCategoria
@@ -1965,6 +2194,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                           tipoLancamento={item.tipoLancamento}
                           categorias={categorias}
                           sugerida={item.sugestaoAplicada}
+                          rotuloSugestao={item.rotuloSugestao}
                           obrigatorio={item.acao === 'incluir'}
                           temErro={semCategoriaErro}
                           onChange={(catId, catNome) =>
@@ -2053,17 +2283,23 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                     </td>
                   </tr>
 
-                  {/* BLOCO COMPARATIVO SE FOR POSSÍVEL DUPLICATA MANUAL */}
-                  {item.statusDeduplicacao === 'possivel_duplicata_manual' &&
+                  {/* BLOCO COMPARATIVO SE FOR POSSÍVEL DUPLICATA MANUAL OU VINCULADA ALTA */}
+                  {(item.statusDeduplicacao === 'possivel_duplicata_manual' || item.statusDeduplicacao === 'vinculada_alta') &&
                     item.lancamentoExistente && (
-                      <tr className="bg-amber-50/60 border-b border-amber-200 text-amber-950">
+                      <tr className={`${item.statusDeduplicacao === 'vinculada_alta' ? 'bg-indigo-50/50 border-b border-indigo-200 text-indigo-950' : 'bg-amber-50/60 border-b border-amber-200 text-amber-950'}`}>
                         <td colSpan={11} className="p-3">
-                          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 bg-white p-3 rounded-xl border border-amber-300 shadow-2xs">
+                          <div className={`flex flex-col md:flex-row items-start md:items-center justify-between gap-3 bg-white p-3 rounded-xl border ${item.statusDeduplicacao === 'vinculada_alta' ? 'border-indigo-300' : 'border-amber-300'} shadow-2xs`}>
                             <div className="flex items-start gap-2.5">
-                              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                              {item.statusDeduplicacao === 'vinculada_alta' ? (
+                                <CheckCircle2 className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+                              ) : (
+                                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                              )}
                               <div className="text-xs space-y-1">
-                                <p className="font-bold text-amber-900">
-                                  Possível duplicata com lançamento manual já existente no sistema:
+                                <p className={`font-bold ${item.statusDeduplicacao === 'vinculada_alta' ? 'text-indigo-900' : 'text-amber-900'}`}>
+                                  {item.statusDeduplicacao === 'vinculada_alta'
+                                    ? 'Lançamento já existente no sistema detectado (será vinculado sem duplicar o saldo):'
+                                    : 'Possível duplicata com lançamento já existente no sistema:'}
                                 </p>
                                 <div className="flex items-center gap-3 text-slate-700 flex-wrap">
                                   <span>
@@ -2082,8 +2318,18 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                                       {formatarValor(item.lancamentoExistente.valor)}
                                     </span>
                                   </span>
+                                  {item.lancamentoExistente.conta_id !== item.contaId && (
+                                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-rose-100 font-bold text-rose-800 border border-rose-300">
+                                      ⚠️ Lançado em outra conta
+                                    </span>
+                                  )}
+                                  {item.lancamentoExistente.status === 'pendente' && (
+                                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 font-bold text-amber-800 border border-amber-300">
+                                      Status: Pendente (será baixado com o extrato)
+                                    </span>
+                                  )}
                                   {item.diferencaDiasManual !== undefined && (
-                                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-200/80 font-bold text-amber-900">
+                                    <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${item.statusDeduplicacao === 'vinculada_alta' ? 'bg-indigo-100 text-indigo-900' : 'bg-amber-200/80 text-amber-900'}`}>
                                       Diferença de {item.diferencaDiasManual} dia(s)
                                     </span>
                                   )}
@@ -2101,7 +2347,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                                   })
                                 }
                                 className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
-                                  item.decisaoManual === 'vincular'
+                                  item.acao === 'vincular'
                                     ? 'bg-[#003064] text-white shadow-2xs'
                                     : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                                 }`}
@@ -2118,7 +2364,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                                   })
                                 }
                                 className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
-                                  item.decisaoManual === 'novo'
+                                  item.acao === 'incluir'
                                     ? 'bg-emerald-600 text-white shadow-2xs'
                                     : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                                 }`}
@@ -2135,7 +2381,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                                   })
                                 }
                                 className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
-                                  item.decisaoManual === 'ignorar'
+                                  item.acao === 'ignorar'
                                     ? 'bg-slate-700 text-white shadow-2xs'
                                     : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                                 }`}
@@ -2205,14 +2451,20 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                 </div>
 
                 <div className="space-y-1.5 pt-1">
-                  {item.natureza === 'movimentacao_interna' || item.tipoLancamento === 'transferencia' ? (
+                  {item.natureza === 'movimentacao_interna' ||
+                  item.natureza === 'transferencia_propria' ||
+                  item.tipoLancamento === 'transferencia' ? (
                     <>
                       <label className="text-[10px] font-bold text-slate-500 uppercase">
                         Tipo
                       </label>
                       <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-medium">
                         <ArrowRightLeft className="w-3.5 h-3.5 shrink-0 text-indigo-600" />
-                        <span>Transferência (não requer categoria)</span>
+                        <span>
+                          {item.natureza === 'transferencia_propria'
+                            ? 'Transferência entre contas próprias'
+                            : 'Transferência (não requer categoria)'}
+                        </span>
                       </div>
                     </>
                   ) : (
@@ -2225,6 +2477,7 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                         tipoLancamento={item.tipoLancamento}
                         categorias={categorias}
                         sugerida={item.sugestaoAplicada}
+                        rotuloSugestao={item.rotuloSugestao}
                         obrigatorio={item.acao === 'incluir'}
                         temErro={semCategoriaErro}
                         onChange={(catId, catNome) =>
@@ -2239,7 +2492,9 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
 
                 <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100">
                   <span className="text-[10px] uppercase font-bold text-slate-500">
-                    {item.natureza.replace('_', ' ')}
+                    {item.natureza === 'transferencia_propria'
+                      ? 'Transferência entre contas próprias'
+                      : item.natureza.replace('_', ' ')}
                   </span>
 
                   <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-100">
@@ -2482,6 +2737,22 @@ export const RevisaoExtrato: React.FC<RevisaoExtratoProps> = ({
                   {itens.filter((i) => i.acao === 'vincular').length}
                 </strong>
               </div>
+              {resultadoAgendamentos.confirmados.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-600">Pagamentos agendados confirmados:</span>
+                  <strong className="font-num text-emerald-700 font-bold">
+                    {resultadoAgendamentos.confirmados.length}
+                  </strong>
+                </div>
+              )}
+              {resultadoAgendamentos.naoLocalizados.length > 0 && (
+                <div className="flex items-center justify-between text-rose-700 font-semibold">
+                  <span>Agendamentos não localizados no extrato:</span>
+                  <strong className="font-num text-rose-700 font-bold">
+                    {resultadoAgendamentos.naoLocalizados.length}
+                  </strong>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-slate-600">Transações ignoradas (duplicadas/internas):</span>
                 <strong className="font-num text-slate-700 font-bold">

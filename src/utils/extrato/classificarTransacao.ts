@@ -15,6 +15,7 @@ import { normalizarDescricao } from './tipos';
  */
 export type NaturezaTransacao =
   | 'movimentacao_interna'  // Contamax / aplicações internas — não é receita nem despesa
+  | 'transferencia_propria' // Transferência entre contas da mesma titularidade (Parte 24C)
   | 'emprestimo'            // Débito de empréstimo / financiamento
   | 'tarifa_bancaria'       // IOF, tarifas, manutenção
   | 'imposto'               // DARF, INSS, FGTS, Simples, etc.
@@ -55,7 +56,7 @@ export interface RegraImportacao {
   /** ID da conta ou '*' para qualquer conta */
   conta_id: string;
   /** Campo da transação a casar */
-  campo: 'descricao' | 'contraparte';
+  campo: 'descricao' | 'contraparte' | 'favorecido' | 'mensagem' | 'documento';
   /** Operador de comparação */
   operador: 'contem' | 'igual' | 'comeca_com';
   /** Valor a casar (sempre comparado após normalização) */
@@ -170,10 +171,19 @@ function testarRegraUsuario(
   if (regra.conta_id !== '*' && regra.conta_id !== contaId) return false;
   if (!regra.ativa) return false;
 
-  // Campo a comparar
-  const campoTexto = regra.campo === 'contraparte'
-    ? (transacao.contraparte ?? '')
-    : transacao.descricaoNormalizada;
+  // Campo a comparar (Parte 24C: descricao, contraparte, favorecido, mensagem, documento)
+  let campoTexto = '';
+  if (regra.campo === 'mensagem') {
+    campoTexto = transacao.mensagemUsuario ?? '';
+  } else if (regra.campo === 'favorecido') {
+    campoTexto = transacao.favorecido ?? '';
+  } else if (regra.campo === 'documento') {
+    campoTexto = transacao.contraparteDocumento ?? transacao.documento ?? '';
+  } else if (regra.campo === 'contraparte') {
+    campoTexto = transacao.contraparte ?? transacao.contraparteNome ?? '';
+  } else {
+    campoTexto = transacao.descricaoNormalizada || transacao.descricaoOriginal;
+  }
 
   const textoNorm = normalizarDescricao(campoTexto);
   const valorNorm = normalizarDescricao(regra.valor);

@@ -75,7 +75,7 @@ export const ContasReceber: React.FC<ContasReceberProps> = ({
     // Apenas receitas PENDENTES no módulo de Contas a Receber
     setReceitas(todos.filter((l) => l.tipo === 'receita' && l.status === 'pendente'));
     setContas(dbService.getContas());
-    setCategorias(dbService.getCategorias());
+    setCategorias(dbService.getCategoriasUnicas());
     setContatos(dbService.getContatos());
     setProjetos(dbService.getProjetos());
   };

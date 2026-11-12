@@ -27,6 +27,7 @@ import {
   atualizarModeloRecorrencia,
   podeEditarProximos,
 } from '../utils/recorrencia';
+import { chaveCategoria } from '../utils/categorias';
 import {
   ReceiptText,
   Plus,
@@ -158,7 +159,7 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
     setLancamentos(dbService.getLancamentos());
     const c = dbService.getContas();
     setContas(c);
-    setCategorias(dbService.getCategorias());
+    setCategorias(dbService.getCategoriasUnicas());
     setContatos(dbService.getContatos());
     setProjetos(dbService.getProjetos());
     setImportacoes(dbService.getImportacoes());
@@ -298,11 +299,23 @@ export const Lancamentos: React.FC<LancamentosProps> = ({
   const handleSalvarCategoriaInline = (e: React.MouseEvent) => {
     e.preventDefault();
     if (!novaCatNome.trim()) return;
+
+    // Prevenção de duplicatas na criação inline (Parte 24A)
+    const chave = chaveCategoria({ nome: novaCatNome.trim(), tipo });
+    const existente = dbService.getCategorias().find((c) => chaveCategoria(c) === chave);
+    if (existente) {
+      setCategoriaId(existente.id);
+      setNovaCatNome('');
+      setInlineCriarCategoria(false);
+      return;
+    }
+
     const nova = dbService.saveCategoria({
       id: 'cat-' + Date.now(),
       nome: novaCatNome.trim(),
       tipo,
       cor: novaCatCor,
+      criado_em: new Date().toISOString(),
     });
     setCategoriaId(nova.id);
     setNovaCatNome('');

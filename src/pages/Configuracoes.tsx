@@ -3,6 +3,7 @@ import { dbService, subscribe } from '../services/storage';
 import { useAuth } from '../context/AuthContext';
 import { ConfiguracoesEmpresa, UsuarioAutorizado, PapelUsuario, RegistroAuditoria } from '../types';
 import { Modal } from '../components/Modal';
+import { ModalMesclarCategorias } from '../components/ModalMesclarCategorias';
 import { exportarTabelaGenericaCSV } from '../utils/csvExporter';
 import {
   Settings,
@@ -30,7 +31,8 @@ import {
   RefreshCw,
   HelpCircle,
   Clock,
-  CloudUpload
+  CloudUpload,
+  Layers
 } from 'lucide-react';
 
 export const Configuracoes: React.FC = () => {
@@ -55,6 +57,7 @@ export const Configuracoes: React.FC = () => {
 
   // Modal Importar Backup JSON
   const [modalImportarAberto, setModalImportarAberto] = useState(false);
+  const [modalMesclarCategoriasAberto, setModalMesclarCategoriasAberto] = useState(false);
   const [conteudoJsonImportar, setConteudoJsonImportar] = useState<string>('');
   const [dadosPreviaImportacao, setDadosPreviaImportacao] = useState<any>(null);
   const [importandoNuvem, setImportandoNuvem] = useState(false);
@@ -430,6 +433,35 @@ export const Configuracoes: React.FC = () => {
                   <CloudUpload className="w-4 h-4 text-[#FCBC00]" />
                 )}
                 <span>{importandoNuvem ? 'Enviando dados para o Firestore...' : 'Importar dados locais para a nuvem'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Card Mesclagem e Deduplicação de Categorias (Parte 24A) */}
+          <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 flex flex-col justify-between gap-4 md:col-span-2">
+            <div>
+              <div className="flex items-center gap-2 text-[#003064] font-bold text-sm mb-1">
+                <Layers className="w-4 h-4 text-[#003064]" />
+                Consolidação & Mesclagem de Categorias
+              </div>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Identifica e elimina categorias com nomes e cores idênticos ou equivalentes. Reaponta todos os lançamentos,
+                recorrências e regras de importação para a categoria canônica eleita, gerando backup automático antes da gravação.
+              </p>
+            </div>
+            <div>
+              <button
+                onClick={() => setModalMesclarCategoriasAberto(true)}
+                disabled={!isAdmin}
+                type="button"
+                className={`w-full sm:w-auto py-2.5 px-5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-xs ${
+                  isAdmin
+                    ? 'bg-[#003064] hover:bg-[#00204A] text-white border-b-2 border-[#FCBC00] cursor-pointer'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                }`}
+              >
+                <Layers className="w-4 h-4 text-[#FCBC00]" />
+                <span>Mesclar Categorias Duplicadas</span>
               </button>
             </div>
           </div>
@@ -1048,6 +1080,14 @@ export const Configuracoes: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      {/* Modal Mesclar Categorias Duplicadas (Parte 24A) */}
+      {modalMesclarCategoriasAberto && isAdmin && (
+        <ModalMesclarCategorias
+          isOpen={modalMesclarCategoriasAberto}
+          onFechar={() => setModalMesclarCategoriasAberto(false)}
+        />
+      )}
 
     </div>
   );

@@ -26,6 +26,22 @@ export interface TransacaoExtrato {
   detalhes?: string;
   ordemNoDia: number; // posição entre transações idênticas do mesmo dia (0, 1, 2... regra determinística)
   linhaOrigem: number; // número da linha de origem no extrato/arquivo
+  // Campos novos Parte 24B – Sicoob PDF e outros extratos com metadados ricos
+  tipoOperacaoBanco?: 'pix_emitido' | 'pix_recebido' | 'pix_transferencia' | 'titulo_boleto' | 'db_tr_dif_tit' | 'outro';
+  contraparteNome?: string;
+  contraparteDocumento?: string;
+  documentoMascarado?: boolean;
+  mensagemUsuario?: string;
+  favorecido?: string;
+  ehPropriaEmpresa?: boolean;
+}
+
+export interface LancamentoFuturoExtrato {
+  data: string; // 'YYYY-MM-DD'
+  descricao: string;
+  valor: number;
+  tipo: TipoTransacaoExtrato;
+  documento?: string;
 }
 
 export interface PeriodoExtrato {
@@ -46,9 +62,11 @@ export interface ExtratoLido {
   conta?: string; // apenas dígitos
   acctIdBruto?: string;
   titular?: string;
+  cnpjTitular?: string;
   periodo: PeriodoExtrato;
   saldoFinal?: SaldoFinalExtrato;
   transacoes: TransacaoExtrato[];
+  lancamentosFuturos?: LancamentoFuturoExtrato[];
   avisos: string[];
 }
 

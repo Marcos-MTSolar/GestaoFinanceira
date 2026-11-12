@@ -1,11 +1,12 @@
 // MT Solar - Gestão Financeira
-// Parser de Extratos PDF do Sicoob (Parte 22B)
+// Parser de Extratos PDF do Sicoob (Partes 22B, 22D e 24B)
 // Função PURA: recebe ItemPdf[], não importa pdfjs
 
 import {
   ExtratoLido,
   ItemPdf,
   TransacaoExtrato,
+  LancamentoFuturoExtrato,
   TipoTransacaoExtrato,
   arredondar2Casas,
   normalizarDescricao
@@ -54,7 +55,20 @@ const RE_CABEÇALHO_REPETIDO = /^(SICOOB|COOP\.|CONTA\.|PERÍODO:|DATA\b|HISTÓR
 const RE_CONTROLE_SALDO = /^(SALDO ANTERIOR|SALDO BLOQ\.?ANTERIOR|SALDO DO DIA|SALDO EM CONTA|SALDO DISPONÍVEL|CHEQUE ESPECIAL|RESUMO)/i;
 const RE_SALDO_DO_DIA = /^SALDO DO DIA$/i;
 const RE_SALDO_ANTERIOR = /^(SALDO ANTERIOR|SALDO BLOQ\.?ANTERIOR)$/i;
-const RE_RESUMO = /^RESUMO$/i;
+
+// Delimitadores de final de movimentos correntes
+const RE_FIM_MOVIMENTOS = /^(RESUMO\b|LANÇAMENTOS FUTUROS\b|0,00[CD*]?TARIFAS)/i;
+const RE_RESUMO_SECTION = /^(RESUMO\b|0,00[CD*]?TARIFAS)/i;
+const RE_LANCAMENTOS_FUTUROS_SECTION = /^LANÇAMENTOS FUTUROS\b/i;
+
+// Regex para blocos de detalhe Parte 24B
+const RE_FAV = /^FAV\.:\s*(.+)$/i;
+const RE_TIPO_PIX_LINHA = /^(Pagamento Pix|Recebimento Pix|Transferência Pix)$/i;
+const RE_DOC_ISOLADO = /^DOC\.:\s*(\S+)/i;
+const RE_DOC_COLADO = /^(\*{3}\.\d{3}\.\d{3}-\*{2}|\d{2}\.\d{3}\.\d{3}[\s\/]\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})\s*(DOC\.:\s*\S+.*)$/i;
+const RE_CPF_MASC = /^\*{3}\.\d{3}\.\d{3}-\*{2}/;
+const RE_CNPJ_ESPACO_OU_BARRA = /^\d{2}\.\d{3}\.\d{3}[\s\/]\d{4}-\d{2}/;
+const RE_CPF_NORMAL = /^\d{3}\.\d{3}\.\d{3}-\d{2}/;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilitários de data
@@ -140,6 +154,10 @@ interface BlocoMovimento {
   itensBloco: ItemPdf[]; // todos os itens do bloco, incluindo o da data
 }
 
+export interface OpcoesParserSicoob {
+  cnpjEmpresa?: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Parser principal
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +166,7 @@ interface BlocoMovimento {
  * Parseia um extrato PDF do Sicoob a partir dos itens de texto extraídos.
  * Função PURA — não importa nem executa pdfjs.
  */
-export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
+export function parsearSicoobPdf(itens: ItemPdf[], opcoes?: OpcoesParserSicoob): ExtratoLido {
   const avisos: string[] = [];
 
   if (!itens || itens.length === 0) {
@@ -198,31 +216,133 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
     }
   }
 
+  // Extrair CNPJ do titular se presente no cabeçalho
+  let cnpjTitular: string | undefined;
+  const mCnpjCabecalho = textoCabecalho.match(/(?:CNPJ|CPF)[:\s]*([\d.\/\s-]+)/i);
+  if (mCnpjCabecalho) {
+    const rawCnpj = mCnpjCabecalho[1].trim();
+    if (rawCnpj.replace(/\D/g, '').length >= 11) {
+      cnpjTitular = rawCnpj;
+    }
+  }
+
   // ─── 2. SEGMENTAR ITENS APÓS O CABEÇALHO ────────────────────────────────
   const idxBodyInicio = idxHistorico >= 0 ? idxHistorico + 1 : 0;
   const itensBody = itens.slice(idxBodyInicio);
 
-  // Detectar início da seção RESUMO para truncar
-  const idxResumo = itensBody.findIndex(i => RE_RESUMO.test(i.texto.trim()));
-  const itensMov = idxResumo >= 0 ? itensBody.slice(0, idxResumo) : itensBody;
+  // Detectar início da seção RESUMO ou LANÇAMENTOS FUTUROS para truncar itensMov
+  let idxCorteMov = itensBody.length;
+  for (let i = 0; i < itensBody.length; i++) {
+    const t = itensBody[i].texto.trim();
+    if (RE_FIM_MOVIMENTOS.test(t)) {
+      idxCorteMov = i;
+      break;
+    }
+  }
+  const itensMov = itensBody.slice(0, idxCorteMov);
+
+  // ─── 2.1 PARSEAR LANÇAMENTOS FUTUROS (SE HOUVER) ────────────────────────
+  const lancamentosFuturos: LancamentoFuturoExtrato[] = [];
+  const idxFuturosSection = itensBody.findIndex(i => RE_LANCAMENTOS_FUTUROS_SECTION.test(i.texto.trim()));
+
+  if (idxFuturosSection >= 0) {
+    const itensFuturosRaw = itensBody.slice(idxFuturosSection + 1);
+    const idxFimFuturos = itensFuturosRaw.findIndex(i => RE_RESUMO_SECTION.test(i.texto.trim()));
+    const itensFuturos = idxFimFuturos >= 0 ? itensFuturosRaw.slice(0, idxFimFuturos) : itensFuturosRaw;
+
+    const RE_DATA_FUTURO = /^(\d{2})\/(\d{2})\/(\d{2}|\d{4})$/;
+    const blocosFuturos: ItemPdf[][] = [];
+    let blocoFuturoAtual: ItemPdf[] | null = null;
+
+    for (const it of itensFuturos) {
+      const t = it.texto.trim();
+      if (RE_DATA_FUTURO.test(t)) {
+        if (blocoFuturoAtual) {
+          blocosFuturos.push(blocoFuturoAtual);
+        }
+        blocoFuturoAtual = [it];
+      } else if (blocoFuturoAtual) {
+        blocoFuturoAtual.push(it);
+      }
+    }
+    if (blocoFuturoAtual) {
+      blocosFuturos.push(blocoFuturoAtual);
+    }
+
+    for (const bf of blocosFuturos) {
+      const itemData = bf[0];
+      const mData = itemData.texto.trim().match(RE_DATA_FUTURO);
+      if (!mData) continue;
+      const dd = mData[1];
+      const mm = mData[2];
+      const anoRaw = mData[3];
+      const aaaa = anoRaw.length === 2 ? `20${anoRaw}` : anoRaw;
+      const dataIso = `${aaaa}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+
+      const restantes = bf.slice(1);
+      let valorFuturo = 0;
+      let tipoFuturo: TipoTransacaoExtrato = 'debito';
+      let itemValorFuturo: ItemPdf | undefined;
+
+      for (let k = 0; k < restantes.length; k++) {
+        const it = restantes[k];
+        const parsed = parsearValorSicoob(it.texto.trim());
+        if (parsed) {
+          itemValorFuturo = it;
+          valorFuturo = parsed.valor;
+          let sinal = parsed.sinal;
+          if (!sinal) {
+            const prox = restantes[k + 1];
+            if (prox && RE_SINAL_AVULSO.test(prox.texto.trim())) {
+              sinal = prox.texto.trim() as 'C' | 'D';
+            }
+          }
+          tipoFuturo = sinal === 'C' ? 'credito' : 'debito';
+          break;
+        }
+      }
+
+      if (!itemValorFuturo) continue;
+
+      const itensSemValor = restantes.filter(it => it !== itemValorFuturo && !RE_SINAL_AVULSO.test(it.texto.trim()));
+      let docFuturo: string | undefined;
+      const descFuturoPartes: string[] = [];
+
+      for (const it of itensSemValor) {
+        const t = it.texto.trim();
+        const mDoc = t.match(/DOC\.:\s*(\S+)/i);
+        if (mDoc) {
+          docFuturo = mDoc[1];
+        } else {
+          descFuturoPartes.push(t);
+        }
+      }
+
+      const descricaoFuturo = descFuturoPartes.join(' ').trim() || 'Lançamento Futuro';
+
+      lancamentosFuturos.push({
+        data: dataIso,
+        descricao: descricaoFuturo,
+        valor: arredondar2Casas(valorFuturo),
+        tipo: tipoFuturo,
+        documento: docFuturo
+      });
+    }
+  }
 
   // ─── 3. MONTAR BLOCOS ────────────────────────────────────────────────────
-  // Filtra itens de cabeçalho repetido de páginas subsequentes
   function isItemCabecalhoRepetido(item: ItemPdf): boolean {
     const t = item.texto.trim().toUpperCase();
     if (TEXTOS_CABEÇALHO.has(t)) return true;
     if (RE_CABEÇALHO_REPETIDO.test(item.texto.trim())) return true;
-    // Se for o item SICOOB isolado
     if (t === 'SICOOB') return true;
     return false;
   }
 
-  // Identifica itens de data (iniciam um bloco)
   function isItemData(item: ItemPdf): boolean {
     return RE_DATA_DDMM.test(item.texto.trim()) && item.x < 140;
   }
 
-  // Coleta blocos
   const blocos: BlocoMovimento[] = [];
   let blocoAtual: BlocoMovimento | null = null;
   let ultimaDataVista = '';
@@ -231,7 +351,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
     const item = itensMov[i];
     const texto = item.texto.trim();
 
-    // Pular itens de cabeçalho repetido (páginas subsequentes)
     if (isItemCabecalhoRepetido(item)) {
       if (blocoAtual) {
         blocos.push(blocoAtual);
@@ -243,7 +362,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
     const isControleDireto = item.x >= 130 && item.x < 400 && RE_CONTROLE_SALDO.test(texto);
 
     if (isItemData(item)) {
-      // Início de novo bloco por data
       if (blocoAtual) {
         blocos.push(blocoAtual);
       }
@@ -254,7 +372,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
         itensBloco: [item]
       };
     } else if (isControleDireto && (!blocoAtual || blocoAtual.itensBloco.length > 1 || !isItemData(blocoAtual.itensBloco[0]))) {
-      // Linha de controle sem data precedendo diretamente (ex: SALDO ANTERIOR ou SALDO DO DIA sem coluna de data)
       if (blocoAtual) {
         blocos.push(blocoAtual);
       }
@@ -280,7 +397,7 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
   // ─── 4. PROCESSAR CADA BLOCO ─────────────────────────────────────────────
   interface EntradaSaldo {
     data: string;
-    valor: number; // assinado (C positivo, D negativo)
+    valor: number;
     tipo: 'anterior' | 'dia';
   }
   interface EntradaTransacao {
@@ -293,6 +410,14 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
     documento?: string;
     detalhes?: string;
     linhaOrigem: number;
+    // Campos novos Parte 24B
+    tipoOperacaoBanco?: 'pix_emitido' | 'pix_recebido' | 'pix_transferencia' | 'titulo_boleto' | 'db_tr_dif_tit' | 'outro';
+    contraparteNome?: string;
+    contraparteDocumento?: string;
+    documentoMascarado?: boolean;
+    mensagemUsuario?: string;
+    favorecido?: string;
+    ehPropriaEmpresa?: boolean;
   }
 
   const entradasTransacoes: EntradaTransacao[] = [];
@@ -302,8 +427,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
     const { ddmm, itensBloco, indiceInicio } = bloco;
     const dataBlocoIso = inferirAno(ddmm, periodoInicio, periodoFim);
 
-    // Se itensBloco[0] for item de data, os restantes são a partir do índice 1.
-    // Se não for data (ex: bloco iniciado por controle sem data), consideramos todos os itens do bloco.
     const temItemDataNoBloco = isItemData(itensBloco[0]);
     const itensRestantes = temItemDataNoBloco ? itensBloco.slice(1) : itensBloco;
 
@@ -319,7 +442,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
       const textoControle = itemControle?.texto.trim() ?? textoHistorico;
 
       if (RE_SALDO_DO_DIA.test(textoControle)) {
-        // Extrair valor do saldo do dia
         const itemValor = itensRestantes.find(i => RE_VALOR_COMPLETO.test(i.texto.trim()) && i.x >= 400);
         if (itemValor) {
           const parsed = parsearValorSicoob(itemValor.texto.trim());
@@ -337,7 +459,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
           }
         }
       } else if (RE_SALDO_ANTERIOR.test(textoControle)) {
-        // SALDO ANTERIOR — extrair para conferência
         const itemValor = itensRestantes.find(i => RE_VALOR_COMPLETO.test(i.texto.trim()) && i.x >= 400);
         if (itemValor) {
           const parsed = parsearValorSicoob(itemValor.texto.trim());
@@ -350,7 +471,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
                 sinalSaldo = proxItem.texto.trim() as 'C' | 'D' | '*';
               }
             }
-            // * = bloqueado, ignorar para conferência
             if (sinalSaldo !== '*') {
               const valorSaldo = sinalSaldo === 'D' ? -parsed.valor : parsed.valor;
               const dataSaldoAnterior = diaAnterior(periodoInicio);
@@ -359,11 +479,10 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
           }
         }
       }
-      continue; // não gera transação
+      continue;
     }
 
     // ─── Bloco de transação ───
-    // Extrair valor: item com x >= 400 e regex de valor
     let itemValor: ItemPdf | undefined;
     let sinalTransacao: 'C' | 'D' | null = null;
     let valorTransacao: number | undefined;
@@ -379,11 +498,9 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
         if (parsed.sinal === 'C' || parsed.sinal === 'D') {
           sinalTransacao = parsed.sinal;
         } else if (parsed.sinal === '*') {
-          // Sinal * → ignorar esta linha (não é transação real)
           itemValor = undefined;
           break;
         } else {
-          // Sem sinal embutido: verificar próximo item
           const proxIt = itensRestantes[j + 1];
           if (proxIt && RE_SINAL_AVULSO.test(proxIt.texto.trim())) {
             if (proxIt.texto.trim() === '*') {
@@ -398,7 +515,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
     }
 
     if (!itemValor || valorTransacao === undefined) {
-      // Sem valor no bloco — pode ser linha de detalhe de bloco anterior, ignorar
       continue;
     }
 
@@ -411,7 +527,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
 
     const tipo: TipoTransacaoExtrato = sinalTransacao === 'C' ? 'credito' : 'debito';
 
-    // Extrair itens que NÃO são o valor nem o sinal nem a data nem itens de cabeçalho
     const idxItemValor = itensRestantes.indexOf(itemValor!);
     const idxSinalAvulso = sinalTransacao && !parsearValorSicoob(itemValor.texto.trim())?.sinal
       ? idxItemValor + 1
@@ -420,42 +535,197 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
     const itensDescricao = itensRestantes.filter((it, idx) => {
       if (idx === idxItemValor) return false;
       if (idx === idxSinalAvulso) return false;
-      if (it.x >= 400) return false; // colunas de valor
+      if (it.x >= 400) return false;
       return true;
     });
 
-    // Primeiro item de descrição (x ≈ 154) → descricaoOriginal
     const itemDescPrincipal = itensDescricao.find(i => i.x >= 130 && i.x < 400);
     const descricaoOriginal = itemDescPrincipal?.texto.trim() ?? '';
     const descricaoNormalizada = normalizarDescricao(descricaoOriginal);
 
-    // Demais itens: detalhes
     const itensDetalhe = itemDescPrincipal
       ? itensDescricao.filter(i => i !== itemDescPrincipal)
       : itensDescricao.slice(1);
 
-    // DOC.: extrair documento
-    let documento: string | undefined;
-    const textoDetalhesJunto = itensDetalhe.map(i => i.texto.trim()).join(' ');
-    const mDoc = textoDetalhesJunto.match(/DOC\.:\s*(\S+)/i);
-    if (mDoc) {
-      documento = mDoc[1];
+    // ─── Extração de Metadados Ricos (Parte 24B) ───
+    let tipoOperacaoBanco: 'pix_emitido' | 'pix_recebido' | 'pix_transferencia' | 'titulo_boleto' | 'db_tr_dif_tit' | 'outro' = 'outro';
+    const descUpper = descricaoOriginal.toUpperCase();
+    if (/PIX\.?EMIT\.OUT IF-MSM/i.test(descUpper)) {
+      tipoOperacaoBanco = 'pix_emitido';
+    } else if (/PIX\s*RECEB/i.test(descUpper)) {
+      tipoOperacaoBanco = 'pix_recebido';
+    } else if (/PIX\s*EMIT/i.test(descUpper)) {
+      tipoOperacaoBanco = 'pix_emitido';
+    } else if (/DB\.TR\.C\.DIF\.TIT\.INT/i.test(descUpper)) {
+      tipoOperacaoBanco = 'db_tr_dif_tit';
+    } else if (/D[EÉ]B\.TIT\.COMPE\.EFETI/i.test(descUpper)) {
+      tipoOperacaoBanco = 'titulo_boleto';
     }
 
-    // Contraparte: primeiro detalhe com letras, não CPF/CNPJ/DOC/número puro
-    let contraparte: string | undefined;
+    let favorecido: string | undefined;
+    let contraparteNome: string | undefined;
+    let contraparteDocumento: string | undefined;
+    let documentoMascarado: boolean | undefined;
+    let mensagemUsuario: string | undefined;
+    let documentoTransacao: string | undefined;
+    let ehPropriaEmpresa: boolean = false;
+
+    if (/PIX\.?EMIT\.OUT IF-MSM/i.test(descUpper)) {
+      ehPropriaEmpresa = true;
+    }
+
+    interface DetalheLinha {
+      texto: string;
+      consumidoComo?: 'fav' | 'tipo_pix' | 'doc' | 'contraparte_doc' | 'contraparte_nome' | 'proprio_titular';
+    }
+    const linhasDet: DetalheLinha[] = [];
+
     for (const det of itensDetalhe) {
       const t = det.texto.trim();
       if (!t) continue;
-      if (/^CPF:/i.test(t) || /^CNPJ:/i.test(t) || /^DOC\.:/i.test(t)) continue;
-      if (/^\d+$/.test(t.replace(/[.\-\/]/g, ''))) continue; // só números
-      if (/[A-Za-záéíóúãõâêîôûç]/i.test(t)) {
-        contraparte = t;
+
+      const mColado = t.match(RE_DOC_COLADO);
+      if (mColado) {
+        linhasDet.push({ texto: mColado[1].trim() });
+        linhasDet.push({ texto: mColado[2].trim() });
+      } else {
+        linhasDet.push({ texto: t });
+      }
+    }
+
+    // 1) FAV.: <nome>
+    for (const l of linhasDet) {
+      const mFav = l.texto.match(RE_FAV);
+      if (mFav) {
+        favorecido = mFav[1].trim();
+        l.consumidoComo = 'fav';
+      }
+    }
+
+    // 2) DOC.: <número>
+    for (const l of linhasDet) {
+      const mDoc = l.texto.match(RE_DOC_ISOLADO);
+      if (mDoc) {
+        documentoTransacao = mDoc[1].trim();
+        l.consumidoComo = 'doc';
+      }
+    }
+
+    // 3) Linha indicadora de Pix ("Pagamento Pix", "Recebimento Pix", "Transferência Pix")
+    let tipoPixEncontrado: string | undefined;
+    let idxTipoPix = -1;
+    for (let k = 0; k < linhasDet.length; k++) {
+      const l = linhasDet[k];
+      if (RE_TIPO_PIX_LINHA.test(l.texto)) {
+        tipoPixEncontrado = l.texto;
+        idxTipoPix = k;
+        l.consumidoComo = 'tipo_pix';
         break;
       }
     }
 
-    // Detalhes completos
+    // Em DB.TR.C.DIF.TIT.INT: as linhas após "Transferência Pix" são nome e CNPJ do titular
+    if (tipoOperacaoBanco === 'db_tr_dif_tit' && idxTipoPix >= 0) {
+      for (let k = idxTipoPix + 1; k < linhasDet.length; k++) {
+        const l = linhasDet[k];
+        if (l.consumidoComo) continue;
+        const textoNorm = l.texto.toUpperCase();
+        if (
+          (titular && textoNorm.includes(titular.toUpperCase().slice(0, 8))) ||
+          RE_CNPJ_ESPACO_OU_BARRA.test(l.texto) ||
+          textoNorm.includes('EMPRESA') ||
+          textoNorm.includes('LTDA')
+        ) {
+          l.consumidoComo = 'proprio_titular';
+        }
+      }
+    }
+
+    // Em Recebimento Pix: primeira linha com letras após tipo Pix é o nome do pagador
+    if (tipoOperacaoBanco === 'pix_recebido' || (tipoPixEncontrado && /Recebimento Pix/i.test(tipoPixEncontrado))) {
+      for (let k = idxTipoPix + 1; k < linhasDet.length; k++) {
+        const l = linhasDet[k];
+        if (l.consumidoComo) continue;
+        if (
+          !RE_CPF_MASC.test(l.texto) &&
+          !RE_CNPJ_ESPACO_OU_BARRA.test(l.texto) &&
+          !RE_CPF_NORMAL.test(l.texto) &&
+          !RE_DOC_ISOLADO.test(l.texto) &&
+          /[A-Za-záéíóúãõâêîôûç]/i.test(l.texto)
+        ) {
+          contraparteNome = l.texto;
+          l.consumidoComo = 'contraparte_nome';
+          break;
+        }
+      }
+    }
+
+    // 4) Identificar documento da contraparte (CPF mascarado ou CNPJ com espaço/barra)
+    for (const l of linhasDet) {
+      if (l.consumidoComo) continue;
+      if (RE_CPF_MASC.test(l.texto)) {
+        contraparteDocumento = l.texto;
+        documentoMascarado = true;
+        l.consumidoComo = 'contraparte_doc';
+        break;
+      } else if (RE_CNPJ_ESPACO_OU_BARRA.test(l.texto)) {
+        contraparteDocumento = l.texto;
+        documentoMascarado = false;
+        l.consumidoComo = 'contraparte_doc';
+        break;
+      } else if (RE_CPF_NORMAL.test(l.texto)) {
+        contraparteDocumento = l.texto;
+        documentoMascarado = false;
+        l.consumidoComo = 'contraparte_doc';
+        break;
+      }
+    }
+
+    // 5) Mensagem do usuário: linhas restantes não consumidas
+    const linhasMensagem: string[] = [];
+    for (const l of linhasDet) {
+      if (l.consumidoComo) continue;
+      const t = l.texto.trim();
+      if (!t) continue;
+      if (/^(CPF|CNPJ):/i.test(t)) continue;
+      if (/^\d+$/.test(t.replace(/[.\-\/\s]/g, ''))) continue;
+      linhasMensagem.push(t);
+    }
+    if (linhasMensagem.length > 0) {
+      mensagemUsuario = linhasMensagem.join(' ');
+    }
+
+    // Determinar se contraparte é a própria empresa
+    const cnpjEmpresaAlvo = opcoes?.cnpjEmpresa || cnpjTitular || '34.892.105/0001-44';
+    const digitosEmpresaAlvo = cnpjEmpresaAlvo.replace(/\D/g, '');
+    if (contraparteDocumento) {
+      const digitosContraparte = contraparteDocumento.replace(/\D/g, '');
+      if (digitosContraparte.length >= 11 && digitosEmpresaAlvo.length >= 11 && digitosContraparte === digitosEmpresaAlvo) {
+        ehPropriaEmpresa = true;
+      }
+    }
+
+    // Definir contraparte para retrocompatibilidade
+    let contraparte: string | undefined;
+    if (favorecido) {
+      contraparte = favorecido;
+    } else if (contraparteNome) {
+      contraparte = contraparteNome;
+    } else if (contraparteDocumento && !documentoMascarado) {
+      contraparte = contraparteDocumento;
+    } else {
+      for (const det of itensDetalhe) {
+        const t = det.texto.trim();
+        if (!t) continue;
+        if (/^CPF:/i.test(t) || /^CNPJ:/i.test(t) || /^DOC\.:/i.test(t)) continue;
+        if (/^\d+$/.test(t.replace(/[.\-\/]/g, ''))) continue;
+        if (/[A-Za-záéíóúãõâêîôûç]/i.test(t)) {
+          contraparte = t;
+          break;
+        }
+      }
+    }
+
     const detalhesStr = itensDetalhe.length > 0
       ? itensDetalhe.map(i => i.texto.trim()).join(' | ')
       : undefined;
@@ -467,9 +737,16 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
       descricaoOriginal,
       descricaoNormalizada,
       contraparte,
-      documento,
+      documento: documentoTransacao,
       detalhes: detalhesStr,
-      linhaOrigem: indiceInicio + 1
+      linhaOrigem: indiceInicio + 1,
+      tipoOperacaoBanco,
+      contraparteNome,
+      contraparteDocumento,
+      documentoMascarado,
+      mensagemUsuario,
+      favorecido,
+      ehPropriaEmpresa
     });
   }
 
@@ -478,10 +755,8 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
   const saldosDia = entradasSaldo.filter(e => e.tipo === 'dia');
 
   if (entradaAnterior !== undefined) {
-    // Conferência: acumular a partir do saldo anterior e verificar cada SALDO DO DIA
     let saldoAcumulado = entradaAnterior.valor;
 
-    // Agrupa transações por dia
     const transacoesPorDia = new Map<string, EntradaTransacao[]>();
     for (const t of entradasTransacoes) {
       const arr = transacoesPorDia.get(t.data) ?? [];
@@ -489,10 +764,8 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
       transacoesPorDia.set(t.data, arr);
     }
 
-    // Percorre dias ordenados
     const diasComSaldo = [...new Set(saldosDia.map(s => s.data))].sort();
 
-    // Coleta todos os dias com transações
     const todosDias = [...new Set([
       ...entradasTransacoes.map(t => t.data),
       ...diasComSaldo
@@ -504,7 +777,6 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
         saldoAcumulado += t.tipo === 'credito' ? t.valor : -t.valor;
         saldoAcumulado = arredondar2Casas(saldoAcumulado);
       }
-      // Verificar saldo do dia se disponível
       const saldoDia = saldosDia.find(s => s.data === dia);
       if (saldoDia) {
         if (Math.abs(saldoAcumulado - saldoDia.valor) > 0.005) {
@@ -518,10 +790,8 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
       }
     }
   } else {
-    // Sem SALDO ANTERIOR: conferir apenas entre dias consecutivos com SALDO DO DIA
     if (saldosDia.length >= 2) {
       avisos.push('Aviso: SALDO ANTERIOR não encontrado. Conferência de saldo entre dias consecutivos apenas.');
-      // Não é possível conferir sem referência — apenas registrar aviso
     } else {
       avisos.push('Aviso: SALDO ANTERIOR não encontrado. Conferência de saldo não realizada.');
     }
@@ -551,7 +821,14 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
       documento: entrada.documento,
       detalhes: entrada.detalhes,
       ordemNoDia,
-      linhaOrigem: entrada.linhaOrigem
+      linhaOrigem: entrada.linhaOrigem,
+      tipoOperacaoBanco: entrada.tipoOperacaoBanco,
+      contraparteNome: entrada.contraparteNome,
+      contraparteDocumento: entrada.contraparteDocumento,
+      documentoMascarado: entrada.documentoMascarado,
+      mensagemUsuario: entrada.mensagemUsuario,
+      favorecido: entrada.favorecido,
+      ehPropriaEmpresa: entrada.ehPropriaEmpresa
     });
   }
 
@@ -559,13 +836,11 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
   let saldoFinal: { valor: number; data: string } | undefined;
 
   if (saldosDia.length > 0) {
-    // Último SALDO DO DIA por data
     const ultimoSaldoDia = saldosDia.reduce((prev, curr) =>
       curr.data >= prev.data ? curr : prev
     );
     saldoFinal = { valor: ultimoSaldoDia.valor, data: ultimoSaldoDia.data };
   } else if (entradaAnterior) {
-    // Sem movimentos: saldo anterior como saldo final
     saldoFinal = { valor: entradaAnterior.valor, data: diaAnterior(periodoInicio) };
   }
 
@@ -577,9 +852,11 @@ export function parsearSicoobPdf(itens: ItemPdf[]): ExtratoLido {
     conta,
     acctIdBruto,
     titular,
+    cnpjTitular,
     periodo: { inicio: periodoInicio, fim: periodoFim },
     saldoFinal,
     transacoes,
+    lancamentosFuturos: lancamentosFuturos.length > 0 ? lancamentosFuturos : undefined,
     avisos
   };
 }

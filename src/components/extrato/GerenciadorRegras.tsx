@@ -50,7 +50,7 @@ export const GerenciadorRegras: React.FC<GerenciadorRegrasProps> = ({ contas }) 
 
   // Campos do formulário
   const [valorTexto, setValorTexto] = useState('');
-  const [campo, setCampo] = useState<'descricao' | 'contraparte'>('descricao');
+  const [campo, setCampo] = useState<'descricao' | 'contraparte' | 'favorecido' | 'mensagem' | 'documento'>('descricao');
   const [operador, setOperador] = useState<'contem' | 'comeca_com' | 'igual'>('contem');
   const [bancoCodigo, setBancoCodigo] = useState<string>('*');
   const [contaId, setContaId] = useState<string>('*');
@@ -69,7 +69,7 @@ export const GerenciadorRegras: React.FC<GerenciadorRegrasProps> = ({ contas }) 
 
   const carregarDados = () => {
     setRegras(dbService.getRegrasImportacao());
-    setCategorias(dbService.getCategorias());
+    setCategorias(dbService.getCategoriasUnicas());
     setContatos(dbService.getContatos());
     setProjetos(dbService.getProjetos());
   };
@@ -401,7 +401,15 @@ export const GerenciadorRegras: React.FC<GerenciadorRegrasProps> = ({ contas }) 
                       {/* Campo & Condição */}
                       <td className="py-3.5 px-4 whitespace-nowrap text-slate-700">
                         <span className="font-medium">
-                          {r.campo === 'contraparte' ? 'Favorecido / Contraparte' : 'Descrição'}
+                          {r.campo === 'contraparte'
+                            ? 'Favorecido / Contraparte'
+                            : r.campo === 'favorecido'
+                            ? 'Favorecido'
+                            : r.campo === 'mensagem'
+                            ? 'Mensagem Pix'
+                            : r.campo === 'documento'
+                            ? 'Documento (CPF/CNPJ)'
+                            : 'Descrição'}
                         </span>
                         <div className="text-[10px] text-slate-400 capitalize">
                           {r.operador === 'comeca_com' ? 'Começa com' : r.operador === 'igual' ? 'Exato' : 'Contém'}
@@ -509,8 +517,16 @@ export const GerenciadorRegras: React.FC<GerenciadorRegrasProps> = ({ contas }) 
                         {r.valor}
                       </span>
                       <p className="text-[10px] text-slate-500 mt-1">
-                        {r.campo === 'contraparte' ? 'Favorecido' : 'Descrição'} •{' '}
-                        {r.operador === 'comeca_com' ? 'Começa com' : r.operador === 'igual' ? 'Exato' : 'Contém'}
+                        {r.campo === 'contraparte'
+                          ? 'Favorecido'
+                          : r.campo === 'favorecido'
+                          ? 'Favorecido'
+                          : r.campo === 'mensagem'
+                          ? 'Mensagem'
+                          : r.campo === 'documento'
+                          ? 'Documento'
+                          : 'Descrição'}{' '}
+                        • {r.operador === 'comeca_com' ? 'Começa com' : r.operador === 'igual' ? 'Exato' : 'Contém'}
                       </p>
                     </div>
 
@@ -607,6 +623,9 @@ export const GerenciadorRegras: React.FC<GerenciadorRegrasProps> = ({ contas }) 
                 >
                   <option value="descricao">Descrição Principal do Extrato</option>
                   <option value="contraparte">Favorecido / Contraparte</option>
+                  <option value="favorecido">Favorecido (específico)</option>
+                  <option value="mensagem">Mensagem / Descrição Pix do Usuário</option>
+                  <option value="documento">Documento (CPF / CNPJ da Contraparte)</option>
                 </select>
               </div>
 

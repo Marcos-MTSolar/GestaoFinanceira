@@ -69,14 +69,17 @@ export const ContasPagar: React.FC<ContasPagarProps> = ({
   // Filtros
   const [busca, setBusca] = useState('');
   const [filtroConta, setFiltroConta] = useState('todas');
+  const [apenasAgendados, setApenasAgendados] = useState(false);
   const [grupoAtivoAba, setGrupoAtivoAba] = useState<GrupoVencimento | 'todos'>('todos');
+  const [todosLancamentos, setTodosLancamentos] = useState<Lancamento[]>([]);
 
   const carregarDados = () => {
     const todos = dbService.getLancamentos();
+    setTodosLancamentos(todos);
     // Apenas despesas PENDENTES no módulo de Contas a Pagar
     setDespesas(todos.filter((l) => l.tipo === 'despesa' && l.status === 'pendente'));
     setContas(dbService.getContas());
-    setCategorias(dbService.getCategorias());
+    setCategorias(dbService.getCategoriasUnicas());
     setContatos(dbService.getContatos());
   };
 
@@ -113,6 +116,7 @@ export const ContasPagar: React.FC<ContasPagarProps> = ({
 
     despesas.forEach((d) => {
       if (filtroConta !== 'todas' && d.conta_id !== filtroConta) return;
+      if (apenasAgendados && (!d.agendamento || d.agendamento.status === 'cancelado' || d.agendamento.status === 'confirmado')) return;
       if (busca) {
         const q = busca.toLowerCase();
         const descOk = d.descricao.toLowerCase().includes(q);
@@ -141,7 +145,7 @@ export const ContasPagar: React.FC<ContasPagarProps> = ({
       '30dias': proximos30Dias,
       futuras,
     };
-  }, [despesas, hoje, iso7Dias, iso30Dias, filtroConta, busca]);
+  }, [despesas, hoje, iso7Dias, iso30Dias, filtroConta, busca, apenasAgendados]);
 
   // Totais por grupo
   const totalAtrasadas = grupos.atrasadas.reduce((a, b) => a + b.valor, 0);
@@ -290,14 +294,50 @@ export const ContasPagar: React.FC<ContasPagarProps> = ({
                     )}
 
                     <td className="py-3 px-4">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-slate-800">{d.descricao}</span>
-                        {d.origem === 'folha' && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
-                            Folha
-                          </span>
-                        )}
-                      </div>
+                      {(() => {
+                        // D7: Verificar se há lançamento importado equivalente no extrato ainda sem vínculo manual
+                        const temNoExtrato = todosLancamentos.some(
+                          (l) =>
+                            l.id !== d.id &&
+                            l.origem === 'importacao' &&
+                            l.tipo === 'despesa' &&
+                            Math.round(l.valor * 100) === Math.round(d.valor * 100) &&
+                            Math.abs(new Date(l.data_vencimento).getTime() - new Date(d.data_vencimento).getTime()) <= 3 * 86400000
+                        );
+                        return (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-semibold text-slate-800">{d.descricao}</span>
+                            {d.origem === 'folha' && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
+                                Folha
+                              </span>
+                            )}
+                            {temNoExtrato && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200" title="Existe débito no extrato com mesmo valor e data próxima">
+                                Possível pagamento já no extrato
+                              </span>
+                            )}
+                            {d.agendamento?.status === 'ativo' && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200"
+                                title={`Pagamento agendado para ${formatarDataBR(d.agendamento.data)}`}
+                              >
+                                <Clock className="w-2.5 h-2.5 text-amber-600" />
+                                Agendado {formatarDataBR(d.agendamento.data)}
+                              </span>
+                            )}
+                            {d.agendamento?.status === 'nao_localizado' && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200"
+                                title="Agendamento bancário não localizado no extrato importado para a conta"
+                              >
+                                <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />
+                                Agendamento não localizado
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {d.observacoes && (
                         <div className="text-[10px] text-slate-400 italic truncate max-w-[200px]">
                           {d.observacoes}
@@ -536,6 +576,19 @@ export const ContasPagar: React.FC<ContasPagarProps> = ({
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={() => setApenasAgendados((v) => !v)}
+            className={`px-3 py-2 text-xs font-semibold rounded-xl border transition-colors flex items-center gap-1.5 cursor-pointer ${
+              apenasAgendados
+                ? 'bg-amber-100 border-amber-300 text-amber-900 shadow-2xs'
+                : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5 text-amber-600" />
+            <span>Agendados</span>
+          </button>
+
           <select
             value={filtroConta}
             onChange={(e) => setFiltroConta(e.target.value)}

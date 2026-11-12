@@ -186,7 +186,7 @@ export const Relatorios: React.FC = () => {
     const todos = dbService.getLancamentos().filter(
       l => l.status === 'pago' && l.origem !== 'transferencia'
     );
-    const categorias = dbService.getCategorias();
+    const categorias = dbService.getCategoriasUnicas();
 
     const filtrados = todos.filter(l => {
       const dt = l.data_pagamento || l.data_vencimento;

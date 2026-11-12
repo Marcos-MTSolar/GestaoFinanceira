@@ -1,5 +1,5 @@
 // MT Solar - Gestão Financeira
-// Regras de Classificação de Natureza para o Banco Sicoob (Parte 22C)
+// Regras de Classificação de Natureza para o Banco Sicoob (Partes 22C e 24C)
 
 import { RegraClassificacaoBanco } from '../classificarTransacao';
 
@@ -7,17 +7,27 @@ import { RegraClassificacaoBanco } from '../classificarTransacao';
  * Regras do Sicoob ordenadas por prioridade (sugestões; o usuário sempre pode alterar/personalizar).
  * O casamento é realizado contra `descricaoNormalizada` (maiúscula, sem acento, pontuação em espaços, sem números variáveis).
  *
- * NOTA DE HOMOLOGAÇÃO:
- * - Padrões confirmados em extrato real do Sicoob:
- *     DEP DIN AG, CR ANT MSTD, DEB PARC SUBS INTEG, APLICACAO RDC, DEB TRANSF POUPANCA.
- * - Os demais padrões (CESTA, IOF, JUROS, CREDITO/CRED PIX, DEBITO/DEB PIX, LIQUIDACAO BOLETO, etc.)
- *   são prováveis e foram incluídos como sugestões heurísticas de apoio.
- * - O que não casar com nenhuma destas regras fica como 'indefinido' (o usuário informa a categoria
- *   desejada na revisão e o aplicativo aprende por meio das regras do usuário).
+ * ORDEM DE PRECEDÊNCIA (Parte 24C):
+ * 1. Transferência entre contas próprias (IF-MSM) — ANTES de PIX EMIT genérico!
+ * 2. Movimentações internas (RDC, poupança, cota capital)
+ * 3. Tarifas bancárias (IOF, tarifas, cesta)
+ * 4. Recebimentos (PIX RECEB.OUTRA IF, DEP DIN, CR ANT)
+ * 5. Pagamentos (PIX EMIT.OUTRA IF, DB.TR.C.DIF.TIT.INT, DÉB.TIT.COMPE.EFETI, boletos)
  */
 export const REGRAS_SICOOB: RegraClassificacaoBanco[] = [
   // -------------------------------------------------------------------------
-  // 1. Movimentações internas (aplicação RDC, poupança, cota capital)
+  // 1. Transferência entre contas próprias (mesma titularidade)
+  //    Tratamento idêntico ao Contamax: padrão "ignorar", nunca gera despesa
+  // -------------------------------------------------------------------------
+  {
+    natureza: 'transferencia_propria',
+    tipoLancamentoSugerido: 'transferencia',
+    categoriaSugeridaNome: undefined,
+    testar: (desc) => /IF-MSM|IF MSM/i.test(desc),
+  },
+
+  // -------------------------------------------------------------------------
+  // 2. Movimentações internas (aplicação RDC, poupança, cota capital)
   //    Tratamento padrão: ignorar (não cria lançamento; saldo final permanece correto)
   // -------------------------------------------------------------------------
   {
@@ -40,7 +50,7 @@ export const REGRAS_SICOOB: RegraClassificacaoBanco[] = [
   },
 
   // -------------------------------------------------------------------------
-  // 2. Tarifas bancárias (IOF, cesta, tarifas, juros)
+  // 3. Tarifas bancárias (IOF, cesta, tarifas, juros)
   // -------------------------------------------------------------------------
   {
     natureza: 'tarifa_bancaria',
@@ -50,22 +60,23 @@ export const REGRAS_SICOOB: RegraClassificacaoBanco[] = [
   },
 
   // -------------------------------------------------------------------------
-  // 3. Recebimentos (depósitos, créditos antecipados, PIX recebidos)
+  // 4. Recebimentos (PIX RECEB.OUTRA IF, depósitos, créditos antecipados)
   // -------------------------------------------------------------------------
   {
     natureza: 'recebimento',
     tipoLancamentoSugerido: 'receita',
     categoriaSugeridaNome: 'Outras receitas',
-    testar: (desc) => /^DEP DIN|^CR ANT|CREDITO PIX|CRED PIX|RECEBIMENTO PIX|PIX RECEBID/i.test(desc),
+    testar: (desc) => /PIX\s*RECEB|CREDITO PIX|CRED PIX|RECEBIMENTO PIX|PIX RECEBID|^DEP DIN|^CR ANT/i.test(desc),
   },
 
   // -------------------------------------------------------------------------
-  // 4. Pagamentos (PIX enviados, liquidação e pagamento de boletos)
+  // 5. Pagamentos (PIX EMIT.OUTRA IF, DB.TR.C.DIF.TIT.INT, DÉB.TIT.COMPE.EFETI, boletos)
   // -------------------------------------------------------------------------
   {
     natureza: 'pagamento',
     tipoLancamentoSugerido: 'despesa',
     categoriaSugeridaNome: 'Outras despesas',
-    testar: (desc) => /DEBITO PIX|DEB PIX|PAGAMENTO PIX|PIX ENVIAD|PIX EMITID|PAGAMENTO BOLETO|LIQUIDACAO BOLETO/i.test(desc),
+    testar: (desc) =>
+      /DB TR C DIF TIT INT|DEB TIT COMPE EFETI|D[EÉ]B\.?TIT\.?COMPE\.?EFETI|PIX\s*EMIT|DEBITO PIX|DEB PIX|PAGAMENTO PIX|PIX ENVIAD|PAGAMENTO BOLETO|LIQUIDACAO BOLETO/i.test(desc),
   },
 ];

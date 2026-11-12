@@ -48,6 +48,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
   const [jurosMulta, setJurosMulta] = useState('0');
   const [desconto, setDesconto] = useState('0');
   const [confirmouChequeEspecial, setConfirmouChequeEspecial] = useState(false);
+  const [apenasAgendadoNoBanco, setApenasAgendadoNoBanco] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -56,6 +57,7 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
       setJurosMulta('0');
       setDesconto('0');
       setConfirmouChequeEspecial(false);
+      setApenasAgendadoNoBanco(false);
     }
   }, [isOpen, contaPadraoId]);
 
@@ -100,6 +102,25 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
 
   const handleConfirmar = (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Se o usuário apenas agendou no banco, não baixa o lançamento nem subtrai o saldo agora (Parte 24E)
+    if (apenasAgendadoNoBanco) {
+      for (const lanc of lancamentosAlvo) {
+        dbService.saveLancamento({
+          ...lanc,
+          conta_id: contaEfetivaId,
+          agendamento: {
+            data: dataPagamento,
+            conta_id: contaEfetivaId,
+            criado_em: new Date().toISOString(),
+            status: 'ativo',
+          },
+        });
+      }
+      onSucesso();
+      onClose();
+      return;
+    }
 
     if (estourouLimite) {
       alert('Operação bloqueada: o valor a pagar excede o saldo real somado ao limite do cheque especial disponível.');
@@ -282,6 +303,26 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
           </span>
         </div>
 
+        {/* Opção: Apenas Agendei no Banco (Parte 24E) */}
+        {isPagar && (
+          <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-1">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={apenasAgendadoNoBanco}
+                onChange={(e) => setApenasAgendadoNoBanco(e.target.checked)}
+                className="rounded border-amber-300 text-[#003064] focus:ring-[#003064]"
+              />
+              <span className="text-xs font-bold text-amber-950">
+                Apenas agendei no banco (não baixar o saldo agora)
+              </span>
+            </label>
+            <p className="text-[11px] text-amber-800 pl-6 leading-relaxed">
+              O lançamento permanecerá como pendente com a etiqueta de agendamento para <strong>{formatarDataBR(dataPagamento)}</strong>. O débito será conciliado e confirmado automaticamente na importação do extrato.
+            </p>
+          </div>
+        )}
+
         {/* SIMULAÇÃO ANTES DE PAGAR (REQUISITO CRÍTICO) */}
         <div className="p-4 rounded-xl border space-y-3 bg-linear-to-b from-white to-slate-50 border-slate-300 shadow-2xs">
           <div className="flex items-center justify-between">
@@ -382,14 +423,18 @@ export const ModalPagarReceber: React.FC<ModalPagarReceberProps> = ({
           
           <button
             type="submit"
-            disabled={estourouLimite || (isPagar && vaiUsarCheque && !confirmouChequeEspecial)}
+            disabled={!apenasAgendadoNoBanco && (estourouLimite || (isPagar && vaiUsarCheque && !confirmouChequeEspecial))}
             className={`px-5 py-2 text-xs font-semibold rounded-xl text-white shadow-xs transition-all cursor-pointer ${
-              isPagar
+              apenasAgendadoNoBanco
+                ? 'bg-amber-600 hover:bg-amber-700 border-b-2 border-amber-800'
+                : isPagar
                 ? 'bg-red-600 hover:bg-red-700 disabled:opacity-50 border-b-2 border-red-800'
                 : 'bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 border-b-2 border-emerald-800'
             }`}
           >
-            {isPagar
+            {apenasAgendadoNoBanco
+              ? 'Salvar Agendamento Bancário'
+              : isPagar
               ? isLote
                 ? `Confirmar Pagamento de ${lancamentosAlvo.length} Títulos`
                 : 'Confirmar Pagamento'

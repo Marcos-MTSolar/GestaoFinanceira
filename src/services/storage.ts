@@ -45,6 +45,7 @@ import {
   Contato,
   Projeto,
   Lancamento,
+  TipoLancamento,
   RecorrenciaLancamento,
   UsuarioAutorizado,
   ConfiguracoesEmpresa,
@@ -78,7 +79,18 @@ import {
   DryRunLimparOrfaos,
   ParamsLimparOrfaos,
   ResultadoLimparOrfaos,
+  GrupoMesclagemCategoria,
+  DryRunMesclarCategorias,
+  ParamsMesclarCategorias,
+  ResultadoMesclarCategorias,
 } from '../types';
+import {
+  chaveCategoria,
+  agruparDuplicadas,
+  escolherCanonica,
+  planejarMesclagem,
+  deduplicarCategorias,
+} from '../utils/categorias';
 import { calcularDescontosRecorrentes } from '../utils/descontos';
 import { CONFIG_QUINZENAL_PADRAO, dataDoDiaNaCompetencia, dividirQuinzenas } from '../utils/quinzena';
 import { montarBalanco, ItemManualBalanco } from '../utils/balanco';
@@ -105,6 +117,8 @@ import {
   converterDisponivelParaSaldoReal,
   conferirSaldoFinal,
 } from '../utils/extrato/saldoInicialHelper';
+import { verificarAgendamentos } from '../utils/extrato/verificarAgendamentos';
+import { obterHojeISO } from '../utils/formatters';
 
 // Nomes das coleções do Firestore
 const FIRESTORE_COLLECTIONS = {
@@ -147,9 +161,11 @@ function avisarFalhaGravacao(acao: string, erro: unknown): void {
   const agora = Date.now();
   if (agora - ultimoAlertaFalhaGravacao > 5000) {
     ultimoAlertaFalhaGravacao = agora;
-    window.alert(
-      `Não foi possível salvar no servidor (${acao}). Verifique a conexão e as permissões e recarregue a página antes de continuar.`
-    );
+    if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+      window.alert(
+        `Não foi possível salvar no servidor (${acao}). Verifique a conexão e as permissões e recarregue a página antes de continuar.`
+      );
+    }
   }
 }
 
@@ -265,7 +281,10 @@ export const dbService = {
         onSnapshot(
           collection(db, FIRESTORE_COLLECTIONS.CATEGORIAS),
           (snap) => {
-            cacheCategorias = snap.docs.map((d) => d.data() as Categoria);
+            const docs = snap.docs.map((d) => d.data() as Categoria);
+            const mapa = new Map<string, Categoria>();
+            docs.forEach((c) => mapa.set(c.id, c));
+            cacheCategorias = Array.from(mapa.values());
             notify('categorias');
             marcarCarregado();
           },
@@ -548,17 +567,18 @@ export const dbService = {
     const docId = conta.id || `conta-${Date.now()}`;
     const item = { ...conta, id: docId, criado_em: conta.criado_em || new Date().toISOString() };
 
-    try {
-      await setDoc(doc(db, FIRESTORE_COLLECTIONS.CONTAS, docId), item, { merge: true });
-    } catch (e) {
-      console.warn('Erro ao salvar conta bancária no Firestore:', e);
-      throw new Error(`Falha ao salvar conta bancária: ${traduzirErroFirestore(e)}`);
-    }
-
     const idx = cacheContas.findIndex((c) => c.id === docId);
     if (idx >= 0) cacheContas[idx] = item;
     else cacheContas.push(item);
     notify('contas');
+
+    try {
+      await setDoc(doc(db, FIRESTORE_COLLECTIONS.CONTAS, docId), item, { merge: true });
+    } catch (e) {
+      console.warn('Erro ao salvar conta bancária no Firestore:', e);
+      avisarFalhaGravacao('saveContaBancaria', e);
+    }
+
     return item;
   },
 
@@ -715,9 +735,110 @@ export const dbService = {
     return cacheCategorias.length > 0 ? cacheCategorias : CATEGORIAS_PADRAO;
   },
 
+  /**
+   * Seletor único de categorias deduplicadas (Parte 24A).
+   * Retorna apenas uma categoria por nome e tipo (a canônica mais relevante),
+   * garantindo que nenhum ponto da interface exiba opções duplicadas mesmo antes da limpeza de dados.
+   */
+  getCategoriasUnicas(tipo?: TipoLancamento): Categoria[] {
+    const todas = this.getCategorias();
+    const filtradas = tipo ? todas.filter((c) => c.tipo === tipo) : todas;
+
+    // Mapa de contagem de referências para escolher a canônica mais vinculada
+    const mapaRefs = new Map<string, number>();
+    for (const l of cacheLancamentos) {
+      if (l.categoria_id) {
+        mapaRefs.set(l.categoria_id, (mapaRefs.get(l.categoria_id) || 0) + 1);
+      }
+    }
+    for (const r of cacheRecorrencias) {
+      if (r.categoria_id) {
+        mapaRefs.set(r.categoria_id, (mapaRefs.get(r.categoria_id) || 0) + 1);
+      }
+    }
+    for (const reg of cacheRegrasImportacao) {
+      if (reg.categoria_id) {
+        mapaRefs.set(reg.categoria_id, (mapaRefs.get(reg.categoria_id) || 0) + 1);
+      }
+    }
+
+    return deduplicarCategorias(filtradas, mapaRefs);
+  },
+
+  /**
+   * Garante a presença das categorias padrão no Firestore e cache com IDs determinísticos.
+   * Só insere o que realmente falta pela chave determinística.
+   */
+  async garantirCategoriasPadrao(): Promise<void> {
+    const catsAtuais = cacheCategorias.length > 0 ? cacheCategorias : [];
+    const chavesExistentes = new Set(catsAtuais.map((c) => chaveCategoria(c)));
+    const idsExistentes = new Set(catsAtuais.map((c) => c.id));
+
+    const faltantes = CATEGORIAS_PADRAO.filter(
+      (p) => !idsExistentes.has(p.id) && !chavesExistentes.has(chaveCategoria(p))
+    );
+
+    if (faltantes.length === 0) return;
+
+    for (const cat of faltantes) {
+      const item: Categoria = {
+        ...cat,
+        criado_em: cat.criado_em || '2026-01-01T00:00:00.000Z',
+      };
+      await setDoc(doc(db, FIRESTORE_COLLECTIONS.CATEGORIAS, item.id), item, { merge: true }).catch(
+        (e) => console.warn('Erro async garantirCategoriasPadrao:', e)
+      );
+      const idx = cacheCategorias.findIndex((c) => c.id === item.id);
+      if (idx >= 0) cacheCategorias[idx] = item;
+      else cacheCategorias.push(item);
+    }
+    notify('categorias');
+  },
+
+  /**
+   * Salva uma categoria com garantia de idempotência (Parte 24A).
+   * Se já existir categoria com o mesmo nome normalizado e tipo, reaproveita a existente
+   * em vez de criar duplicatas na base de dados.
+   */
   saveCategoria(categoria: Categoria): Categoria {
+    const chaveNova = chaveCategoria(categoria);
+    const todas = cacheCategorias.length > 0 ? cacheCategorias : CATEGORIAS_PADRAO;
+    const existentePorChave = todas.find((c) => chaveCategoria(c) === chaveNova);
+
+    // Se já existe uma categoria com a mesma chave (nome normalizado + tipo)
+    if (existentePorChave) {
+      // Se não passou ID ou passou um ID novo/diferente do existente, reaproveita a existente (idempotência)
+      if (!categoria.id || categoria.id !== existentePorChave.id) {
+        return existentePorChave;
+      }
+
+      // Se passou o mesmo ID, trata-se de uma edição da categoria existente
+      const docId = existentePorChave.id;
+      const item: Categoria = {
+        ...existentePorChave,
+        ...categoria,
+        id: docId,
+        criado_em: existentePorChave.criado_em || categoria.criado_em || new Date().toISOString(),
+      };
+
+      setDoc(doc(db, FIRESTORE_COLLECTIONS.CATEGORIAS, docId), item, { merge: true }).catch((e) =>
+        console.warn('Erro async saveCategoria:', e)
+      );
+
+      const idx = cacheCategorias.findIndex((c) => c.id === docId);
+      if (idx >= 0) cacheCategorias[idx] = item;
+      else cacheCategorias.push(item);
+      notify('categorias');
+      return item;
+    }
+
+    // Se é uma categoria realmente nova
     const docId = categoria.id || `cat-${Date.now()}`;
-    const item = { ...categoria, id: docId };
+    const item: Categoria = {
+      ...categoria,
+      id: docId,
+      criado_em: categoria.criado_em || new Date().toISOString(),
+    };
 
     setDoc(doc(db, FIRESTORE_COLLECTIONS.CATEGORIAS, docId), item, { merge: true }).catch((e) =>
       console.warn('Erro async saveCategoria:', e)
@@ -1022,6 +1143,68 @@ export const dbService = {
       count++;
     }
     return count;
+  },
+
+  /**
+   * Reagenda a data de pagamento prevista de um lançamento com agendamento ativo (Parte 24E)
+   */
+  reagendarLancamento(id: string, novaData: string): Lancamento | null {
+    const alvo = cacheLancamentos.find((l) => l.id === id);
+    if (!alvo) return null;
+    const atualizado: Lancamento = {
+      ...alvo,
+      data_vencimento: novaData,
+      agendamento: alvo.agendamento
+        ? {
+            ...alvo.agendamento,
+            data: novaData,
+            status: 'ativo',
+            motivo_nao_localizado: undefined,
+          }
+        : {
+            data: novaData,
+            conta_id: alvo.conta_id,
+            criado_em: new Date().toISOString(),
+            status: 'ativo',
+          },
+    };
+    return this.saveLancamento(atualizado);
+  },
+
+  /**
+   * Cancela o agendamento bancário de um lançamento (Parte 24E)
+   */
+  cancelarAgendamento(id: string): Lancamento | null {
+    const alvo = cacheLancamentos.find((l) => l.id === id);
+    if (!alvo) return null;
+    const atualizado: Lancamento = {
+      ...alvo,
+      agendamento: alvo.agendamento
+        ? {
+            ...alvo.agendamento,
+            status: 'cancelado',
+          }
+        : undefined,
+    };
+    return this.saveLancamento(atualizado);
+  },
+
+  /**
+   * Marca agendamento como não localizado no extrato bancário (Parte 24E)
+   */
+  marcarAgendamentoNaoLocalizado(id: string, motivo?: string): Lancamento | null {
+    const alvo = cacheLancamentos.find((l) => l.id === id);
+    if (!alvo || !alvo.agendamento) return null;
+    const atualizado: Lancamento = {
+      ...alvo,
+      agendamento: {
+        ...alvo.agendamento,
+        status: 'nao_localizado',
+        ultima_verificacao: new Date().toISOString(),
+        motivo_nao_localizado: motivo,
+      },
+    };
+    return this.saveLancamento(atualizado);
   },
 
   salvarLancamentoComRecorrencia(lancamento: Lancamento): Lancamento {
@@ -2288,7 +2471,7 @@ export const dbService = {
     const todos = this.getLancamentos().filter(
       (l) => l.status === 'pago' && l.tipo === 'despesa' && l.origem !== 'transferencia'
     );
-    const categorias = this.getCategorias();
+    const categorias = this.getCategoriasUnicas('despesa');
 
     const filtradas = todos.filter((l) => {
       if (!dataIni || !dataFim) return true;
@@ -2513,7 +2696,7 @@ export const dbService = {
 
   gerarRelatorioDRE(dataIni?: string, dataFim?: string) {
     const todos = this.getLancamentos().filter((l) => l.status === 'pago' && l.origem !== 'transferencia');
-    const categorias = this.getCategorias();
+    const categorias = this.getCategoriasUnicas();
 
     const filtrados = todos.filter((l) => {
       const dt = l.data_pagamento || l.data_vencimento;
@@ -3440,6 +3623,10 @@ export const dbService = {
       descricaoAnterior: string;
       origemImportacaoAnterior?: any;
       observacoesAnterior?: string;
+      statusAnterior?: any;
+      dataPagamentoAnterior?: string | null;
+      contaIdAnterior?: string;
+      agendamentoAnterior?: any;
     }> = [];
     const lancamentosAtualizados: Lancamento[] = [];
     const regrasSalvas: RegraImportacao[] = [];
@@ -3495,13 +3682,14 @@ export const dbService = {
           descricaoAnterior: lancExistente.descricao,
           origemImportacaoAnterior: lancExistente.origem_importacao,
           observacoesAnterior: lancExistente.observacoes || '',
+          statusAnterior: lancExistente.status,
+          dataPagamentoAnterior: lancExistente.data_pagamento,
+          contaIdAnterior: lancExistente.conta_id,
+          agendamentoAnterior: lancExistente.agendamento,
         });
 
         // Enriquecimento OFX x XLSX (ou vinculação manual)
-        const descEnriquecida = gerarDescricaoCurta(
-          item.transacao.descricaoOriginal,
-          item.transacao.contraparte
-        );
+        const descEnriquecida = gerarDescricaoCurta(item.transacao);
 
         const dataHoraImportacaoAtual = new Date().toISOString();
         const observacoesEnriquecidas = complementarObservacoesEnriquecimento(
@@ -3510,6 +3698,7 @@ export const dbService = {
             descricaoOriginal: item.transacao.descricaoOriginal,
             contraparte: item.transacao.contraparte,
             documento: item.transacao.documento,
+            detalhes: item.transacao.detalhes,
             fitid: item.transacao.fitid || lancExistente.origem_importacao?.fitid,
             bancoCodigo: params.bancoCodigo,
             bancoNome: params.bancoNome,
@@ -3517,13 +3706,27 @@ export const dbService = {
             formato: params.formato,
             loteId: params.loteId,
             dataHoraImportacao: dataHoraImportacaoAtual,
+            tipoOperacaoBanco: item.transacao.tipoOperacaoBanco,
+            contraparteDocumento: item.transacao.contraparteDocumento,
+            mensagemUsuario: item.transacao.mensagemUsuario,
+            favorecido: item.transacao.favorecido,
           }
         );
 
         const lancAtualizado: Lancamento = {
           ...lancExistente,
-          descricao: lancExistente.origem === 'manual' ? lancExistente.descricao : descEnriquecida,
+          descricao: lancExistente.origem === 'manual' || lancExistente.origem === 'folha' ? lancExistente.descricao : descEnriquecida,
           observacoes: observacoesEnriquecidas,
+          status: 'pago',
+          data_pagamento: item.transacao.data || lancExistente.data_pagamento || item.transacao.data,
+          conta_id: params.contaId, // move para a conta do extrato confirmada
+          agendamento: lancExistente.agendamento
+            ? {
+                ...lancExistente.agendamento,
+                status: 'confirmado',
+                ultima_verificacao: dataHoraImportacaoAtual,
+              }
+            : undefined,
           origem_importacao: {
             lote_id: params.loteId,
             banco_codigo: params.bancoCodigo,
@@ -3547,6 +3750,11 @@ export const dbService = {
             descricao_original: item.transacao.descricaoOriginal,
           },
         };
+
+        // Se era folha e estava pendente, mantém espelhamento na folha ao liquidar
+        if (lancExistente.origem === 'folha' && lancExistente.folha_id && lancExistente.status !== 'pago') {
+          this.espelharDespesaNaFolha(lancAtualizado);
+        }
 
         lancamentosAtualizados.push(lancAtualizado);
         if (item.statusDeduplicacao === 'enriquecer_existente') {
@@ -3578,7 +3786,7 @@ export const dbService = {
           const idSaida = `lanc-imp-transf-out-${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
           const idEntrada = `lanc-imp-transf-in-${timestamp}-${Math.random().toString(36).substr(2, 5)}`;
           const dataHoraImportacaoAtual = new Date().toISOString();
-          const descTransf = gerarDescricaoCurta(item.transacao.descricaoOriginal, item.transacao.contraparte);
+          const descTransf = gerarDescricaoCurta(item.transacao);
           const obsTransf = formatarObservacoesImportacao({
             descricaoOriginal: item.transacao.descricaoOriginal,
             contraparte: item.transacao.contraparte,
@@ -3591,6 +3799,10 @@ export const dbService = {
             formato: params.formato,
             loteId: params.loteId,
             dataHoraImportacao: dataHoraImportacaoAtual,
+            tipoOperacaoBanco: item.transacao.tipoOperacaoBanco,
+            contraparteDocumento: item.transacao.contraparteDocumento,
+            mensagemUsuario: item.transacao.mensagemUsuario,
+            favorecido: item.transacao.favorecido,
           });
           const assFraca = gerarAssinaturaFraca({
             conta: params.contaId,
@@ -3680,7 +3892,7 @@ export const dbService = {
         );
 
         const dataHoraImportacaoAtual = new Date().toISOString();
-        const descNovo = gerarDescricaoCurta(item.transacao.descricaoOriginal, item.transacao.contraparte);
+        const descNovo = gerarDescricaoCurta(item.transacao);
         const obsNovo = formatarObservacoesImportacao({
           descricaoOriginal: item.transacao.descricaoOriginal,
           contraparte: item.transacao.contraparte,
@@ -3693,6 +3905,10 @@ export const dbService = {
           formato: params.formato,
           loteId: params.loteId,
           dataHoraImportacao: dataHoraImportacaoAtual,
+          tipoOperacaoBanco: item.transacao.tipoOperacaoBanco,
+          contraparteDocumento: item.transacao.contraparteDocumento,
+          mensagemUsuario: item.transacao.mensagemUsuario,
+          favorecido: item.transacao.favorecido,
         });
 
         const assinaturaFraca = gerarAssinaturaFraca({
@@ -3800,13 +4016,18 @@ export const dbService = {
     }
 
     for (const lanc of lancamentosAtualizados) {
-      // Usar set com merge: true para enriquecimento seguro (não derruba o lote se documento não existir)
+      // Usar set com merge: true para enriquecimento e vinculação segura (Parte 24D)
       todasOperacoes.push({
         tipo: 'set',
         colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS,
         id: lanc.id,
         dado: {
           descricao: lanc.descricao,
+          observacoes: lanc.observacoes,
+          status: lanc.status,
+          data_pagamento: lanc.data_pagamento,
+          conta_id: lanc.conta_id,
+          agendamento: lanc.agendamento,
           origem_importacao: lanc.origem_importacao,
         },
         merge: true,
@@ -4069,6 +4290,37 @@ export const dbService = {
       `Arquivo: ${params.nomeArquivo}, Conta: ${contaFinal.nome}, Banco: ${params.bancoCodigo}, Período: ${params.periodo.inicio} a ${params.periodo.fim}`
     );
 
+    // 11.5 Verificação de Agendamentos da Conta (Parte 24E)
+    try {
+      const hoje = obterHojeISO();
+      const extratoLidoSimulado = {
+        transacoes: params.itens.map((i) => i.transacao) as any,
+        periodo: params.periodo,
+        formato: params.formato,
+        bancoCodigo: params.bancoCodigo,
+        bancoNome: params.bancoNome || null,
+        avisos: [],
+      };
+      const verificacao = verificarAgendamentos(
+        cacheLancamentos,
+        extratoLidoSimulado,
+        params.contaId,
+        hoje
+      );
+
+      for (const naoLoc of verificacao.naoLocalizados) {
+        this.marcarAgendamentoNaoLocalizado(naoLoc.lancamento.id, naoLoc.mensagem);
+        this.registrarAuditoria(
+          'lancamentos',
+          'verificacao_agendamento',
+          `Pagamento agendado não localizado no extrato: ${naoLoc.lancamento.descricao} (R$ ${naoLoc.lancamento.valor.toFixed(2)})`,
+          `Lote: ${params.loteId}, Conta: ${contaFinal.nome}, Data esperada: ${naoLoc.lancamento.agendamento?.data || naoLoc.lancamento.data_vencimento}`
+        );
+      }
+    } catch (eAgend) {
+      console.warn('[importarExtratoLote] Erro ao verificar agendamentos pós-lote:', eAgend);
+    }
+
     notify('lancamentos');
     notify('regras_importacao');
     notify('contas');
@@ -4137,31 +4389,49 @@ export const dbService = {
     }
 
     for (const snap of snapshots) {
+      const updateData: any = {
+        descricao: snap.descricaoAnterior,
+        origem_importacao: snap.origemImportacaoAnterior || null,
+        observacoes: snap.observacoesAnterior !== undefined ? snap.observacoesAnterior : '',
+      };
+      if (snap.statusAnterior) {
+        updateData.status = snap.statusAnterior;
+      }
+      if (snap.dataPagamentoAnterior !== undefined) {
+        updateData.data_pagamento = snap.dataPagamentoAnterior;
+      }
+      if (snap.contaIdAnterior) {
+        updateData.conta_id = snap.contaIdAnterior;
+      }
+      if (snap.agendamentoAnterior !== undefined) {
+        updateData.agendamento = snap.agendamentoAnterior;
+      }
+
       todasOperacoes.push({
         tipo: 'update',
         id: snap.lancamentoId,
-        dado: {
-          descricao: snap.descricaoAnterior,
-          origem_importacao: snap.origemImportacaoAnterior || null,
-          observacoes: snap.observacoesAnterior !== undefined ? snap.observacoesAnterior : '',
-        },
+        dado: updateData,
       });
     }
 
-    for (let i = 0; i < todasOperacoes.length; i += TAMANHO_MAX_BATCH) {
-      const batch = writeBatch(db);
-      const fatia = todasOperacoes.slice(i, i + TAMANHO_MAX_BATCH);
+    try {
+      for (let i = 0; i < todasOperacoes.length; i += TAMANHO_MAX_BATCH) {
+        const batch = writeBatch(db);
+        const fatia = todasOperacoes.slice(i, i + TAMANHO_MAX_BATCH);
 
-      for (const op of fatia) {
-        const docRef = doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, op.id);
-        if (op.tipo === 'delete') {
-          batch.delete(docRef);
-        } else {
-          batch.update(docRef, op.dado);
+        for (const op of fatia) {
+          const docRef = doc(db, FIRESTORE_COLLECTIONS.LANCAMENTOS, op.id);
+          if (op.tipo === 'delete') {
+            batch.delete(docRef);
+          } else {
+            batch.update(docRef, op.dado);
+          }
         }
-      }
 
-      await batch.commit();
+        await batch.commit();
+      }
+    } catch (batchErr) {
+      console.warn('[desfazerImportacao] Falha ao sincronizar batch no Firestore:', batchErr);
     }
 
     // Atualiza status do lote para 'desfeita'
@@ -4184,6 +4454,10 @@ export const dbService = {
           descricao: snap.descricaoAnterior,
           origem_importacao: snap.origemImportacaoAnterior,
           observacoes: snap.observacoesAnterior !== undefined ? snap.observacoesAnterior : cacheLancamentos[idx].observacoes,
+          status: snap.statusAnterior || cacheLancamentos[idx].status,
+          data_pagamento: snap.dataPagamentoAnterior !== undefined ? snap.dataPagamentoAnterior : cacheLancamentos[idx].data_pagamento,
+          conta_id: snap.contaIdAnterior || cacheLancamentos[idx].conta_id,
+          agendamento: snap.agendamentoAnterior !== undefined ? snap.agendamentoAnterior : cacheLancamentos[idx].agendamento,
         };
       }
     }
@@ -5727,6 +6001,322 @@ export const dbService = {
         (lotesParaExcluir.length > 0 ? `, ${lotesParaExcluir.length} lote(s) removido(s)` : '') +
         (regrasParaExcluir.length > 0 ? `, ${regrasParaExcluir.length} regra(s) removida(s)` : '') +
         `. Backup gerado em ${nomeArquivoBackup}.`,
+    };
+  },
+
+  // ============================================================
+  // PARTE 24A: MESCLAGEM E DEDUPLICAÇÃO DE CATEGORIAS
+  // ============================================================
+
+  /**
+   * Executa a simulação (dry-run) da mesclagem de categorias duplicadas.
+   * Não altera nenhum dado no Firestore nem em memória.
+   */
+  simularMesclagemCategorias(): DryRunMesclarCategorias {
+    const todas = this.getCategorias();
+
+    const mapaRefs = new Map<string, number>();
+    for (const l of cacheLancamentos) {
+      if (l.categoria_id) {
+        mapaRefs.set(l.categoria_id, (mapaRefs.get(l.categoria_id) || 0) + 1);
+      }
+    }
+    for (const r of cacheRecorrencias) {
+      if (r.categoria_id) {
+        mapaRefs.set(r.categoria_id, (mapaRefs.get(r.categoria_id) || 0) + 1);
+      }
+    }
+    for (const reg of cacheRegrasImportacao) {
+      if (reg.categoria_id) {
+        mapaRefs.set(reg.categoria_id, (mapaRefs.get(reg.categoria_id) || 0) + 1);
+      }
+    }
+    for (const f of cacheLancamentosFolha as any[]) {
+      if (f.categoria_id) {
+        mapaRefs.set(f.categoria_id, (mapaRefs.get(f.categoria_id) || 0) + 1);
+      }
+    }
+
+    const plano = planejarMesclagem(todas, mapaRefs);
+
+    return {
+      total_grupos_duplicados: plano.totalGrupos,
+      total_categorias_duplicadas: plano.totalDuplicadas,
+      total_referencias_afetadas: plano.totalReferenciasAfetadas,
+      grupos: plano.grupos,
+      tem_duplicadas_para_mesclar: plano.totalDuplicadas > 0,
+    };
+  },
+
+  /**
+   * Executa a mesclagem definitiva de categorias duplicadas (Parte 24A).
+   * Restrita exclusivamente a administradores.
+   *
+   * Fluxo:
+   * 1. Verifica permissões de administrador.
+   * 2. Valida digitação de confirmação ("MESCLAR").
+   * 3. Executa dry-run para mapear de-para e canônicas.
+   * 4. Gera backup JSON automático obrigatório antes de gravar.
+   * 5. Reaponta categoria_id em lançamentos, recorrências, regras de importação,
+   *    folha e rascunhos de extrato no localStorage.
+   * 6. Exclui as categorias duplicadas do Firestore em batches de até 490 operações com await.
+   * 7. Atualiza os caches em memória por ID (upsert / filter).
+   * 8. Registra no histórico de auditoria.
+   * 9. Notifica ouvintes reativos.
+   */
+  async mesclarCategoriasDuplicadas(
+    params: ParamsMesclarCategorias
+  ): Promise<ResultadoMesclarCategorias> {
+    // 1. Verificação de administrador
+    if (!this.isUsuarioAdmin()) {
+      throw new Error('Apenas administradores podem executar a mesclagem de categorias.');
+    }
+
+    // 2. Validação da palavra de confirmação
+    if (params.textoConfirmacao.trim().toUpperCase() !== 'MESCLAR') {
+      throw new Error('Texto de confirmação inválido. Digite "MESCLAR" para confirmar a operação.');
+    }
+
+    // 3. Simulação
+    const dryRun = this.simularMesclagemCategorias();
+    if (!dryRun.tem_duplicadas_para_mesclar) {
+      return {
+        sucesso: true,
+        total_categorias_mescladas: 0,
+        total_lancamentos_reapontados: 0,
+        total_recorrencias_reapontadas: 0,
+        total_regras_reapontadas: 0,
+        total_folhas_reapontadas: 0,
+        total_rascunhos_reapontados: 0,
+        mensagem: 'Nenhuma categoria duplicada encontrada. A base já está totalmente limpa e consolidada.',
+      };
+    }
+
+    // 4. Backup automático obrigatório antes da gravação
+    const backupJson = this.exportarBackupCompletoJSON();
+    const backupTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const nomeArquivoBackup = `backup_antes_mesclar_categorias_${backupTimestamp}.json`;
+
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      try {
+        const blob = new Blob([backupJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = nomeArquivoBackup;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        console.warn('[mesclarCategoriasDuplicadas] Falha ao disparar download do backup:', e);
+      }
+    }
+
+    // 5. Montar mapa de-para
+    const mapaDePara: Record<string, string> = {};
+    for (const g of dryRun.grupos) {
+      for (const d of g.duplicadas) {
+        mapaDePara[d.id] = g.canonica.id;
+      }
+    }
+
+    type OperacaoBatch =
+      | { tipo: 'delete'; colecao: string; id: string }
+      | { tipo: 'update'; colecao: string; id: string; dados: any };
+
+    const operacoes: OperacaoBatch[] = [];
+    let totalLancamentosReapontados = 0;
+    let totalRecorrenciasReapontadas = 0;
+    let totalRegrasReapontadas = 0;
+    let totalFolhasReapontadas = 0;
+    let totalRascunhosReapontados = 0;
+
+    // Reapontar lançamentos
+    for (const l of cacheLancamentos) {
+      if (l.categoria_id && mapaDePara[l.categoria_id]) {
+        const novoId = mapaDePara[l.categoria_id];
+        operacoes.push({
+          tipo: 'update',
+          colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS,
+          id: l.id,
+          dados: { categoria_id: novoId },
+        });
+        totalLancamentosReapontados++;
+      }
+    }
+
+    // Reapontar recorrências
+    for (const r of cacheRecorrencias) {
+      if (r.categoria_id && mapaDePara[r.categoria_id]) {
+        const novoId = mapaDePara[r.categoria_id];
+        operacoes.push({
+          tipo: 'update',
+          colecao: FIRESTORE_COLLECTIONS.RECORRENCIAS,
+          id: r.id,
+          dados: { categoria_id: novoId },
+        });
+        totalRecorrenciasReapontadas++;
+      }
+    }
+
+    // Reapontar regras de importação
+    for (const reg of cacheRegrasImportacao) {
+      if (reg.categoria_id && mapaDePara[reg.categoria_id]) {
+        const novoId = mapaDePara[reg.categoria_id];
+        operacoes.push({
+          tipo: 'update',
+          colecao: FIRESTORE_COLLECTIONS.REGRAS_IMPORTACAO,
+          id: reg.id,
+          dados: { categoria_id: novoId },
+        });
+        totalRegrasReapontadas++;
+      }
+    }
+
+    // Reapontar lançamentos da folha (se existirem referências diretas de categoria)
+    for (const f of cacheLancamentosFolha as any[]) {
+      if (f.categoria_id && mapaDePara[f.categoria_id]) {
+        const novoId = mapaDePara[f.categoria_id];
+        operacoes.push({
+          tipo: 'update',
+          colecao: FIRESTORE_COLLECTIONS.LANCAMENTOS_FOLHA,
+          id: f.id,
+          dados: { categoria_id: novoId },
+        });
+        totalFolhasReapontadas++;
+      }
+    }
+
+    // Exclusão das categorias duplicadas
+    const idsCategoriasExcluir = Object.keys(mapaDePara);
+    for (const idDup of idsCategoriasExcluir) {
+      operacoes.push({
+        tipo: 'delete',
+        colecao: FIRESTORE_COLLECTIONS.CATEGORIAS,
+        id: idDup,
+      });
+    }
+
+    // Reapontar rascunhos de extrato no localStorage
+    if (typeof localStorage !== 'undefined') {
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('mtsolar_extrato_draft_')) {
+            const raw = localStorage.getItem(k);
+            if (raw) {
+              const dados = JSON.parse(raw);
+              let alterado = false;
+              if (dados.escolhas) {
+                for (const itemKey of Object.keys(dados.escolhas)) {
+                  const escolha = dados.escolhas[itemKey];
+                  if (escolha && escolha.categoriaId && mapaDePara[escolha.categoriaId]) {
+                    const idCanonica = mapaDePara[escolha.categoriaId];
+                    const catCanonica = dryRun.grupos.find((g) => g.canonica.id === idCanonica)?.canonica;
+                    escolha.categoriaId = idCanonica;
+                    if (catCanonica) escolha.categoriaNome = catCanonica.nome;
+                    alterado = true;
+                    totalRascunhosReapontados++;
+                  }
+                }
+              }
+              if (alterado) {
+                localStorage.setItem(k, JSON.stringify(dados));
+              }
+            }
+          }
+        }
+      } catch (errDraft) {
+        console.warn('[mesclarCategoriasDuplicadas] Falha ao atualizar rascunhos no localStorage:', errDraft);
+      }
+    }
+
+    // 6. Executar operações no Firestore em batches de até 490 com await
+    const TAMANHO_MAX_BATCH = 490;
+    for (let i = 0; i < operacoes.length; i += TAMANHO_MAX_BATCH) {
+      const fatia = operacoes.slice(i, i + TAMANHO_MAX_BATCH);
+      const batch = writeBatch(db);
+
+      for (const op of fatia) {
+        const ref = doc(db, op.colecao, op.id);
+        if (op.tipo === 'delete') {
+          batch.delete(ref);
+        } else if (op.tipo === 'update') {
+          batch.update(ref, op.dados);
+        }
+      }
+
+      try {
+        await batch.commit();
+      } catch (e) {
+        console.error('[mesclarCategoriasDuplicadas] Falha no commit do lote no Firestore:', e);
+        const erroMsg = traduzirErroFirestore(e);
+        throw new Error(`Falha durante a mesclagem de categorias no servidor: ${erroMsg}`);
+      }
+    }
+
+    // 7. Atualizar caches em memória por ID (sem push cego)
+    cacheLancamentos = cacheLancamentos.map((l) => {
+      if (l.categoria_id && mapaDePara[l.categoria_id]) {
+        return { ...l, categoria_id: mapaDePara[l.categoria_id] };
+      }
+      return l;
+    });
+
+    cacheRecorrencias = cacheRecorrencias.map((r) => {
+      if (r.categoria_id && mapaDePara[r.categoria_id]) {
+        return { ...r, categoria_id: mapaDePara[r.categoria_id] };
+      }
+      return r;
+    });
+
+    cacheRegrasImportacao = cacheRegrasImportacao.map((reg) => {
+      if (reg.categoria_id && mapaDePara[reg.categoria_id]) {
+        return { ...reg, categoria_id: mapaDePara[reg.categoria_id] };
+      }
+      return reg;
+    });
+
+    const setIdsDuplicadas = new Set(idsCategoriasExcluir);
+    cacheCategorias = cacheCategorias.filter((c) => !setIdsDuplicadas.has(c.id));
+
+    // 8. Registro de auditoria
+    const detalheAuditoria =
+      `Mesclagem de categorias duplicadas realizada com sucesso. ` +
+      `Categorias duplicadas mescladas e excluídas: ${idsCategoriasExcluir.length}. ` +
+      `Lançamentos reapontados: ${totalLancamentosReapontados}. ` +
+      `Recorrências reapontadas: ${totalRecorrenciasReapontadas}. ` +
+      `Regras de importação reapontadas: ${totalRegrasReapontadas}. ` +
+      `Rascunhos de extrato reapontados: ${totalRascunhosReapontados}. ` +
+      `Backup completo salvo: ${nomeArquivoBackup}.`;
+
+    this.registrarAuditoria(
+      'categorias',
+      'edicao',
+      `Mesclagem de categorias duplicadas (${idsCategoriasExcluir.length} mescladas)`,
+      detalheAuditoria
+    );
+
+    // 9. Notificar ouvintes reativos
+    notify('categorias');
+    notify('lancamentos');
+    notify('recorrencias');
+    notify('regras_importacao');
+
+    return {
+      sucesso: true,
+      total_categorias_mescladas: idsCategoriasExcluir.length,
+      total_lancamentos_reapontados: totalLancamentosReapontados,
+      total_recorrencias_reapontadas: totalRecorrenciasReapontadas,
+      total_regras_reapontadas: totalRegrasReapontadas,
+      total_folhas_reapontadas: totalFolhasReapontadas,
+      total_rascunhos_reapontados: totalRascunhosReapontados,
+      backup_json: backupJson,
+      mensagem:
+        `Mesclagem concluída com sucesso: ${idsCategoriasExcluir.length} categoria(s) duplicada(s) mesclada(s), ` +
+        `${totalLancamentosReapontados} lançamento(s) e ${totalRegrasReapontadas} regra(s) reapontados. ` +
+        `Backup salvo em ${nomeArquivoBackup}.`,
     };
   },
 

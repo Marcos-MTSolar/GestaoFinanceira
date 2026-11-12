@@ -10,6 +10,7 @@ coverage/
 
 # Extratos bancários confidenciais
 src/exemplos_extratos/
+*.pdf
 *.ofx
 *.qfx
 *.xlsx

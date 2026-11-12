@@ -26,7 +26,12 @@
     "test:22a": "tsx scripts/test_parte_22A.ts",
     "test:23a": "tsx scripts/test_parte_23A.ts",
     "test:23b": "tsx scripts/test_parte_23B.ts",
-    "test:23c": "tsx scripts/test_parte_23C.ts"
+    "test:23c": "tsx scripts/test_parte_23C.ts",
+    "test:24a": "tsx scripts/test_parte_24A.ts",
+    "test:24b": "tsx scripts/test_parte_24B.ts",
+    "test:24c": "tsx scripts/test_parte_24C.ts",
+    "test:24d": "tsx scripts/test_parte_24D.ts",
+    "test:24e": "tsx scripts/test_parte_24E.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

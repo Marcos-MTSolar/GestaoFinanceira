@@ -49,6 +49,7 @@ export interface Categoria {
   tipo: TipoLancamento;
   cor: string;
   padrao?: boolean;
+  criado_em?: string;
 }
 
 export interface Contato {
@@ -98,8 +99,8 @@ export interface RegraImportacao {
   banco_codigo: string;
   /** ID da conta no sistema ou '*' para qualquer conta */
   conta_id: string;
-  /** Campo da transação a casar: descrição ou contraparte (favorecido) */
-  campo: 'descricao' | 'contraparte';
+  /** Campo da transação a casar: descrição, contraparte, favorecido, mensagem ou documento */
+  campo: 'descricao' | 'contraparte' | 'favorecido' | 'mensagem' | 'documento';
   /** Operador de comparação */
   operador: 'contem' | 'igual' | 'comeca_com';
   /** Valor a casar (comparado após normalização: maiúsculo, sem acento) */
@@ -151,6 +152,17 @@ export interface RecorrenciaLancamento {
   criado_em: string;
 }
 
+export type StatusAgendamento = 'ativo' | 'confirmado' | 'nao_localizado' | 'cancelado';
+
+export interface AgendamentoLancamento {
+  data: string; // YYYY-MM-DD
+  conta_id: string;
+  criado_em: string;
+  status: StatusAgendamento;
+  ultima_verificacao?: string;
+  motivo_nao_localizado?: string;
+}
+
 export interface Lancamento {
   id: string;
   tipo: TipoLancamento;
@@ -181,6 +193,8 @@ export interface Lancamento {
   origem_importacao?: OrigemImportacao;
   /** Competência (YYYY-MM) à qual este lançamento pertence (Parte 23B) */
   competencia?: string;
+  /** Metadados de agendamento bancário prévio (Parte 24E) */
+  agendamento?: AgendamentoLancamento;
   criado_em: string;
 }
 
@@ -217,6 +231,10 @@ export interface RegistroImportacao {
     descricaoAnterior: string;
     origemImportacaoAnterior?: OrigemImportacao;
     observacoesAnterior?: string;
+    statusAnterior?: StatusLancamento;
+    dataPagamentoAnterior?: string | null;
+    contaIdAnterior?: string;
+    agendamentoAnterior?: AgendamentoLancamento;
   }>;
   /** Armazena os valores anteriores caso o saldo inicial da conta tenha sido ajustado neste lote (para restauração em desfazer) */
   saldoInicialAnteriorConta?: number;
@@ -257,6 +275,13 @@ export interface ParamsImportacaoLote {
       documento?: string;
       detalhes?: string;
       ordemNoDia: number;
+      tipoOperacaoBanco?: string;
+      contraparteNome?: string;
+      contraparteDocumento?: string;
+      documentoMascarado?: boolean;
+      mensagemUsuario?: string;
+      favorecido?: string;
+      ehPropriaEmpresa?: boolean;
     };
     acao: 'incluir' | 'ignorar' | 'vincular';
     decisaoManual?: 'vincular' | 'novo' | 'ignorar';
@@ -746,6 +771,45 @@ export interface ResultadoLimparOrfaos {
   backup_json?: string;
   mensagem: string;
 }
+
+// ============================================================
+// TIPOS DA PARTE 24A: MESCLAGEM DE CATEGORIAS DUPLICADAS
+// ============================================================
+
+export interface GrupoMesclagemCategoria {
+  chave: string;
+  nomeNormalizado: string;
+  tipo: TipoLancamento;
+  canonica: Categoria;
+  duplicadas: Categoria[];
+  totalReferencias: number;
+}
+
+export interface DryRunMesclarCategorias {
+  total_grupos_duplicados: number;
+  total_categorias_duplicadas: number;
+  total_referencias_afetadas: number;
+  grupos: GrupoMesclagemCategoria[];
+  tem_duplicadas_para_mesclar: boolean;
+}
+
+export interface ParamsMesclarCategorias {
+  textoConfirmacao: string; // Deve ser "MESCLAR"
+  usuarioEmail?: string;
+}
+
+export interface ResultadoMesclarCategorias {
+  sucesso: boolean;
+  total_categorias_mescladas: number;
+  total_lancamentos_reapontados: number;
+  total_recorrencias_reapontadas: number;
+  total_regras_reapontadas: number;
+  total_folhas_reapontadas: number;
+  total_rascunhos_reapontados: number;
+  backup_json?: string;
+  mensagem: string;
+}
+
 
 
 

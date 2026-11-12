@@ -8,6 +8,7 @@ import {
   gerarAssinaturaFraca,
   extrairPrefixoDescricao
 } from './assinatura';
+import { casarLancamentosComExtrato } from './casarLancamentos';
 
 /**
  * Converte TipoTransacaoExtrato ('credito'|'debito') para TipoLancamento ('receita'|'despesa').
@@ -21,7 +22,8 @@ export type StatusClassificacao =
   | 'nova'
   | 'duplicada_exata'
   | 'enriquecer_existente'
-  | 'possivel_duplicata_manual';
+  | 'possivel_duplicata_manual'
+  | 'vinculada_alta';
 
 export interface TransacaoClassificada {
   transacao: TransacaoExtrato;
@@ -247,9 +249,41 @@ export function classificarDuplicatas(
     }
 
     // -----------------------------------------------------------------
-    // REGRA (e): Lançamento manual existente (mesma conta, mesmo valor, data ±2 dias, sem origem_importacao)
-    // -> possivel_duplicata_manual
+    // REGRA (e): Casamento inteligente com Lançamentos Manuais / Baixados (Parte 24D)
+    // Avalia candidatos (pagos ou pendentes) com pontuação por valor, data, conta e texto
     // -----------------------------------------------------------------
+    const casamento = casarLancamentosComExtrato([transacao], lancamentosExistentes, contaId).get(transacao.idTemporario);
+
+    if (casamento && casamento.candidatoPrincipal) {
+      const cand = casamento.candidatoPrincipal;
+      if (casamento.nivel === 'ALTA' && cand.mesmaConta && !lancamentosPareadosManuais.has(cand.lancamento.id)) {
+        lancamentosPareadosManuais.add(cand.lancamento.id);
+        resultado.push({
+          transacao,
+          status: 'vinculada_alta',
+          idDoLancamentoRelacionado: cand.lancamento.id,
+          lancamentoRelacionado: cand.lancamento,
+          assinaturaFraca,
+          assinaturaForte,
+          motivo: `Já lançado – será vinculado sem duplicar (${cand.motivos.join(', ')})`
+        });
+        continue;
+      } else if (casamento.nivel === 'MEDIA' && !lancamentosPareadosManuais.has(cand.lancamento.id)) {
+        lancamentosPareadosManuais.add(cand.lancamento.id);
+        resultado.push({
+          transacao,
+          status: 'possivel_duplicata_manual',
+          idDoLancamentoRelacionado: cand.lancamento.id,
+          lancamentoRelacionado: cand.lancamento,
+          assinaturaFraca,
+          assinaturaForte,
+          motivo: `Possível lançamento manual correspondente (${cand.motivos.join(', ')})`
+        });
+        continue;
+      }
+    }
+
+    // Fallback retrocompatível para regra manual ±2 dias na mesma conta
     const valorCentavosAtual = Math.round(transacao.valor * 100);
     const candidatoManual = lancamentosManuais.find(l => {
       if (lancamentosPareadosManuais.has(l.id)) return false;

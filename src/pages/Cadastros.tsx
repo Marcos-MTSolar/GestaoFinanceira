@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { usePrivacy } from '../context/PrivacyContext';
 import { formatarCpfCnpj, formatarTelefone, formatarMoeda, formatarDataBR } from '../utils/formatters';
 import { Categoria, Contato, TipoContato, TipoLancamento, Lancamento } from '../types';
+import { chaveCategoria } from '../utils/categorias';
 import { Modal } from '../components/Modal';
 import {
   BookOpen,
@@ -63,7 +64,7 @@ export const Cadastros: React.FC = () => {
   const [contatoHistoricoId, setContatoHistoricoId] = useState<string | null>(null);
 
   const carregar = () => {
-    setCategorias(dbService.getCategorias());
+    setCategorias(dbService.getCategoriasUnicas());
     setContatos(dbService.getContatos());
   };
 
@@ -100,12 +101,31 @@ export const Cadastros: React.FC = () => {
     e.preventDefault();
     if (!isAdmin) return;
 
+    const nomeLimpo = catNome.trim();
+    if (!nomeLimpo) return;
+
+    // Prevenção de duplicatas (Parte 24A)
+    const chave = chaveCategoria({ nome: nomeLimpo, tipo: catTipo });
+    const todas = dbService.getCategorias();
+    const existente = todas.find((c) => chaveCategoria(c) === chave);
+
+    if (!catEditando && existente) {
+      alert(`Já existe uma categoria cadastrada com este nome para "${catTipo}": "${existente.nome}". Não é permitido duplicar categorias.`);
+      return;
+    }
+
+    if (catEditando && existente && existente.id !== catEditando.id) {
+      alert(`Já existe outra categoria com este nome: "${existente.nome}".`);
+      return;
+    }
+
     dbService.saveCategoria({
       id: catEditando ? catEditando.id : 'cat-' + Date.now(),
-      nome: catNome.trim(),
+      nome: nomeLimpo,
       tipo: catTipo,
       cor: catCor,
       padrao: catEditando?.padrao,
+      criado_em: catEditando?.criado_em || new Date().toISOString(),
     });
     setModalCatAberto(false);
   };
